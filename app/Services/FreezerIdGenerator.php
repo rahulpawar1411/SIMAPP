@@ -1,0 +1,205 @@
+<?php
+namespace App\Services;
+
+use App\Config\Database;
+use PDO;
+use InvalidArgumentException;
+
+class FreezerIdGenerator {
+
+    /**
+     * Sanitizes and standardizes model number for ID inclusion.
+     */
+    public static function sanitizeModel(string $model): string {
+        $clean = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $model));
+        return $clean !== '' ? $clean : 'GENERIC';
+    }
+
+    /**
+     * Normalizes PIN for Freezer ID — full 6 digits.
+     */
+    public static function extractPinCode(string $pincode): string {
+        $digits = preg_replace('/\D/', '', $pincode);
+        if (strlen($digits) >= 6) {
+            return substr($digits, 0, 6);
+        }
+        return str_pad($digits, 6, '0', STR_PAD_LEFT);
+    }
+
+    /** @deprecated Use extractPinCode() — kept for callers still expecting the old name */
+    public static function extractPinLast3(string $pincode): string {
+        return self::extractPinCode($pincode);
+    }
+
+    /**
+     * Formats installation date or MM/YY string to MMYY.
+     */
+    public static function formatInstallMonthYear(string $dateOrMmyy): string {
+        $clean = preg_replace('/\D/', '', $dateOrMmyy);
+        if (strlen($clean) === 4) {
+            // Already MMYY
+            return $clean;
+        }
+        // Try parsing as standard date
+        $time = strtotime($dateOrMmyy);
+        if ($time !== false) {
+            return date('my', $time); // '0324'
+        }
+        return date('my');
+    }
+
+    /**
+     * Increments an alphanumeric unit sequence like 'AAA004' -> 'AAA005', 'AAA999' -> 'AAB001'.
+     */
+    public static function incrementUnitSequence(string $currentSeq): string {
+        $currentSeq = strtoupper(trim($currentSeq));
+        if (preg_match('/^([A-Z]+)(\d+)$/', $currentSeq, $matches)) {
+            $prefix = $matches[1];
+            $numStr = $matches[2];
+            $padLen = strlen($numStr);
+            $num = (int)$numStr;
+
+            $maxNum = (int)str_repeat('9', $padLen);
+            if ($num < $maxNum) {
+                return $prefix . str_pad((string)($num + 1), $padLen, '0', STR_PAD_LEFT);
+            } else {
+                // Increment alpha part
+                $nextPrefix = ++$prefix;
+                return $nextPrefix . str_pad('1', $padLen, '0', STR_PAD_LEFT);
+            }
+        }
+        return 'AAA001';
+    }
+
+    /**
+     * Builds the prefix string for the freezer ID:
+     * e.g. DF-RW-SFR550DDU-AMD1-380058-0324-
+     */
+    public static function buildPrefix(
+        string $freezerType,
+        string $companyCode,
+        string $modelNumber,
+        string $locationCode,
+        string $pincode,
+        string $installMonthYear
+    ): string {
+        $type = strtoupper(trim($freezerType));
+        $company = strtoupper(trim($companyCode));
+        $model = self::sanitizeModel($modelNumber);
+        $loc = strtoupper(trim(preg_replace('/[^A-Za-z0-9]/', '', $locationCode)));
+        $pin = self::extractPinCode($pincode);
+        $mmyy = self::formatInstallMonthYear($installMonthYear);
+
+        return sprintf('%s-%s-%s-%s-%s-%s-', $type, $company, $model, $loc, $pin, $mmyy);
+    }
+
+    /**
+     * Generates a complete unique freezer ID, auto-incrementing unit sequence if duplicate.
+     */
+    public static function generateUniqueId(
+        string $freezerType,
+        string $companyCode,
+        string $modelNumber,
+        string $locationCode,
+        string $pincode,
+        string $installMonthYear,
+        ?string $preferredUnitSeq = null,
+        ?int $excludeId = null
+    ): array {
+        $prefix = self::buildPrefix($freezerType, $companyCode, $modelNumber, $locationCode, $pincode, $installMonthYear);
+        $pdo = Database::getConnection();
+
+        // Determine starting sequence
+        $seq = $preferredUnitSeq ? strtoupper(trim($preferredUnitSeq)) : 'AAA001';
+
+        // Check latest existing unit sequence for this prefix
+        if (!$preferredUnitSeq) {
+            $stmt = $pdo->prepare("SELECT `unique_freezer_id` FROM `freezers` WHERE `unique_freezer_id` LIKE :prefix ORDER BY `id` DESC LIMIT 1");
+            $stmt->execute(['prefix' => $prefix . '%']);
+            $lastRow = $stmt->fetch();
+            if ($lastRow && !empty($lastRow['unique_freezer_id'])) {
+                $lastId = $lastRow['unique_freezer_id'];
+                $lastSeq = substr($lastId, strlen($prefix));
+                $seq = self::incrementUnitSequence($lastSeq);
+            }
+        }
+
+        // Loop to ensure uniqueness
+        $maxAttempts = 500;
+        $attempt = 0;
+        $candidateId = $prefix . $seq;
+
+        while ($attempt < $maxAttempts) {
+            if (!self::isDuplicate($candidateId, $excludeId)) {
+                return [
+                    'freezer_id' => $candidateId,
+                    'prefix' => $prefix,
+                    'unit_sequence' => $seq,
+                    'freezer_type' => strtoupper(trim($freezerType)),
+                    'company_code' => strtoupper(trim($companyCode)),
+                    'model_number' => self::sanitizeModel($modelNumber),
+                    'location_code' => strtoupper(trim(preg_replace('/[^A-Za-z0-9]/', '', $locationCode))),
+                    'pin_last3' => self::extractPinCode($pincode),
+                    'pin_code' => self::extractPinCode($pincode),
+                    'install_month_year' => self::formatInstallMonthYear($installMonthYear),
+                ];
+            }
+            $seq = self::incrementUnitSequence($seq);
+            $candidateId = $prefix . $seq;
+            $attempt++;
+        }
+
+        throw new \RuntimeException("Unable to generate unique Freezer ID after {$maxAttempts} attempts.");
+    }
+
+    /**
+     * Checks if a freezer ID already exists in the database.
+     */
+    public static function isDuplicate(string $freezerId, ?int $excludeId = null): bool {
+        $pdo = Database::getConnection();
+        $sql = "SELECT COUNT(*) FROM `freezers` WHERE `unique_freezer_id` = :fid";
+        $params = ['fid' => trim($freezerId)];
+
+        if ($excludeId !== null) {
+            $sql .= " AND `id` != :exclude_id";
+            $params['exclude_id'] = $excludeId;
+        }
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        return ((int)$stmt->fetchColumn()) > 0;
+    }
+
+    /**
+     * Validates an ID string against the standard 7-part pattern:
+     * DF-RW-SFR550DDU-AMD1-380058-0324-AAA004
+     * (also accepts legacy 3-digit PIN segment)
+     */
+    public static function validateIdFormat(string $id): array {
+        $id = trim($id);
+        $pattern = '/^([A-Z0-9]{2,6})-([A-Z0-9]{2,6})-([A-Z0-9_-]{2,30})-([A-Z0-9]{2,10})-([0-9]{3}|[0-9]{6})-([0-9]{4})-([A-Z0-9]{3,10})$/i';
+        
+        if (!preg_match($pattern, $id, $matches)) {
+            return [
+                'valid' => false,
+                'error' => "ID does not match expected format: {TYPE}-{COMPANY}-{MODEL}-{LOCATION}-{PIN6}-{MMYY}-{UNITSEQ} (e.g. DF-RW-SFR550DDU-AMD1-380058-0324-AAA004)",
+                'parts' => null
+            ];
+        }
+
+        return [
+            'valid' => true,
+            'error' => null,
+            'parts' => [
+                'full' => strtoupper($id),
+                'freezer_type' => strtoupper($matches[1]),
+                'company_code' => strtoupper($matches[2]),
+                'model_number' => strtoupper($matches[3]),
+                'location_code' => strtoupper($matches[4]),
+                'pincode_last3' => $matches[5],
+                'install_month_year' => $matches[6],
+                'unit_sequence' => strtoupper($matches[7]),
+            ]
+        ];
+    }
+}
