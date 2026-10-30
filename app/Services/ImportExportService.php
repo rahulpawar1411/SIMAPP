@@ -11,7 +11,7 @@ class ImportExportService {
 
     /**
      * Canonical CSV columns — Freezer ID parts kept in sequence order:
-     * TYPE → BRAND → MODEL → LOCATION → MMYY → PIN → UNIT_SEQUENCE → UNIQUE_ID
+     * TYPE → BRAND → MODEL → LOCATION → MMYY → PIN → (random seq auto) → UNIQUE_ID
      */
     public static function hubColumns(): array {
         return [
@@ -46,7 +46,6 @@ class ImportExportService {
             'company',
             'model_number',
             'installation_date',
-            'unit_sequence',
             'unique_freezer_id',
             'capacity_litres',
             'freezer_condition',
@@ -99,13 +98,12 @@ class ImportExportService {
             'company' => 'Rockwell',
             'model_number' => 'SFR550DDU',
             'installation_date' => date('Y-m-d'),
-            'unit_sequence' => 'AAA001',
-            'unique_freezer_id' => '', // blank → auto
+            'unique_freezer_id' => '', // blank → auto (random unit seq)
             'capacity_litres' => '550',
             'freezer_condition' => 'WORKING CONDITION',
             'status' => 'Active',
-            'image_left_side' => 'freezer_AAA001_left.jpg',
-            'image_right_side' => 'freezer_AAA001_right.jpg',
+            'image_left_side' => 'freezer_1_left.jpg',
+            'image_right_side' => 'freezer_1_right.jpg',
             'iot_serial' => 'RF-IOT-99210',
             'iot_imei' => '864201048291048',
             'iot_sim_number' => '8991000900123456789',
@@ -113,27 +111,26 @@ class ImportExportService {
             'iot_type' => 'Temperature & GPS',
             'iot_owner' => 'ReeferON Own Device',
             'iot_model' => 'RF-T100',
-            'image_iot_device' => 'iot_AAA001_device.jpg',
+            'image_iot_device' => 'iot_1_device.jpg',
             'notes' => 'Photos REQUIRED · blank lat/lng = city GPS · blank IDs = auto · files in uploads/import/',
         ];
 
-        // Row1: new store + freezer AAA001 + IoT
-        // Row2: SAME store (reuse outlet after first import) + freezer AAA002 + IoT
-        // Row3: different store + freezer AAA003 + IoT
+        // Row1: new store + freezer + IoT (unit seq auto-random)
+        // Row2: SAME store (reuse outlet after first import) + 2nd freezer + IoT
+        // Row3: different store + freezer + IoT
         $rows = [];
         $rows[] = $base;
 
         $row2 = $base;
         $row2['outlet_id'] = ''; // after import #1, paste generated AMD1-380009-0001 here to link same store
-        $row2['unit_sequence'] = 'AAA002';
         $row2['image_store_front'] = 'store_1_front.jpg'; // required (or reuse same filename)
-        $row2['image_left_side'] = 'freezer_AAA002_left.jpg';
-        $row2['image_right_side'] = 'freezer_AAA002_right.jpg';
+        $row2['image_left_side'] = 'freezer_2_left.jpg';
+        $row2['image_right_side'] = 'freezer_2_right.jpg';
         $row2['iot_serial'] = 'RF-IOT-99211';
         $row2['iot_imei'] = '';
         $row2['iot_sim_number'] = '8991000900123456790';
         $row2['iot_sim_company'] = 'Airtel';
-        $row2['image_iot_device'] = 'iot_AAA002_device.jpg';
+        $row2['image_iot_device'] = 'iot_2_device.jpg';
         $row2['notes'] = '2nd freezer same store — set outlet_id after row1 · store + freezer photos required';
         $rows[] = $row2;
 
@@ -143,17 +140,16 @@ class ImportExportService {
         $row3['pincode'] = '380054';
         $row3['location_code'] = 'AMD1';
         $row3['outlet_id'] = '';
-        $row3['unit_sequence'] = 'AAA003';
         $row3['image_store_front'] = 'store_2_front.jpg';
         $row3['image_aadhar_card'] = 'store_2_aadhar_front.jpg';
         $row3['image_aadhar_back'] = 'store_2_aadhar_back.jpg';
-        $row3['image_left_side'] = 'freezer_AAA003_left.jpg';
-        $row3['image_right_side'] = 'freezer_AAA003_right.jpg';
+        $row3['image_left_side'] = 'freezer_3_left.jpg';
+        $row3['image_right_side'] = 'freezer_3_right.jpg';
         $row3['iot_serial'] = 'RF-IOT-99212';
         $row3['iot_imei'] = '';
         $row3['iot_sim_number'] = '8991000900123456791';
         $row3['iot_sim_company'] = 'VI';
-        $row3['image_iot_device'] = 'iot_AAA003_device.jpg';
+        $row3['image_iot_device'] = 'iot_3_device.jpg';
         $row3['notes'] = 'New store → auto outlet_id e.g. AMD1-380054-0001';
         $rows[] = $row3;
 
@@ -207,7 +203,6 @@ class ImportExportService {
             'company',
             'model_number',
             'installation_date',
-            'unit_sequence',
             'unique_freezer_id',
             'capacity_litres',
             'freezer_condition',
@@ -420,7 +415,7 @@ class ImportExportService {
 
     public static function streamFreezerTemplate(): void {
         $rows = [];
-        foreach (['AAA001', 'AAA002', 'AAA003'] as $i => $seq) {
+        foreach ([1, 2, 3] as $i) {
             $rows[] = [
                 'zone' => 'WEST',
                 'state' => 'Gujarat',
@@ -428,18 +423,17 @@ class ImportExportService {
                 'pincode' => '380009',
                 'location_code' => '',
                 'outlet_id' => '',
-                'store_name' => 'Baskin Robbins - Sample Hub' . ($i > 0 ? ' ' . ($i + 1) : ''),
+                'store_name' => 'Baskin Robbins - Sample Hub' . ($i > 1 ? ' ' . $i : ''),
                 'freezer_type' => 'Deep Freezer',
                 'company' => 'Rockwell',
                 'model_number' => 'SFR550DDU',
                 'installation_date' => date('Y-m-d'),
-                'unit_sequence' => $seq,
-                'unique_freezer_id' => '',
+                'unique_freezer_id' => '', // blank → auto random unit seq
                 'capacity_litres' => '550',
                 'freezer_condition' => 'WORKING CONDITION',
                 'status' => 'Active',
-                'image_left_side' => "freezer_{$seq}_left.jpg",
-                'image_right_side' => "freezer_{$seq}_right.jpg",
+                'image_left_side' => "freezer_{$i}_left.jpg",
+                'image_right_side' => "freezer_{$i}_right.jpg",
                 'notes' => 'Filter zone/state/city · blank outlet_id ok if store exists by name match later · photos in uploads/import/',
             ];
         }
@@ -465,7 +459,7 @@ class ImportExportService {
             'city' => 'Ahmedabad',
             'outlet_id' => '',
             'store_name' => 'Baskin Robbins - Sample Hub',
-            'unique_freezer_id' => 'DF-RW-SFR550DDU-AMD1-0326-380009-AAA001',
+            'unique_freezer_id' => 'DF-RW-SFR550DDU-AMD1-0326-380009-A7K2M9',
             'iot_serial' => 'RF-IOT-99210',
             'iot_imei' => '864201048291048',
             'iot_sim_number' => '8991000900123456789',
@@ -481,7 +475,7 @@ class ImportExportService {
             'city' => 'Ahmedabad',
             'outlet_id' => '',
             'store_name' => 'Baskin Robbins - Sample Hub 2',
-            'unique_freezer_id' => 'DF-RW-SFR550DDU-AMD1-0326-380009-AAA002',
+            'unique_freezer_id' => 'DF-RW-SFR550DDU-AMD1-0326-380009-B8L3N0',
             'iot_serial' => 'RF-IOT-99211',
             'iot_imei' => '',
             'iot_sim_number' => '8991000900123456790',
@@ -874,7 +868,7 @@ class ImportExportService {
             'location_code' => $locationCode,
             'pincode' => $pincode,
             'install_month_year' => date('my', strtotime($installDate)),
-            'unit_sequence' => ($row['unit_sequence'] ?? '') !== '' ? strtoupper(trim($row['unit_sequence'])) : null,
+            'unit_sequence' => null, // always auto-random on import
             'installation_date' => $installDate,
             'image_left_side' => $imgLeft,
             'image_right_side' => $imgRight,

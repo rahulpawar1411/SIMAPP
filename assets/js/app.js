@@ -428,7 +428,7 @@ function initIdGenerator() {
 
     function checkIdWithServer(type, brand, model, loc, pinCode, mmyy, seqRaw, autoSeq) {
         if (!statusBadge) return;
-        statusBadge.textContent = autoSeq ? 'Auto sequence…' : 'Checking...';
+        statusBadge.textContent = autoSeq ? 'Random sequence…' : 'Checking...';
         statusBadge.className = 'id-preview-badge';
 
         const params = new URLSearchParams({
@@ -462,7 +462,7 @@ function initIdGenerator() {
                     previewDisplay.textContent = data.suggested_id;
                     if (chipSeq) chipSeq.textContent = data.suggested_seq || 'AUTO';
                     if (hiddenId) hiddenId.value = ''; // server assigns final unique seq on save
-                    statusBadge.textContent = 'Auto: ' + (data.suggested_seq || 'next');
+                    statusBadge.textContent = 'Random: ' + (data.suggested_seq || '…');
                     statusBadge.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
                     statusBadge.style.color = '#34d399';
                     return;

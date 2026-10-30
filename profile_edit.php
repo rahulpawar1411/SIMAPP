@@ -120,9 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'location_code' => $_POST['location_code'] ?? $freezer['location_code'],
                 'pincode_last3' => FreezerIdGenerator::extractPinCode($_POST['pincode'] ?? ''),
                 'install_month_year' => $installMmYy,
-                'unit_sequence' => !empty($_POST['unit_sequence'])
-                    ? strtoupper(trim($_POST['unit_sequence']))
-                    : ($freezer['unit_sequence'] ?? null),
+                'unit_sequence' => $freezer['unit_sequence'] ?? null,
                 'installation_date' => $installDate,
                 'image_left_side' => $imgLeftResult ? $imgLeftResult['path'] : null,
                 'image_right_side' => $imgRightResult ? $imgRightResult['path'] : null,
@@ -358,9 +356,9 @@ require_once __DIR__ . '/includes/header.php';
                     <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($freezer['installation_date']) ?>" required>
                 </div>
                 <div class="col-3 form-group">
-                    <label class="form-label" for="unit_sequence">Unit Sequence</label>
-                    <input type="text" id="unit_sequence" name="unit_sequence" class="form-control" value="<?= htmlspecialchars($freezer['unit_sequence'] ?? '') ?>" maxlength="12" placeholder="Auto if blank">
-                    <span class="form-help">Optional · blank keeps current / auto on new</span>
+                    <label class="form-label">Unit sequence</label>
+                    <input type="text" class="form-control" value="<?= htmlspecialchars($freezer['unit_sequence'] ?? '') ?>" readonly disabled>
+                    <span class="form-help">Auto-generated · not editable</span>
                 </div>
                 <div class="col-3 form-group">
                     <label class="form-label" for="freezer_status">Status</label>

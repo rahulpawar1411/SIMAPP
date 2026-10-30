@@ -139,10 +139,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pincode = $_POST['pincode'] ?? '';
             $installDate = $_POST['installation_date'] ?? date('Y-m-d');
             $installMmYy = date('my', strtotime($installDate));
-            $unitSeq = !empty($_POST['unit_sequence']) ? strtoupper(trim($_POST['unit_sequence'])) : null;
-            $candidateId = ($unitSeq && !empty($_POST['unique_freezer_id']))
-                ? strtoupper(trim($_POST['unique_freezer_id']))
-                : null;
+            // Unique ID + random unit sequence assigned on save
+            $candidateId = null;
 
             // 4. Create Freezer (auto ID + QR generation)
             $freezerPayload = [
@@ -156,7 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'location_code' => $locationCode,
                 'pincode' => $pincode,
                 'install_month_year' => $installMmYy,
-                'unit_sequence' => $unitSeq,
+                'unit_sequence' => null,
                 'installation_date' => $installDate,
                 'image_left_side' => $imgLeftResult['path'],
                 'image_right_side' => $imgRightResult['path'],
@@ -555,12 +553,6 @@ require_once __DIR__ . '/includes/header.php';
                         <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($_POST['installation_date'] ?? '') ?>" required>
                         <div class="form-error">Installation date is required.</div>
                         <span class="form-help">Becomes MMYY in Freezer ID</span>
-                    </div>
-
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="unit_sequence">Unit sequence</label>
-                        <input type="text" id="unit_sequence" name="unit_sequence" class="form-control" placeholder="Auto if blank" value="<?= htmlspecialchars($_POST['unit_sequence'] ?? '') ?>" maxlength="12" autocomplete="off">
-                        <span class="form-help">Optional · auto AAA001…</span>
                     </div>
 
                     <div class="col-3 form-group">

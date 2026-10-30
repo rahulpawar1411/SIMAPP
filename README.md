@@ -26,7 +26,7 @@ Automatically generates, validates, and prevents duplicate IDs adhering to the e
 | **Location Code** | `AMD1` | Standard location code (e.g. `AMD1`, `MUM1`, `DEL1`) |
 | **Install MMYY** | `0324` | Installation month/year first (`0324` for March 2024) |
 | **PIN Code (6)** | `380058` | Full 6-digit PIN after MMYY |
-| **Unique Unit Sequence** | `AAA004` | Auto-incremented sequence (`AAA001`, `AAA002`...) queried against the database to guarantee zero duplicate collisions |
+| **Unique Unit Sequence** | `A7K2M9` | Random 6-char letter+digit mix; re-rolled if already used in existing data |
 
 - **Real-Time Dynamic Generator:** The Add Profile wizard displays a live ID preview and color-coded validity badge as the technician fills the form.
 - **Duplicate Prevention:** Database unique constraint on `unique_freezer_id` combined with server-side pre-flight duplicate checking and sequential auto-advancing.

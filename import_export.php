@@ -289,8 +289,7 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>location_code</code></td><td>ID seq 4 · blank = auto from city (Ahmedabad → AMD1)</td></tr>
                         <tr><td><code>installation_date</code></td><td>ID seq 5 · YYYY-MM-DD → MMYY (before PIN)</td></tr>
                         <tr><td><code>pincode</code> *</td><td>ID seq 6 · 6-digit PIN (after MMYY)</td></tr>
-                        <tr><td><code>unit_sequence</code></td><td>ID seq 7 · e.g. AAA001, AAA002 (order / stickers)</td></tr>
-                        <tr><td><code>unique_freezer_id</code></td><td>Blank = auto from sequence above + QR</td></tr>
+                        <tr><td><code>unique_freezer_id</code></td><td>Blank = auto (random unit seq + QR) · do not fill unit sequence</td></tr>
                         <tr><td><code>outlet_id</code></td><td>Blank = auto · existing outlet reuses store</td></tr>
                         <tr><td><code>latitude</code> / <code>longitude</code></td><td>Optional · blank = auto city-center GPS (map shows) · exact pin later via Store Front GPS</td></tr>
                         <tr><td><code>fssai_number</code> / <code>gst_number</code></td><td>Optional compliance IDs</td></tr>
@@ -331,9 +330,8 @@ require_once __DIR__ . '/includes/header.php';
                 <li>Import the CSV — each row attaches only the files named on that row (same store/freezer as that row’s data).</li>
             </ol>
             <p style="margin: 0; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.75rem; font-size:0.8rem;">
-                Example: row with <code>unit_sequence=AAA001</code> and
-                <code>image_left_side=freezer_AAA001_left.jpg</code> → photo must be
-                <code>uploads/import/freezer_AAA001_left.jpg</code>. Blank image cells = no photo for that row.
+                Example: <code>image_left_side=freezer_1_left.jpg</code> → photo must be
+                <code>uploads/import/freezer_1_left.jpg</code>. Blank image cells = no photo for that row.
             </p>
         </div>
     </div>

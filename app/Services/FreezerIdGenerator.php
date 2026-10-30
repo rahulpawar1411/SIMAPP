@@ -49,26 +49,27 @@ class FreezerIdGenerator {
     }
 
     /**
-     * Increments an alphanumeric unit sequence like 'AAA004' -> 'AAA005', 'AAA999' -> 'AAB001'.
+     * Random 6-char unit sequence: letters + digits mixed (e.g. A7K2M9).
+     * Always includes at least one letter and one digit.
      */
-    public static function incrementUnitSequence(string $currentSeq): string {
-        $currentSeq = strtoupper(trim($currentSeq));
-        if (preg_match('/^([A-Z]+)(\d+)$/', $currentSeq, $matches)) {
-            $prefix = $matches[1];
-            $numStr = $matches[2];
-            $padLen = strlen($numStr);
-            $num = (int)$numStr;
-
-            $maxNum = (int)str_repeat('9', $padLen);
-            if ($num < $maxNum) {
-                return $prefix . str_pad((string)($num + 1), $padLen, '0', STR_PAD_LEFT);
-            } else {
-                // Increment alpha part
-                $nextPrefix = ++$prefix;
-                return $nextPrefix . str_pad('1', $padLen, '0', STR_PAD_LEFT);
-            }
+    public static function randomUnitSequence(): string {
+        $pool = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        $chars = [];
+        for ($i = 0; $i < 6; $i++) {
+            $chars[] = $pool[random_int(0, strlen($pool) - 1)];
         }
-        return 'AAA001';
+        // Guarantee letter + digit mix (vs existing AAA001-style or pure digits)
+        $joined = implode('', $chars);
+        if (!preg_match('/[A-Z]/', $joined) || !preg_match('/[0-9]/', $joined)) {
+            $chars[random_int(0, 2)] = chr(random_int(65, 90));
+            $chars[random_int(3, 5)] = (string)random_int(0, 9);
+        }
+        // Shuffle so letter/digit positions vary
+        for ($i = 5; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$chars[$i], $chars[$j]] = [$chars[$j], $chars[$i]];
+        }
+        return implode('', $chars);
     }
 
     /**
@@ -95,7 +96,8 @@ class FreezerIdGenerator {
     }
 
     /**
-     * Generates a complete unique freezer ID, auto-incrementing unit sequence if duplicate.
+     * Generates a complete unique freezer ID with a random unit sequence (or preferred if given).
+     * If unit_sequence already exists in DB (legacy AAA001 etc.), re-rolls a new 6-char mix.
      */
     public static function generateUniqueId(
         string $freezerType,
@@ -108,30 +110,18 @@ class FreezerIdGenerator {
         ?int $excludeId = null
     ): array {
         $prefix = self::buildPrefix($freezerType, $companyCode, $modelNumber, $locationCode, $pincode, $installMonthYear);
-        $pdo = Database::getConnection();
+        $useRandom = ($preferredUnitSeq === null || trim($preferredUnitSeq) === '');
+        $seq = $useRandom ? self::randomUnitSequence() : strtoupper(trim($preferredUnitSeq));
 
-        // Determine starting sequence
-        $seq = $preferredUnitSeq ? strtoupper(trim($preferredUnitSeq)) : 'AAA001';
-
-        // Check latest existing unit sequence for this prefix
-        if (!$preferredUnitSeq) {
-            $stmt = $pdo->prepare("SELECT `unique_freezer_id` FROM `freezers` WHERE `unique_freezer_id` LIKE :prefix ORDER BY `id` DESC LIMIT 1");
-            $stmt->execute(['prefix' => $prefix . '%']);
-            $lastRow = $stmt->fetch();
-            if ($lastRow && !empty($lastRow['unique_freezer_id'])) {
-                $lastId = $lastRow['unique_freezer_id'];
-                $lastSeq = substr($lastId, strlen($prefix));
-                $seq = self::incrementUnitSequence($lastSeq);
-            }
-        }
-
-        // Loop to ensure uniqueness
+        // Loop: unique full ID + unique unit_sequence vs existing rows
         $maxAttempts = 500;
         $attempt = 0;
         $candidateId = $prefix . $seq;
 
         while ($attempt < $maxAttempts) {
-            if (!self::isDuplicate($candidateId, $excludeId)) {
+            $idTaken = self::isDuplicate($candidateId, $excludeId);
+            $seqTaken = self::isUnitSequenceDuplicate($seq, $excludeId);
+            if (!$idTaken && !$seqTaken) {
                 return [
                     'freezer_id' => $candidateId,
                     'prefix' => $prefix,
@@ -145,7 +135,8 @@ class FreezerIdGenerator {
                     'install_month_year' => self::formatInstallMonthYear($installMonthYear),
                 ];
             }
-            $seq = self::incrementUnitSequence($seq);
+            // Clash with existing data → always new 6-char letter+digit mix
+            $seq = self::randomUnitSequence();
             $candidateId = $prefix . $seq;
             $attempt++;
         }
@@ -160,6 +151,28 @@ class FreezerIdGenerator {
         $pdo = Database::getConnection();
         $sql = "SELECT COUNT(*) FROM `freezers` WHERE `unique_freezer_id` = :fid";
         $params = ['fid' => trim($freezerId)];
+
+        if ($excludeId !== null) {
+            $sql .= " AND `id` != :exclude_id";
+            $params['exclude_id'] = $excludeId;
+        }
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        return ((int)$stmt->fetchColumn()) > 0;
+    }
+
+    /**
+     * True if unit_sequence is already used on any freezer (existing / legacy rows).
+     */
+    public static function isUnitSequenceDuplicate(string $unitSequence, ?int $excludeId = null): bool {
+        $seq = strtoupper(trim($unitSequence));
+        if ($seq === '') {
+            return false;
+        }
+        $pdo = Database::getConnection();
+        $sql = "SELECT COUNT(*) FROM `freezers` WHERE UPPER(`unit_sequence`) = :seq";
+        $params = ['seq' => $seq];
 
         if ($excludeId !== null) {
             $sql .= " AND `id` != :exclude_id";

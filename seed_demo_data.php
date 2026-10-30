@@ -134,7 +134,7 @@ $store2Id = Store::create([
 
 // Create Freezer 2: Deep Chest Freezer (DCF) Voltas
 $freezer2Id = Freezer::create([
-    'unique_freezer_id' => 'DCF-VL-CHF500-MUM1-018-0424-AAA001',
+    'unique_freezer_id' => 'DCF-VL-CHF500-MUM1-018-0424-T7K2M9',
     'store_id' => $store2Id,
     'freezer_type' => 'DCF',
     'company_code' => 'VL',
@@ -144,7 +144,7 @@ $freezer2Id = Freezer::create([
     'location_code' => 'MUM1',
     'pincode' => '400018',
     'install_month_year' => '0424',
-    'unit_sequence' => 'AAA001',
+    'unit_sequence' => 'T7K2M9',
     'installation_date' => '2024-04-10',
     'image_left_side' => 'uploads/freezers/demo_frz_sfr550_left.svg',
     'image_right_side' => 'uploads/freezers/demo_frz_sfr550_right.svg',

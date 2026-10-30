@@ -90,8 +90,7 @@ $freezerRows = [
     ['company', 'YES', 'FULL NAME — e.g. Rockwell (system → RW in Unique ID)'],
     ['model_number', 'YES', 'e.g. SFR550DDU'],
     ['installation_date', 'Recommended', 'YYYY-MM-DD. Blank = today. Becomes MMYY in Unique ID'],
-    ['unit_sequence', 'Recommended', 'e.g. AAA001, AAA002 (sticker / order)'],
-    ['unique_freezer_id', 'Optional', 'Blank = auto from type+brand+model+location+PIN+date+seq'],
+    ['unique_freezer_id', 'Optional', 'Blank = auto (random unit seq). Do not fill unit_sequence'],
     ['capacity_litres', 'Recommended', 'e.g. 550'],
     ['freezer_condition', 'Optional', 'WORKING CONDITION (default)'],
     ['status', 'Optional', 'Active (default)'],
@@ -137,7 +136,7 @@ $body .= p('Header colour in Excel: YELLOW / AMBER', 'Normal', true, 20);
 $body .= table($freezerRows, 'FCD34D');
 $body .= p('');
 $body .= p('Minimum Freezer set (must): freezer_type + company + model_number + image_left_side + image_right_side', 'Normal', true, 20);
-$body .= p('Example Unique ID: DF-RW-SFR550DDU-AMD1-0326-380009-AAA001', 'Normal', false, 18);
+$body .= p('Example Unique ID: DF-RW-SFR550DDU-AMD1-0326-380009-KXM472 (last part auto-random)', 'Normal', false, 18);
 $body .= p('');
 
 $body .= heading('4. IOT DEVICE — when device is fitted', 1);
@@ -163,9 +162,8 @@ $body .= p('image_store_front: store_1_front.jpg');
 $body .= p('freezer_type: Deep Freezer');
 $body .= p('company: Rockwell');
 $body .= p('model_number: SFR550DDU');
-$body .= p('unit_sequence: AAA001');
-$body .= p('image_left_side: freezer_AAA001_left.jpg');
-$body .= p('image_right_side: freezer_AAA001_right.jpg');
+$body .= p('image_left_side: freezer_1_left.jpg');
+$body .= p('image_right_side: freezer_1_right.jpg');
 $body .= p('iot_serial: (blank if no device)');
 $body .= p('latitude / longitude: (blank)');
 $body .= p('');
