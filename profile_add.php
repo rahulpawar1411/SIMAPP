@@ -35,7 +35,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'freezer_type' => 'Freezer type',
                 'company_code' => 'Company / series',
                 'model_number' => 'Model number',
-                'location_code' => 'Location code',
                 'installation_date' => 'Installation date',
             ];
             foreach ($requiredText as $key => $label) {
@@ -53,10 +52,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception('Freezer Left and Right photos are required for asset verification.');
             }
 
-            // 1. Process uploads: store front + freezer sides + IoT
+            // 1. Process uploads: store front + Aadhaar + freezer sides + IoT
             $imgStoreFront = FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'store_front');
             if (!$imgStoreFront['success']) {
                 throw new Exception('Store Front Image Error: ' . $imgStoreFront['error']);
+            }
+
+            $imgAadhar = null;
+            if (!empty($_FILES['image_aadhar_card']['name'])) {
+                $imgAadhar = FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front');
+                if (!$imgAadhar['success']) {
+                    throw new Exception('Aadhaar Front Image Error: ' . $imgAadhar['error']);
+                }
+            }
+            $imgAadharBack = null;
+            if (!empty($_FILES['image_aadhar_back']['name'])) {
+                $imgAadharBack = FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back');
+                if (!$imgAadharBack['success']) {
+                    throw new Exception('Aadhaar Back Image Error: ' . $imgAadharBack['error']);
+                }
             }
 
             $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left');
@@ -78,7 +92,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // 2. Create Store Profile (KYS master details)
-            $outletId = !empty($_POST['outlet_id']) ? trim($_POST['outlet_id']) : Store::generateOutletId($_POST['city'] ?? 'AMD');
+            $outletId = !empty($_POST['outlet_id'])
+                ? trim($_POST['outlet_id'])
+                : Store::generateOutletId([
+                    'city' => $_POST['city'] ?? 'AMD',
+                    'pincode' => $_POST['pincode'] ?? '',
+                    'location_code' => $_POST['location_code'] ?? '',
+                ]);
             $hasGps = !empty($_POST['latitude']) && !empty($_POST['longitude']);
             $storeId = Store::create([
                 'outlet_id' => $outletId,
@@ -102,6 +122,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : null,
                 'gps_captured_at' => $hasGps ? date('Y-m-d H:i:s') : null,
                 'image_store_front' => $imgStoreFront['path'],
+                'image_aadhar_card' => $imgAadhar ? $imgAadhar['path'] : null,
+                'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
                 'status' => 'Active',
                 'created_by' => $currentUser['id'],
             ]);
@@ -110,7 +132,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $freezerType = $_POST['freezer_type'] ?? 'DF';
             $companyCode = $_POST['company_code'] ?? 'RW';
             $modelNumber = $_POST['model_number'] ?? '';
-            $locationCode = $_POST['location_code'] ?? '';
+            $locationCode = MasterData::resolveLocationCodeForCity(
+                (string)($_POST['city'] ?? ''),
+                $_POST['location_code'] ?? ''
+            );
             $pincode = $_POST['pincode'] ?? '';
             $installDate = $_POST['installation_date'] ?? date('Y-m-d');
             $installMmYy = date('my', strtotime($installDate));
@@ -312,7 +337,8 @@ require_once __DIR__ . '/includes/header.php';
 
                     <div class="col-3 form-group">
                         <label class="form-label" for="outlet_id">Outlet ID / Code</label>
-                        <input type="text" id="outlet_id" name="outlet_id" class="form-control" placeholder="Auto if blank" value="<?= htmlspecialchars($_POST['outlet_id'] ?? '') ?>">
+                        <input type="text" id="outlet_id" name="outlet_id" class="form-control" placeholder="Auto e.g. AMD1-380009-0001" value="<?= htmlspecialchars($_POST['outlet_id'] ?? '') ?>">
+                        <span class="form-help">Blank = auto like freezer: <code>AMD1-380009-0001</code> (location code + full PIN + seq)</span>
                         <span class="form-help">Leave blank to auto-generate</span>
                     </div>
 
@@ -378,10 +404,10 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-label" for="phone_number">Operator phone / mobile</label>
                         <div class="phone-input-group">
                             <span class="phone-prefix" aria-hidden="true">+91</span>
-                            <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars($_POST['phone_number'] ?? '') ?>" maxlength="10" inputmode="numeric" pattern="[6-9][0-9]{9}" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
+                            <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars($_POST['phone_number'] ?? '') ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
                         </div>
-                        <span class="form-help">Exactly 10 digits · saved as +91XXXXXXXXXX</span>
-                        <div class="form-error">Enter a valid 10-digit Indian mobile number.</div>
+                        <span class="form-help">Exactly 10 digits starting with 6–9 · saved as +91XXXXXXXXXX</span>
+                        <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
                     </div>
 
                     <div class="col-6 form-group">
@@ -395,6 +421,24 @@ require_once __DIR__ . '/includes/header.php';
                         <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" placeholder="12-digit Aadhaar" value="<?= htmlspecialchars($_POST['aadhar_number'] ?? '') ?>" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
                         <span class="form-help">Exactly 12 digits</span>
                         <div class="form-error">Enter a valid 12-digit Aadhaar number.</div>
+                    </div>
+
+                    <div class="col-12 form-group">
+                        <label class="form-label">Store manager Aadhaar photos</label>
+                        <div class="photo-upload-grid" style="grid-template-columns: repeat(2, minmax(0, 320px)); gap: 0.85rem;">
+                            <div class="upload-box">
+                                <input type="file" name="image_aadhar_card" id="image_aadhar_card" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-card">
+                                <div class="upload-title">Aadhaar front</div>
+                                <div class="upload-hint">Optional · JPG / PNG / WebP</div>
+                                <div class="upload-preview-container" id="preview-aadhar-card"></div>
+                            </div>
+                            <div class="upload-box">
+                                <input type="file" name="image_aadhar_back" id="image_aadhar_back" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-back">
+                                <div class="upload-title">Aadhaar back</div>
+                                <div class="upload-hint">Optional · JPG / PNG / WebP</div>
+                                <div class="upload-preview-container" id="preview-aadhar-back"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -464,21 +508,23 @@ require_once __DIR__ . '/includes/header.php';
                         <select id="freezer_type" name="freezer_type" class="form-select" required>
                             <?php foreach ($freezerTypes as $ft): ?>
                                 <option value="<?= htmlspecialchars($ft['code']) ?>" <?= (($_POST['freezer_type'] ?? 'DF') === $ft['code']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($ft['code']) ?> - <?= htmlspecialchars($ft['name']) ?>
+                                    <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                        <span class="form-help">Unique ID uses code e.g. <code>DF</code></span>
                     </div>
 
                     <div class="col-4 form-group">
-                        <label class="form-label required" for="company_code">Company / series</label>
+                        <label class="form-label required" for="company_code">Brand / company</label>
                         <select id="company_code" name="company_code" class="form-select" required>
                             <?php foreach ($brands as $b): ?>
                                 <option value="<?= htmlspecialchars($b['code']) ?>" <?= (($_POST['company_code'] ?? 'RW') === $b['code']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($b['code']) ?> - <?= htmlspecialchars($b['name']) ?>
+                                    <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                        <span class="form-help">Unique ID uses code e.g. <code>RW</code></span>
                     </div>
 
                     <div class="col-4 form-group">
@@ -489,9 +535,9 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                 <div class="col-3 form-group">
-                    <label class="form-label required" for="location_code">Location code</label>
-                    <select id="location_code" name="location_code" class="form-select" required>
-                        <option value="">Select city first…</option>
+                    <label class="form-label" for="location_code">Location code</label>
+                    <select id="location_code" name="location_code" class="form-select">
+                        <option value="">Auto from city…</option>
                         <?php
                         $postedLoc = strtoupper(trim((string)($_POST['location_code'] ?? '')));
                         if ($postedLoc !== ''):
@@ -499,8 +545,7 @@ require_once __DIR__ . '/includes/header.php';
                             <option value="<?= htmlspecialchars($postedLoc) ?>" selected><?= htmlspecialchars($postedLoc) ?></option>
                         <?php endif; ?>
                     </select>
-                    <div class="form-error">Location code is required.</div>
-                    <span class="form-help">City-based · e.g. AMD1/2/3, BPL1/2/3, MUM1/2/3</span>
+                    <span class="form-help">Auto from city (Ahmedabad → AMD1) · change 1/2/3 if needed</span>
                 </div>
 
                     <div class="col-3 form-group">
@@ -743,8 +788,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (bad) ok = false;
             });
 
-            if (phone && phone.value.trim() !== '') {
-                const phoneBad = !/^[6-9]\d{9}$/.test(phone.value.replace(/\D/g, '').slice(-10));
+            if (phone) {
+                const digits = (typeof normalizeIndianMobileDigits === 'function')
+                    ? normalizeIndianMobileDigits(phone.value)
+                    : phone.value.replace(/\D/g, '').slice(-10);
+                phone.value = digits;
+                // Empty = optional OK; otherwise must be 10 digits starting 6–9
+                const phoneBad = digits !== '' && !/^[6-9]\d{9}$/.test(digits);
                 setFieldError(phone, phoneBad);
                 if (phoneBad) ok = false;
             }
@@ -788,10 +838,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!leftOk || !rightOk) ok = false;
 
             const model = document.getElementById('model_number');
-            const loc = document.getElementById('location_code');
             const date = document.getElementById('installation_date');
             [[model, !model.value.trim()],
-             [loc, !loc.value.trim()],
              [date, !date.value]
             ].forEach(([el, bad]) => {
                 setFieldError(el, bad);
@@ -854,7 +902,7 @@ document.addEventListener('DOMContentLoaded', function() {
         el.addEventListener('change', () => setFieldError(el, false));
     });
 
-    ['image_left_side', 'image_right_side', 'image_store_front'].forEach(id => {
+    ['image_left_side', 'image_right_side', 'image_store_front', 'image_aadhar_card', 'image_aadhar_back'].forEach(id => {
         const input = document.getElementById(id);
         if (!input) return;
         input.addEventListener('change', () => {
@@ -866,7 +914,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const phoneInput = document.getElementById('phone_number');
     if (phoneInput) {
         phoneInput.addEventListener('input', function () {
-            this.value = this.value.replace(/\D/g, '').slice(0, 10);
+            if (typeof normalizeIndianMobileDigits === 'function') {
+                this.value = normalizeIndianMobileDigits(this.value);
+            } else {
+                this.value = this.value.replace(/\D/g, '').slice(0, 10);
+            }
+            // Clear error as soon as value becomes valid / empty
+            const digits = this.value;
+            const phoneBad = digits !== '' && !/^[6-9]\d{9}$/.test(digits);
+            setFieldError(this, phoneBad);
         });
     }
     const pinInput = document.getElementById('pincode');

@@ -88,6 +88,58 @@ class FileUploadService {
     }
 
     /**
+     * Promote a file from uploads/import into stores|freezers|iot.
+     * $filename = exact basename from CSV (e.g. store_cg_front.jpg). Returns relative web path or null.
+     */
+    public static function promoteImportImage(?string $filename, string $subDir = 'freezers', string $prefix = 'img'): ?string {
+        $filename = trim((string)$filename);
+        if ($filename === '') {
+            return null;
+        }
+
+        // Basename only — block path traversal
+        $filename = basename(str_replace(['\\', "\0"], ['/', ''], $filename));
+        if ($filename === '' || $filename === '.' || $filename === '..') {
+            throw new RuntimeException('Invalid image filename.');
+        }
+
+        AppConfig::initUploadDirs();
+        $source = AppConfig::UPLOAD_IMPORT . '/' . $filename;
+        if (!is_file($source)) {
+            throw new RuntimeException("Import image not found in uploads/import/: {$filename}");
+        }
+
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($source);
+        if (!array_key_exists($mime, AppConfig::ALLOWED_IMAGE_MIMES)) {
+            throw new RuntimeException("Invalid image type for {$filename}. Use JPG, PNG, or WebP.");
+        }
+        if (@getimagesize($source) === false) {
+            throw new RuntimeException("File is not a valid image: {$filename}");
+        }
+        if (filesize($source) > AppConfig::MAX_FILE_SIZE) {
+            throw new RuntimeException("Image exceeds 10MB: {$filename}");
+        }
+
+        $extension = AppConfig::ALLOWED_IMAGE_MIMES[$mime];
+        $safeFileName = sprintf('%s_%d_%s.%s', $prefix, time(), bin2hex(random_bytes(8)), $extension);
+
+        $targetDir = match ($subDir) {
+            'iot' => AppConfig::UPLOAD_IOT,
+            'stores' => AppConfig::UPLOAD_STORES,
+            default => AppConfig::UPLOAD_FREEZERS,
+        };
+        $targetFilePath = $targetDir . '/' . $safeFileName;
+        $relativeWebPath = 'uploads/' . $subDir . '/' . $safeFileName;
+
+        if (!copy($source, $targetFilePath)) {
+            throw new RuntimeException("Failed to copy import image: {$filename}");
+        }
+
+        return $relativeWebPath;
+    }
+
+    /**
      * Safely deletes an existing uploaded file from disk.
      */
     public static function deleteFile(?string $relativePath): void {

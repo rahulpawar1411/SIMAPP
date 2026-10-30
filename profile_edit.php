@@ -41,6 +41,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception("Store Front Image Error: " . $imgStoreFront['error']);
             }
 
+            $imgAadhar = !empty($_FILES['image_aadhar_card']['name'])
+                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front')
+                : null;
+            if ($imgAadhar && !$imgAadhar['success']) {
+                throw new Exception("Aadhaar Front Image Error: " . $imgAadhar['error']);
+            }
+
+            $imgAadharBack = !empty($_FILES['image_aadhar_back']['name'])
+                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back')
+                : null;
+            if ($imgAadharBack && !$imgAadharBack['success']) {
+                throw new Exception("Aadhaar Back Image Error: " . $imgAadharBack['error']);
+            }
+
             $imgLeftResult = !empty($_FILES['image_left_side']['name'])
                 ? FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left')
                 : null;
@@ -85,6 +99,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'longitude' => !empty($_POST['longitude']) ? (float)$_POST['longitude'] : null,
                 'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : null,
                 'image_store_front' => $imgStoreFront ? $imgStoreFront['path'] : null,
+                'image_aadhar_card' => $imgAadhar ? $imgAadhar['path'] : null,
+                'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
                 'status' => 'Active',
             ]);
 
@@ -155,7 +171,7 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
-<form method="POST" action="" enctype="multipart/form-data">
+<form method="POST" action="" enctype="multipart/form-data" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" id="exclude_freezer_id" value="<?= (int)$freezer['id'] ?>">
 
@@ -248,9 +264,10 @@ require_once __DIR__ . '/includes/header.php';
                     ?>
                     <div class="phone-input-group">
                         <span class="phone-prefix" aria-hidden="true">+91</span>
-                        <input type="tel" id="phone_number" name="phone_number" class="form-control" value="<?= htmlspecialchars($editPhone) ?>" maxlength="10" inputmode="numeric" pattern="[6-9][0-9]{9}" placeholder="10-digit mobile" title="10-digit Indian mobile" autocomplete="tel-national">
+                        <input type="tel" id="phone_number" name="phone_number" class="form-control" value="<?= htmlspecialchars($editPhone) ?>" maxlength="10" inputmode="numeric" placeholder="10-digit mobile" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
                     </div>
-                    <span class="form-help">Exactly 10 digits · saved as +91XXXXXXXXXX</span>
+                    <span class="form-help">Exactly 10 digits starting with 6–9 · saved as +91XXXXXXXXXX</span>
+                    <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
                 </div>
                 <div class="col-6 form-group">
                     <label class="form-label" for="email">Store operator email ID</label>
@@ -292,20 +309,22 @@ require_once __DIR__ . '/includes/header.php';
                     <select id="freezer_type" name="freezer_type" class="form-select" required>
                         <?php foreach ($freezerTypes as $ft): ?>
                             <option value="<?= htmlspecialchars($ft['code']) ?>" <?= ($freezer['freezer_type'] === $ft['code']) ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($ft['code']) ?> - <?= htmlspecialchars($ft['name']) ?>
+                                <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
                             </option>
                         <?php endforeach; ?>
                     </select>
+                    <span class="form-help">Unique ID uses type code e.g. <code>DF</code></span>
                 </div>
                 <div class="col-4 form-group">
                     <label class="form-label required" for="company_code">Brand / OEM</label>
                     <select id="company_code" name="company_code" class="form-select" required>
                         <?php foreach ($brands as $b): ?>
                             <option value="<?= htmlspecialchars($b['code']) ?>" <?= ($freezer['company_code'] === $b['code']) ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($b['code']) ?> - <?= htmlspecialchars($b['name']) ?>
+                                <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
                             </option>
                         <?php endforeach; ?>
                     </select>
+                    <span class="form-help">Unique ID uses brand code e.g. <code>RW</code></span>
                 </div>
                 <div class="col-4 form-group">
                     <label class="form-label required" for="model_number">Model Number</label>
@@ -392,6 +411,26 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
+                <!-- Aadhaar front -->
+                <div class="upload-box">
+                    <input type="file" name="image_aadhar_card" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-aadhar">
+                    <div class="upload-title">Aadhaar front</div>
+                    <div class="upload-hint">Store manager ID</div>
+                    <div class="upload-preview-container" id="edit-preview-aadhar" style="<?= !empty($freezer['image_aadhar_card']) ? 'display:block;' : '' ?>">
+                        <img src="<?= htmlspecialchars($freezer['image_aadhar_card'] ?? '') ?>" alt="Aadhaar Front">
+                    </div>
+                </div>
+
+                <!-- Aadhaar back -->
+                <div class="upload-box">
+                    <input type="file" name="image_aadhar_back" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-aadhar-back">
+                    <div class="upload-title">Aadhaar back</div>
+                    <div class="upload-hint">Store manager ID</div>
+                    <div class="upload-preview-container" id="edit-preview-aadhar-back" style="<?= !empty($freezer['image_aadhar_back']) ? 'display:block;' : '' ?>">
+                        <img src="<?= htmlspecialchars($freezer['image_aadhar_back'] ?? '') ?>" alt="Aadhaar Back">
+                    </div>
+                </div>
+
                 <!-- Left Side -->
                 <div class="upload-box">
                     <input type="file" name="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-left">
@@ -465,8 +504,22 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     const phone = document.getElementById('phone_number');
     if (phone) {
+        function setPhoneErr(on) {
+            const group = phone.closest('.form-group');
+            phone.classList.toggle('is-invalid', on);
+            if (group) group.classList.toggle('has-error', on);
+        }
         phone.addEventListener('input', function () {
-            this.value = this.value.replace(/\D/g, '').slice(0, 10);
+            this.value = (typeof normalizeIndianMobileDigits === 'function')
+                ? normalizeIndianMobileDigits(this.value)
+                : this.value.replace(/\D/g, '').slice(0, 10);
+            const d = this.value;
+            setPhoneErr(d !== '' && !/^[6-9]\d{9}$/.test(d));
+        });
+        phone.addEventListener('blur', function () {
+            if (typeof normalizeIndianMobileDigits === 'function') {
+                this.value = normalizeIndianMobileDigits(this.value);
+            }
         });
     }
     const fssai = document.getElementById('fssai_number');

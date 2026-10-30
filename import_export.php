@@ -19,8 +19,28 @@ if (!empty($_GET['action'])) {
         ImportExportService::streamTemplate();
         exit;
     }
+    if ($action === 'template_csv') {
+        ImportExportService::streamTemplateCsv();
+        exit;
+    }
+    if ($action === 'template_store') {
+        ImportExportService::streamStoreTemplate();
+        exit;
+    }
+    if ($action === 'template_freezer') {
+        ImportExportService::streamFreezerTemplate();
+        exit;
+    }
+    if ($action === 'template_iot') {
+        ImportExportService::streamIotTemplate();
+        exit;
+    }
     if ($action === 'export') {
         ImportExportService::streamExport();
+        exit;
+    }
+    if ($action === 'export_csv') {
+        ImportExportService::streamExportCsv();
         exit;
     }
 }
@@ -63,7 +83,7 @@ require_once __DIR__ . '/includes/header.php';
         <div>
             <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Import / Export Hub</h2>
             <p style="color: #64748b; font-size: 0.875rem; margin-top: 0.25rem;">
-                Admin tools to bulk import Store + Freezer profiles from CSV, or export existing hub data.
+                Admin tools to bulk import Store + Freezer + IoT from one CSV, or export existing hub data.
             </p>
         </div>
     </div>
@@ -113,14 +133,23 @@ require_once __DIR__ . '/includes/header.php';
             </div>
             <div class="card-body">
                 <p style="font-size: 0.875rem; color: #475569; margin-bottom: 1rem;">
-                    Download all Store + Freezer hub records as CSV (same columns as the import template).
+                    Export = full details (full name + short code + GPS/QR/IoT). Same header colors:
+                    <span style="background:#93C5FD;color:#1E3A8A;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">STORE</span>
+                    <span style="background:#FCD34D;color:#78350F;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">FREEZER</span>
+                    <span style="background:#86EFAC;color:#14532D;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">IOT</span>
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
                     <a href="import_export.php?action=export" class="btn btn-primary">
+                        Export all data (.xlsx)
+                    </a>
+                    <a href="import_export.php?action=export_csv" class="btn btn-secondary">
                         Export all data (CSV)
                     </a>
                     <a href="import_export.php?action=template" class="btn btn-secondary">
-                        Download blank template
+                        Download hub Excel (.xlsx)
+                    </a>
+                    <a href="import_export.php?action=template_csv" class="btn btn-secondary">
+                        Download hub CSV
                     </a>
                 </div>
             </div>
@@ -154,6 +183,60 @@ require_once __DIR__ . '/includes/header.php';
                     </button>
                 </form>
             </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top: 1.25rem;">
+        <div class="card-header">
+            <div class="card-title"><span>Download templates (Store / Freezer / IoT)</span></div>
+        </div>
+        <div class="card-body">
+            <p style="font-size: 0.875rem; color: #475569; margin-bottom: 1rem;">
+                Separate sheets optional —
+                prefer <strong>combined hub v3</strong> (Store + Freezer + IoT together).
+                Filter order <strong>Zone → State → City → PIN → location_code</strong>.
+                Files: <code>uploads/import/</code> · <strong>download again</strong> (old files outdated).
+            </p>
+            <div class="form-grid" style="gap: 1rem;">
+                <div class="col-4" style="background:#eff6ff; border:1px solid #93c5fd; border-radius:10px; padding:1rem;">
+                    <div style="font-weight:800; color:#1e3a8a; margin-bottom:0.35rem;">Store template</div>
+                    <p style="font-size:0.8rem; color:#64748b; margin:0 0 0.5rem;">
+                        Store master + photos:
+                    </p>
+                    <p style="font-size:0.75rem; color:#0f172a; margin:0 0 0.85rem; line-height:1.45;">
+                        <code>image_store_front</code><br>
+                        <code>image_aadhar_card</code> (front)<br>
+                        <code>image_aadhar_back</code>
+                    </p>
+                    <a href="import_export.php?action=template_store" class="btn btn-secondary btn-sm">Download Store Excel</a>
+                </div>
+                <div class="col-4" style="background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:1rem;">
+                    <div style="font-weight:800; color:#78350f; margin-bottom:0.35rem;">Freezer template</div>
+                    <p style="font-size:0.8rem; color:#64748b; margin:0 0 0.5rem;">
+                        Freezer ID parts + photos:
+                    </p>
+                    <p style="font-size:0.75rem; color:#0f172a; margin:0 0 0.85rem; line-height:1.45;">
+                        <code>image_left_side</code><br>
+                        <code>image_right_side</code>
+                    </p>
+                    <a href="import_export.php?action=template_freezer" class="btn btn-secondary btn-sm">Download Freezer Excel</a>
+                </div>
+                <div class="col-4" style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:1rem;">
+                    <div style="font-weight:800; color:#14532d; margin-bottom:0.35rem;">IoT template</div>
+                    <p style="font-size:0.8rem; color:#64748b; margin:0 0 0.5rem;">
+                        Device link + photo:
+                    </p>
+                    <p style="font-size:0.75rem; color:#0f172a; margin:0 0 0.85rem; line-height:1.45;">
+                        <code>image_iot_device</code>
+                    </p>
+                    <a href="import_export.php?action=template_iot" class="btn btn-secondary btn-sm">Download IoT Excel</a>
+                </div>
+            </div>
+            <p style="font-size:0.8rem; color:#64748b; margin:1rem 0 0;">
+                <strong>Combined hub v3</strong> (Export card above) = Store + Freezer + IoT in one file:
+                photos + <code>iot_serial</code>, <code>iot_imei</code>, <code>iot_type</code>, <code>iot_owner</code>, <code>iot_model</code>.
+                Blank <code>iot_serial</code> = no IoT device on that row.
+            </p>
         </div>
     </div>
 
@@ -199,19 +282,56 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>store_name</code> *</td><td>Store / outlet name</td></tr>
                         <tr><td><code>address</code> *</td><td>Street address</td></tr>
                         <tr><td><code>city</code> *</td><td>City</td></tr>
-                        <tr><td><code>pincode</code> *</td><td>6-digit PIN (used in Freezer ID)</td></tr>
-                        <tr><td><code>freezer_type</code> *</td><td>e.g. DF / DCF / UDF</td></tr>
-                        <tr><td><code>company_code</code> *</td><td>Brand code e.g. RW</td></tr>
-                        <tr><td><code>model_number</code> *</td><td>Model used in Freezer ID</td></tr>
-                        <tr><td><code>location_code</code> *</td><td>e.g. AMD1, MUM2</td></tr>
+                        <tr><td><code>freezer_type</code> *</td><td>Full name · e.g. <code>Deep Freezer</code> (system → DF in Unique ID)</td></tr>
+                        <tr><td><code>company</code> *</td><td>Full name · e.g. <code>Rockwell</code> (system → RW in Unique ID)</td></tr>
+                        <tr><td><code>model_number</code> *</td><td>ID seq 3 · model in Freezer ID</td></tr>
+                        <tr><td><code>location_code</code></td><td>ID seq 4 · blank = auto from city (Ahmedabad → AMD1)</td></tr>
+                        <tr><td><code>pincode</code> *</td><td>ID seq 5 · 6-digit PIN</td></tr>
+                        <tr><td><code>installation_date</code></td><td>ID seq 6 · YYYY-MM-DD → MMYY</td></tr>
+                        <tr><td><code>unit_sequence</code></td><td>ID seq 7 · e.g. AAA001, AAA002 (order / stickers)</td></tr>
+                        <tr><td><code>unique_freezer_id</code></td><td>Blank = auto from sequence above + QR</td></tr>
                         <tr><td><code>outlet_id</code></td><td>Blank = auto · existing outlet reuses store</td></tr>
-                        <tr><td><code>unique_freezer_id</code></td><td>Blank = auto-generate + QR</td></tr>
                         <tr><td><code>fssai_number</code> / <code>gst_number</code></td><td>Optional compliance IDs</td></tr>
                         <tr><td><code>phone_number</code></td><td>10-digit Indian mobile</td></tr>
-                        <tr><td><code>installation_date</code></td><td>YYYY-MM-DD (default today)</td></tr>
+                        <tr><td><code>image_store_front</code></td><td>Store photo filename in <code>uploads/import/</code></td></tr>
+                        <tr><td><code>image_aadhar_card</code></td><td>Aadhaar front photo filename in <code>uploads/import/</code></td></tr>
+                        <tr><td><code>image_aadhar_back</code></td><td>Aadhaar back photo filename</td></tr>
+                        <tr><td><code>image_left_side</code> / <code>image_right_side</code></td><td>Freezer photos — same folder, exact filename</td></tr>
+                        <tr><td><code>iot_serial</code></td><td>Optional · e.g. <code>RF-IOT-99210</code> (blank = no IoT)</td></tr>
+                        <tr><td><code>iot_imei</code></td><td>Optional IMEI / MAC</td></tr>
+                        <tr><td><code>iot_type</code></td><td>Default <code>Temperature &amp; GPS</code></td></tr>
+                        <tr><td><code>iot_owner</code></td><td><code>ReeferON Own Device</code> / <code>Outsourced Device</code></td></tr>
+                        <tr><td><code>iot_model</code></td><td>Default <code>RF-T100</code></td></tr>
+                        <tr><td><code>image_iot_device</code></td><td>IoT photo filename (optional)</td></tr>
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top: 1.25rem;">
+        <div class="card-header">
+            <div class="card-title"><span>How images link to Store / Freezer</span></div>
+        </div>
+        <div class="card-body" style="font-size: 0.875rem; color: #475569;">
+            <ol style="margin: 0 0 0.85rem 1.1rem; padding: 0; line-height: 1.55;">
+                <li>Copy photos into folder <code>uploads/import/</code> on the server.</li>
+                <li>In the CSV row, put the <strong>exact file name</strong> (not full path):
+                    <ul style="margin: 0.35rem 0 0 1rem;">
+                        <li><code>image_store_front</code> → that store’s front photo</li>
+                        <li><code>image_aadhar_card</code> → Aadhaar front</li>
+                        <li><code>image_aadhar_back</code> → Aadhaar back</li>
+                        <li><code>image_left_side</code> / <code>image_right_side</code> → that freezer’s photos</li>
+                        <li><code>image_iot_device</code> → that IoT device photo</li>
+                    </ul>
+                </li>
+                <li>Import the CSV — each row attaches only the files named on that row (same store/freezer as that row’s data).</li>
+            </ol>
+            <p style="margin: 0; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.75rem; font-size:0.8rem;">
+                Example: row with <code>unit_sequence=AAA001</code> and
+                <code>image_left_side=freezer_AAA001_left.jpg</code> → photo must be
+                <code>uploads/import/freezer_AAA001_left.jpg</code>. Blank image cells = no photo for that row.
+            </p>
         </div>
     </div>
 </div>

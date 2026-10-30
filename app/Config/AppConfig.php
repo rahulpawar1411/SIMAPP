@@ -12,6 +12,8 @@ class AppConfig {
     public const UPLOAD_STORES = self::UPLOAD_DIR . '/stores';
     public const UPLOAD_IOT = self::UPLOAD_DIR . '/iot';
     public const UPLOAD_QR = self::UPLOAD_DIR . '/qrcodes';
+    /** Staging folder for CSV import photos (filename listed in CSV columns) */
+    public const UPLOAD_IMPORT = self::UPLOAD_DIR . '/import';
 
     public const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
     public const ALLOWED_IMAGE_MIMES = [
@@ -45,6 +47,7 @@ class AppConfig {
             self::UPLOAD_STORES,
             self::UPLOAD_IOT,
             self::UPLOAD_QR,
+            self::UPLOAD_IMPORT,
         ];
         foreach ($dirs as $d) {
             if (!is_dir($d)) {

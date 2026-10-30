@@ -18,6 +18,71 @@ class MasterData {
         return $stmt->fetchAll();
     }
 
+    /** Resolve CSV/UI value to freezer type code. Accepts code (DF) or full name (Deep Freezer). */
+    public static function resolveFreezerTypeCode(string $value): ?string {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        $upper = strtoupper($value);
+        foreach (self::getFreezerTypes() as $ft) {
+            if (strtoupper((string)$ft['code']) === $upper) {
+                return strtoupper((string)$ft['code']);
+            }
+            if (strcasecmp((string)$ft['name'], $value) === 0) {
+                return strtoupper((string)$ft['code']);
+            }
+        }
+        // Loose contains match on name
+        foreach (self::getFreezerTypes() as $ft) {
+            if (stripos((string)$ft['name'], $value) !== false || stripos($value, (string)$ft['name']) !== false) {
+                return strtoupper((string)$ft['code']);
+            }
+        }
+        return null;
+    }
+
+    /** Resolve CSV/UI value to brand code. Accepts code (RW) or full name (Rockwell). */
+    public static function resolveBrandCode(string $value): ?string {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        $upper = strtoupper($value);
+        foreach (self::getBrands() as $b) {
+            if (strtoupper((string)$b['code']) === $upper) {
+                return strtoupper((string)$b['code']);
+            }
+            if (strcasecmp((string)$b['name'], $value) === 0) {
+                return strtoupper((string)$b['code']);
+            }
+        }
+        foreach (self::getBrands() as $b) {
+            if (stripos((string)$b['name'], $value) !== false || stripos($value, (string)$b['name']) !== false) {
+                return strtoupper((string)$b['code']);
+            }
+        }
+        return null;
+    }
+
+    public static function freezerTypeName(string $code): string {
+        foreach (self::getFreezerTypes() as $ft) {
+            if (strcasecmp((string)$ft['code'], $code) === 0) {
+                return (string)$ft['name'];
+            }
+        }
+        return $code;
+    }
+
+    public static function brandName(string $code): string {
+        foreach (self::getBrands() as $b) {
+            if (strcasecmp((string)$b['code'], $code) === 0) {
+                return (string)$b['name'];
+            }
+        }
+        return $code;
+    }
+
     /**
      * City → 3-letter location prefix (AMD, BPL, MUM, PUN…).
      * Location codes are PREFIX + zone number: AMD1, AMD2, AMD3.
@@ -63,6 +128,44 @@ class MasterData {
             $codes[] = $prefix . $i;
         }
         return $codes;
+    }
+
+    /** Resolve 3-letter prefix for a city name (master map or first 3 letters). */
+    public static function prefixForCity(string $city): string {
+        $city = trim($city);
+        if ($city === '') {
+            return 'LOC';
+        }
+        $map = self::getCityLocationPrefixes();
+        foreach ($map as $name => $prefix) {
+            if (strcasecmp($name, $city) === 0) {
+                return strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $prefix), 0, 3));
+            }
+        }
+        // Partial match (e.g. "Ahmedabad East")
+        $needle = strtolower($city);
+        foreach ($map as $name => $prefix) {
+            if (str_contains($needle, strtolower($name)) || str_contains(strtolower($name), $needle)) {
+                return strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $prefix), 0, 3));
+            }
+        }
+        $fallback = strtoupper(preg_replace('/[^A-Za-z]/', '', $city));
+        return substr($fallback !== '' ? $fallback : 'LOC', 0, 3);
+    }
+
+    /**
+     * Auto location code from city (e.g. Ahmedabad → AMD1).
+     * If $preferred is a valid PREFIX1/2/3 for that city, keep it.
+     */
+    public static function resolveLocationCodeForCity(string $city, ?string $preferred = null): string {
+        $prefix = self::prefixForCity($city);
+        $codes = self::locationCodesForPrefix($prefix, 3);
+        $preferred = strtoupper(trim((string)$preferred));
+        if ($preferred !== '' && in_array($preferred, $codes, true)) {
+            return $preferred;
+        }
+        // Prefer PREFIX1 when blank / unknown
+        return $codes[0] ?? ($prefix . '1');
     }
 
     public static function getCommonLocationCodes(): array {

@@ -138,16 +138,18 @@ class User {
         $digits = preg_replace('/\D/', '', $raw);
 
         // Strip country / trunk prefixes: +91..., 91..., 0...
-        if (strlen($digits) === 12 && str_starts_with($digits, '91')) {
-            $digits = substr($digits, 2);
+        if (strlen($digits) >= 12 && str_starts_with($digits, '91')) {
+            $digits = substr($digits, -10);
         } elseif (strlen($digits) === 11 && str_starts_with($digits, '0')) {
             $digits = substr($digits, 1);
+        } elseif (strlen($digits) > 10) {
+            $digits = substr($digits, -10);
         }
 
         if (!preg_match('/^[6-9]\d{9}$/', $digits)) {
             return [
                 'success' => false,
-                'error' => 'Phone must be a valid 10-digit Indian mobile number (digits only).',
+                'error' => 'Phone must be a valid 10-digit Indian mobile starting with 6, 7, 8 or 9.',
                 'phone' => null,
             ];
         }

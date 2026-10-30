@@ -1150,6 +1150,61 @@ body {
     left: -9999px;
 }
 
+/* Permission allow / denied popup */
+.perm-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    background: rgba(15, 23, 42, 0.72);
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+.perm-modal.is-open {
+    display: flex;
+}
+.perm-sheet {
+    width: 100%;
+    max-width: 420px;
+    background: #fff;
+    border-radius: 14px;
+    padding: 1.35rem 1.4rem 1.2rem;
+    box-shadow: 0 24px 48px rgba(15, 23, 42, 0.28);
+    border: 1px solid #e2e8f0;
+}
+.perm-sheet h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+}
+.perm-sheet p {
+    margin: 0 0 0.75rem;
+    font-size: 0.88rem;
+    color: #475569;
+    line-height: 1.45;
+}
+.perm-sheet ul {
+    margin: 0 0 1rem;
+    padding-left: 1.15rem;
+    font-size: 0.82rem;
+    color: #64748b;
+    line-height: 1.45;
+}
+.perm-sheet .perm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    justify-content: flex-end;
+}
+.perm-sheet.is-denied h3 { color: #b91c1c; }
+.perm-sheet.is-denied {
+    border-color: #fecaca;
+    background: linear-gradient(180deg, #fff1f2 0%, #ffffff 40%);
+}
+
 .camera-capture-modal {
     display: none;
     position: fixed;

@@ -38,7 +38,7 @@ $sql = "SELECT f.*,
         INNER JOIN `stores` s ON f.store_id = s.id
         LEFT JOIN `iot_devices` iot ON f.id = iot.freezer_id
         WHERE {$whereSql}
-        ORDER BY f.id ASC
+        ORDER BY f.unit_sequence ASC, f.unique_freezer_id ASC, f.id ASC
         LIMIT {$limit}";
 
 $stmt = $pdo->prepare($sql);

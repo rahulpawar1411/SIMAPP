@@ -68,14 +68,14 @@ class Store {
             `fssai_number`, `gst_number`, `address`,
             `city`, `state`, `pincode`, `zone`, `location_type`,
             `latitude`, `longitude`, `gps_accuracy`, `gps_captured_at`,
-            `image_store_front`, `status`, `created_by`
+            `image_store_front`, `image_aadhar_card`, `image_aadhar_back`, `status`, `created_by`
         ) VALUES (
             :outlet_id, :store_name, :customer_name, :distributor_name,
             :contact_person, :phone_number, :email, :aadhar_number,
             :fssai_number, :gst_number, :address,
             :city, :state, :pincode, :zone, :location_type,
             :latitude, :longitude, :gps_accuracy, :gps_captured_at,
-            :image_store_front, :status, :created_by
+            :image_store_front, :image_aadhar_card, :image_aadhar_back, :status, :created_by
         )";
 
         $stmt = $pdo->prepare($sql);
@@ -101,6 +101,8 @@ class Store {
             'gps_accuracy' => !empty($data['gps_accuracy']) ? (float)$data['gps_accuracy'] : null,
             'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : (!empty($data['latitude']) ? date('Y-m-d H:i:s') : null),
             'image_store_front' => $data['image_store_front'] ?? null,
+            'image_aadhar_card' => $data['image_aadhar_card'] ?? null,
+            'image_aadhar_back' => $data['image_aadhar_back'] ?? null,
             'status' => $data['status'] ?? 'Active',
             'created_by' => $data['created_by'] ?? null,
         ]);
@@ -137,6 +139,8 @@ class Store {
             `gps_accuracy` = :gps_accuracy,
             `gps_captured_at` = :gps_captured_at,
             `image_store_front` = COALESCE(:image_store_front, `image_store_front`),
+            `image_aadhar_card` = COALESCE(:image_aadhar_card, `image_aadhar_card`),
+            `image_aadhar_back` = COALESCE(:image_aadhar_back, `image_aadhar_back`),
             `status` = :status
         WHERE `id` = :id";
 
@@ -164,6 +168,8 @@ class Store {
             'gps_accuracy' => !empty($data['gps_accuracy']) ? (float)$data['gps_accuracy'] : null,
             'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : (!empty($data['latitude']) ? date('Y-m-d H:i:s') : null),
             'image_store_front' => $data['image_store_front'] ?? null,
+            'image_aadhar_card' => $data['image_aadhar_card'] ?? null,
+            'image_aadhar_back' => $data['image_aadhar_back'] ?? null,
             'status' => $data['status'] ?? 'Active',
         ]);
     }
@@ -205,14 +211,40 @@ class Store {
         return $stmt->fetchAll();
     }
 
-    public static function generateOutletId(string $city = 'AMD'): string {
-        $pdo = Database::getConnection();
-        $prefix = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $city), 0, 3));
-        if (strlen($prefix) < 3) {
-            $prefix = 'OUT';
+    /**
+     * Auto Store / Outlet ID — same building blocks as Freezer ID location + PIN:
+     * LOCATION_CODE - PINCODE - SEQ
+     * Example: AMD1-380009-0001  (same AMD1 + 380009 style as freezer Unique ID)
+     *
+     * @param string|array $cityOrData City string (legacy) or store fields array
+     */
+    public static function generateOutletId(string|array $cityOrData = 'AMD', string $zone = 'WEST', string $pincode = '', string $locationType = 'Retail Store'): string {
+        $preferredLoc = '';
+        if (is_array($cityOrData)) {
+            $city = (string)($cityOrData['city'] ?? 'AMD');
+            $pincode = (string)($cityOrData['pincode'] ?? $pincode);
+            $preferredLoc = (string)($cityOrData['location_code'] ?? '');
+        } else {
+            $city = $cityOrData;
         }
-        $prefix = 'W-' . $prefix;
 
+        // Same as freezer: Ahmedabad → AMD1 / AMD2 / AMD3
+        $locationCode = MasterData::resolveLocationCodeForCity($city, $preferredLoc !== '' ? $preferredLoc : null);
+
+        $pinDigits = preg_replace('/\D/', '', $pincode);
+        // Full 6-digit PIN like freezer Unique ID (…-380009-…)
+        if (strlen($pinDigits) === 6) {
+            $pinPart = $pinDigits;
+        } elseif (strlen($pinDigits) >= 3) {
+            $pinPart = str_pad(substr($pinDigits, -6), 6, '0', STR_PAD_LEFT);
+        } else {
+            $pinPart = '000000';
+        }
+
+        // AMD1-380009
+        $prefix = strtoupper($locationCode) . '-' . $pinPart;
+
+        $pdo = Database::getConnection();
         $stmt = $pdo->prepare("SELECT `outlet_id` FROM `stores` WHERE `outlet_id` LIKE :p ORDER BY `id` DESC LIMIT 1");
         $stmt->execute(['p' => $prefix . '-%']);
         $last = $stmt->fetchColumn();
@@ -220,9 +252,9 @@ class Store {
         if ($last && preg_match('/-(\d+)$/', $last, $m)) {
             $nextNum = ((int)$m[1]) + 1;
         } else {
-            $nextNum = 20540;
+            $nextNum = 1;
         }
 
-        return $prefix . '-' . $nextNum;
+        return $prefix . '-' . str_pad((string)$nextNum, 4, '0', STR_PAD_LEFT);
     }
 }

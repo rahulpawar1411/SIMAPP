@@ -4,6 +4,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
+use App\Models\FreezerLifecycle;
 use App\Models\IoTDevice;
 use App\Services\QRCodeService;
 
@@ -42,6 +43,12 @@ if (AppConfig::IOT_ENABLED) {
     $latestTelemetry = IoTDevice::getLatestTelemetry($freezer['id']);
 }
 
+FreezerLifecycle::ensureOpenPlacement($freezer);
+$placementHistory = FreezerLifecycle::placementHistory((int)$freezer['id']);
+$kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
+$kycHistory = FreezerLifecycle::kycHistory((int)$freezer['id'], 50);
+$lifecycleTimeline = FreezerLifecycle::buildTimeline((int)$freezer['id']);
+
 $pageTitle = 'Freezer Profile: ' . $freezer['unique_freezer_id'];
 require_once __DIR__ . '/includes/header.php';
 ?>
@@ -67,6 +74,15 @@ require_once __DIR__ . '/includes/header.php';
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <a href="profiles.php" class="btn btn-secondary">
             &larr; Back to List
+        </a>
+        <a href="freezer_transfer.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-outline">
+            Transfer store
+        </a>
+        <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-outline">
+            KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?>
+        </a>
+        <a href="profile_export.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline">
+            Export data
         </a>
         <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline" target="_blank">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -125,6 +141,23 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
         </div>
+    </div>
+<?php endif; ?>
+
+<?php if (!empty($_GET['transferred'])): ?>
+    <div class="alert alert-success" style="margin-bottom:1rem;">
+        Freezer transferred. Placement history updated. Unique Freezer ID unchanged.
+        <?php if (!empty($_GET['new_outlet'])): ?>
+            New store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
+<?php if (!empty($_GET['kyc'])): ?>
+    <div class="alert alert-success" style="margin-bottom:1rem;">
+        KYC verification saved for this cycle.
+        <?php if (!empty($_GET['new_outlet'])): ?>
+            New outlet created with Store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
+        <?php endif; ?>
     </div>
 <?php endif; ?>
 
@@ -395,9 +428,33 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                     </div>
 
+                    <!-- Image: Manager Aadhaar front -->
+                    <div>
+                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">2. AADHAAR FRONT</div>
+                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
+                            <?php if (!empty($freezer['image_aadhar_card']) && file_exists(__DIR__ . '/' . $freezer['image_aadhar_card'])): ?>
+                                <img src="<?= htmlspecialchars($freezer['image_aadhar_card']) ?>" alt="Aadhaar Front" class="lightbox-trigger" data-caption="Aadhaar Front - <?= htmlspecialchars($freezer['contact_person'] ?? $freezer['store_name']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
+                            <?php else: ?>
+                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Aadhaar Front</div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- Image: Manager Aadhaar back -->
+                    <div>
+                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">3. AADHAAR BACK</div>
+                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
+                            <?php if (!empty($freezer['image_aadhar_back']) && file_exists(__DIR__ . '/' . $freezer['image_aadhar_back'])): ?>
+                                <img src="<?= htmlspecialchars($freezer['image_aadhar_back']) ?>" alt="Aadhaar Back" class="lightbox-trigger" data-caption="Aadhaar Back - <?= htmlspecialchars($freezer['contact_person'] ?? $freezer['store_name']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
+                            <?php else: ?>
+                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Aadhaar Back</div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
                     <!-- Image 1: Left Side -->
                     <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">2. FREEZER LEFT SIDE</div>
+                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">4. FREEZER LEFT SIDE</div>
                         <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
                             <?php if (!empty($freezer['image_left_side']) && file_exists(__DIR__ . '/' . $freezer['image_left_side'])): ?>
                                 <img src="<?= htmlspecialchars($freezer['image_left_side']) ?>" alt="Left Side" class="lightbox-trigger" data-caption="Freezer Left Side - <?= htmlspecialchars($freezer['unique_freezer_id']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
@@ -409,7 +466,7 @@ require_once __DIR__ . '/includes/header.php';
 
                     <!-- Image 2: Right Side -->
                     <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">3. FREEZER RIGHT SIDE</div>
+                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">5. FREEZER RIGHT SIDE</div>
                         <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
                             <?php if (!empty($freezer['image_right_side']) && file_exists(__DIR__ . '/' . $freezer['image_right_side'])): ?>
                                 <img src="<?= htmlspecialchars($freezer['image_right_side']) ?>" alt="Right Side" class="lightbox-trigger" data-caption="Freezer Right Side - <?= htmlspecialchars($freezer['unique_freezer_id']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
@@ -422,7 +479,7 @@ require_once __DIR__ . '/includes/header.php';
                     <?php if (AppConfig::IOT_ENABLED): ?>
                     <!-- Image 3: IoT Device -->
                     <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">4. IOT DEVICE ATTACHMENT</div>
+                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">6. IOT DEVICE ATTACHMENT</div>
                         <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
                             <?php if (!empty($freezer['image_iot_device']) && file_exists(__DIR__ . '/' . $freezer['image_iot_device'])): ?>
                                 <img src="<?= htmlspecialchars($freezer['image_iot_device']) ?>" alt="IoT Device" class="lightbox-trigger" data-caption="IoT Device Attachment - Serial: <?= htmlspecialchars($freezer['device_serial'] ?? 'N/A') ?>" style="width: 100%; height: 100%; object-fit: cover;">
@@ -435,6 +492,196 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- ========== BOTTOM: Store history ========== -->
+<div class="card" style="margin-top: 1.5rem; margin-bottom: 1.5rem;" id="store-history">
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+        <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span>Store history</span>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:0.5rem;">
+            <a href="freezer_transfer.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Transfer store</a>
+            <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary btn-sm">
+                <?= $kycStatus['due'] ? 'Complete KYC now' : 'Add KYC' ?>
+            </a>
+            <a href="profile_export.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm">Export data</a>
+        </div>
+    </div>
+    <div class="card-body">
+        <?php if ($kycStatus['due']): ?>
+            <div class="alert alert-warning" style="margin-bottom:1rem;">
+                <strong><?= htmlspecialchars($kycStatus['cycle']['label']) ?></strong> KYC due
+                (<?= htmlspecialchars($kycStatus['cycle']['window']) ?>).
+                Current: <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>
+                — <?= htmlspecialchars($freezer['store_name']) ?>.
+            </div>
+        <?php else: ?>
+            <div class="alert alert-success" style="margin-bottom:1rem;">
+                <strong><?= htmlspecialchars($kycStatus['cycle']['label']) ?></strong> KYC done —
+                <?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?>
+                on <?= htmlspecialchars($kycStatus['current']['verified_at'] ?? '') ?>
+                at <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>.
+            </div>
+        <?php endif; ?>
+
+        <h3 style="font-size:0.95rem; font-weight:800; color:#0f172a; margin:0 0 0.75rem;">
+            Where this freezer was (stores over time)
+        </h3>
+        <p style="font-size:0.8rem; color:#64748b; margin-bottom:1rem;">
+            Unique Freezer ID same rehti hai. Har naye outlet pe nayi Store ID milti hai.
+        </p>
+
+        <?php if ($placementHistory): ?>
+            <div style="overflow-x:auto; margin-bottom:1.25rem;">
+                <table class="data-table" style="font-size:0.82rem;">
+                    <thead>
+                        <tr>
+                            <th>Store ID</th>
+                            <th>Store name</th>
+                            <th>City / PIN</th>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($placementHistory as $p): ?>
+                            <tr style="<?= empty($p['ended_at']) ? 'background:#f0f9ff;' : '' ?>">
+                                <td style="font-family:var(--font-mono); font-weight:700; color:#0284c7;"><?= htmlspecialchars($p['outlet_id']) ?></td>
+                                <td>
+                                    <strong><?= htmlspecialchars($p['store_name']) ?></strong>
+                                    <?php if (!empty($p['contact_person'])): ?>
+                                        <div style="font-size:0.72rem; color:#94a3b8;"><?= htmlspecialchars($p['contact_person']) ?></div>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?= htmlspecialchars(trim(($p['city'] ?? '') . ' ' . ($p['pincode'] ?? ''))) ?></td>
+                                <td><?= htmlspecialchars($p['started_at']) ?></td>
+                                <td><?= $p['ended_at'] ? htmlspecialchars($p['ended_at']) : '<span class="badge badge-success">Current</span>' ?></td>
+                                <td><?= htmlspecialchars($p['transfer_reason'] ?? '—') ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php else: ?>
+            <p style="color:#94a3b8; margin-bottom:1rem;">No store placement history yet.</p>
+        <?php endif; ?>
+
+        <h3 style="font-size:0.95rem; font-weight:800; color:#0f172a; margin:0 0 0.75rem;">
+            Full timeline (store moves + KYC)
+        </h3>
+
+        <?php if (!$lifecycleTimeline): ?>
+            <p style="color:#94a3b8;">No timeline events yet.</p>
+        <?php else: ?>
+            <div class="lifecycle-timeline">
+                <?php foreach ($lifecycleTimeline as $ev): ?>
+                    <?php
+                    $dotColor = match ($ev['type']) {
+                        'kyc' => ($ev['result'] === 'FAIL' ? '#dc2626' : ($ev['result'] === 'PENDING' ? '#d97706' : '#059669')),
+                        'placement_current' => '#0284c7',
+                        'left_store' => '#94a3b8',
+                        default => '#6366f1',
+                    };
+                    $typeLabel = match ($ev['type']) {
+                        'kyc' => 'KYC',
+                        'placement_current' => 'CURRENT',
+                        'left_store' => 'LEFT',
+                        'placement' => 'PLACED',
+                        default => strtoupper($ev['type']),
+                    };
+                    ?>
+                    <div class="lifecycle-item" style="display:flex; gap:0.85rem; padding:0.85rem 0; border-bottom:1px solid #e2e8f0;">
+                        <div style="width:4.5rem; flex-shrink:0; text-align:right;">
+                            <div style="font-size:0.78rem; font-weight:700; color:#0f172a;"><?= htmlspecialchars($ev['date']) ?></div>
+                            <?php if (!empty($ev['end_date'])): ?>
+                                <div style="font-size:0.7rem; color:#94a3b8;">→ <?= htmlspecialchars($ev['end_date']) ?></div>
+                            <?php endif; ?>
+                        </div>
+                        <div style="position:relative; width:14px; flex-shrink:0;">
+                            <div style="width:12px; height:12px; border-radius:50%; background:<?= $dotColor ?>; margin-top:0.3rem; box-shadow:0 0 0 3px <?= $dotColor ?>22;"></div>
+                        </div>
+                        <div style="flex:1; min-width:0;">
+                            <div style="display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem; margin-bottom:0.25rem;">
+                                <span class="badge" style="background:<?= $dotColor ?>18; color:<?= $dotColor ?>; border:1px solid <?= $dotColor ?>44;"><?= $typeLabel ?></span>
+                                <strong style="font-size:0.9rem;"><?= htmlspecialchars($ev['title']) ?></strong>
+                                <?php if (!empty($ev['is_new_outlet'])): ?>
+                                    <span class="badge badge-warning">New outlet</span>
+                                <?php endif; ?>
+                                <?php if (!empty($ev['is_current'])): ?>
+                                    <span class="badge badge-success">Here now</span>
+                                <?php endif; ?>
+                                <?php if (!empty($ev['result'])): ?>
+                                    <span class="badge <?= $ev['result'] === 'PASS' ? 'badge-success' : ($ev['result'] === 'FAIL' ? 'badge-danger' : 'badge-warning') ?>">
+                                        <?= htmlspecialchars($ev['result']) ?>
+                                    </span>
+                                <?php endif; ?>
+                            </div>
+                            <div style="font-size:0.875rem; color:#0f172a;">
+                                <span style="font-family:var(--font-mono); font-weight:700; color:#0284c7;"><?= htmlspecialchars($ev['outlet_id']) ?></span>
+                                · <?= htmlspecialchars($ev['store_name']) ?>
+                                <?php if ($ev['city'] !== ''): ?>
+                                    · <?= htmlspecialchars($ev['city']) ?><?= $ev['pincode'] !== '' ? ' ' . htmlspecialchars($ev['pincode']) : '' ?>
+                                <?php endif; ?>
+                            </div>
+                            <?php if ($ev['reason'] !== ''): ?>
+                                <div style="font-size:0.78rem; color:#475569; margin-top:0.2rem;">
+                                    Reason: <?= htmlspecialchars($ev['reason']) ?>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($ev['type'] === 'kyc' && (!empty($ev['image_store_front']) || !empty($ev['image_freezer']))): ?>
+                                <div style="display:flex; gap:0.5rem; margin-top:0.45rem; flex-wrap:wrap;">
+                                    <?php if (!empty($ev['image_store_front']) && file_exists(__DIR__ . '/' . $ev['image_store_front'])): ?>
+                                        <img src="<?= htmlspecialchars($ev['image_store_front']) ?>" alt="KYC store" class="lightbox-trigger" data-caption="KYC store <?= htmlspecialchars($ev['cycle'] ?? '') ?>" style="height:52px; width:72px; object-fit:cover; border-radius:6px; border:1px solid #e2e8f0;">
+                                    <?php endif; ?>
+                                    <?php if (!empty($ev['image_freezer']) && file_exists(__DIR__ . '/' . $ev['image_freezer'])): ?>
+                                        <img src="<?= htmlspecialchars($ev['image_freezer']) ?>" alt="KYC freezer" class="lightbox-trigger" data-caption="KYC freezer <?= htmlspecialchars($ev['cycle'] ?? '') ?>" style="height:52px; width:72px; object-fit:cover; border-radius:6px; border:1px solid #e2e8f0;">
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($kycHistory): ?>
+            <details style="margin-top:1.25rem;">
+                <summary style="cursor:pointer; font-weight:700; font-size:0.85rem; color:#334155;">KYC table (all cycles)</summary>
+                <div style="overflow-x:auto; margin-top:0.75rem;">
+                    <table class="data-table" style="font-size:0.78rem;">
+                        <thead>
+                            <tr>
+                                <th>Cycle</th>
+                                <th>Date</th>
+                                <th>Result</th>
+                                <th>Store ID</th>
+                                <th>Store / City</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($kycHistory as $k): ?>
+                                <tr>
+                                    <td><?= (int)$k['cycle_year'] ?>-H<?= (int)$k['cycle_half'] ?></td>
+                                    <td><?= htmlspecialchars($k['verified_at']) ?></td>
+                                    <td><?= htmlspecialchars($k['result']) ?></td>
+                                    <td style="font-family:var(--font-mono);"><?= htmlspecialchars($k['outlet_id']) ?></td>
+                                    <td><?= htmlspecialchars($k['store_name'] . ' · ' . ($k['city'] ?? '')) ?></td>
+                                    <td><?= htmlspecialchars($k['notes'] ?? '—') ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        <?php endif; ?>
     </div>
 </div>
 

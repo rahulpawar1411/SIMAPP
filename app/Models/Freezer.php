@@ -99,6 +99,16 @@ class Freezer {
             ]);
         }
 
+        // 4b. Open placement history (freezer may later move to another store)
+        FreezerLifecycle::openPlacement(
+            $freezerId,
+            (int)$data['store_id'],
+            $data['installation_date'] ?? date('Y-m-d'),
+            $data['created_by'] ?? null,
+            'Initial placement',
+            'Created with profile'
+        );
+
         // 5. Add Audit Log
         self::logAudit('CREATE_PROFILE', $freezerId, $uniqueId, "Freezer {$uniqueId} created for store ID {$data['store_id']}");
 
@@ -230,7 +240,7 @@ class Freezer {
                        s.pincode as store_pincode, s.zone as store_zone, s.location_type,
                        s.latitude as store_latitude, s.longitude as store_longitude,
                        s.gps_accuracy as store_gps_accuracy, s.gps_captured_at as store_gps_captured_at,
-                       s.image_store_front,
+                       s.image_store_front, s.image_aadhar_card, s.image_aadhar_back,
                        ft.name as type_name,
                        b.name as brand_name,
                        iot.device_serial, iot.imei_or_mac, iot.device_type, iot.device_owner,

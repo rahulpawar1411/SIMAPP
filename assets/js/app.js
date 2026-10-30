@@ -14,23 +14,288 @@ document.addEventListener('DOMContentLoaded', function () {
     initLightbox();
 });
 
+// -------------------------------------------------------------
+// Camera / Location permission popups
+// -------------------------------------------------------------
+function ensurePermModal() {
+    let modal = document.getElementById('perm-access-modal');
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = 'perm-access-modal';
+    modal.className = 'perm-modal';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+        <div class="perm-sheet" role="dialog" aria-modal="true" aria-labelledby="perm-title">
+            <h3 id="perm-title">Permission required</h3>
+            <p id="perm-body"></p>
+            <ul id="perm-steps" hidden></ul>
+            <div class="perm-actions">
+                <button type="button" class="btn btn-secondary" id="perm-cancel">Not now</button>
+                <button type="button" class="btn btn-primary" id="perm-allow">Allow</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    return modal;
+}
+
+function closePermModal() {
+    const modal = document.getElementById('perm-access-modal');
+    if (!modal) return;
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+/**
+ * Show permission prompt. Resolves true if user taps Allow, false if cancel.
+ * mode: 'ask' | 'denied'
+ */
+function showPermissionPopup(options) {
+    const opts = options || {};
+    const mode = opts.mode || 'ask';
+    const title = opts.title || 'Permission required';
+    const body = opts.body || 'Please allow access to continue.';
+    const steps = opts.steps || [];
+    const allowLabel = opts.allowLabel || (mode === 'denied' ? 'Try again' : 'Allow');
+    const cancelLabel = opts.cancelLabel || 'Not now';
+
+    const modal = ensurePermModal();
+    const sheet = modal.querySelector('.perm-sheet');
+    const titleEl = modal.querySelector('#perm-title');
+    const bodyEl = modal.querySelector('#perm-body');
+    const stepsEl = modal.querySelector('#perm-steps');
+    const allowBtn = modal.querySelector('#perm-allow');
+    const cancelBtn = modal.querySelector('#perm-cancel');
+
+    sheet.classList.toggle('is-denied', mode === 'denied');
+    titleEl.textContent = title;
+    bodyEl.textContent = body;
+    if (steps.length) {
+        stepsEl.hidden = false;
+        stepsEl.innerHTML = steps.map(function (s) { return '<li>' + s + '</li>'; }).join('');
+    } else {
+        stepsEl.hidden = true;
+        stepsEl.innerHTML = '';
+    }
+    allowBtn.textContent = allowLabel;
+    cancelBtn.textContent = cancelLabel;
+
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+
+    return new Promise(function (resolve) {
+        const finish = function (ok) {
+            allowBtn.onclick = null;
+            cancelBtn.onclick = null;
+            modal.onclick = null;
+            closePermModal();
+            resolve(ok);
+        };
+        allowBtn.onclick = function () { finish(true); };
+        cancelBtn.onclick = function () { finish(false); };
+        modal.onclick = function (e) {
+            if (e.target === modal) finish(false);
+        };
+    });
+}
+
+async function queryBrowserPermission(name) {
+    try {
+        if (!navigator.permissions || !navigator.permissions.query) return 'prompt';
+        const status = await navigator.permissions.query({ name: name });
+        return status.state || 'prompt';
+    } catch (e) {
+        return 'prompt';
+    }
+}
+
+function geoErrorMessage(err) {
+    if (!err) return 'Unable to get location.';
+    if (err.code === 1 || err.name === 'NotAllowedError') {
+        return 'Location permission is blocked. Please allow Location for this site.';
+    }
+    if (err.code === 2) return 'GPS signal unavailable. Turn on Location / GPS and try again.';
+    if (err.code === 3) return 'Location request timed out. Move outdoors and try again.';
+    return err.message || 'Unable to get location.';
+}
+
+function cameraErrorMessage(err) {
+    if (!err) return 'Unable to open camera.';
+    const name = err.name || '';
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        return 'Camera permission is blocked. Please allow Camera for this site.';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        return 'No camera found on this device.';
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+        return 'Camera is in use by another app. Close it and try again.';
+    }
+    return err.message || 'Unable to open camera.';
+}
+
+/**
+ * Ask for location if needed. Returns true when we can call geolocation.
+ */
+async function ensureLocationPermission() {
+    if (!navigator.geolocation) {
+        await showPermissionPopup({
+            mode: 'denied',
+            title: 'Location not supported',
+            body: 'This browser does not support GPS / location access.',
+            allowLabel: 'OK',
+            cancelLabel: 'Close'
+        });
+        return false;
+    }
+
+    const state = await queryBrowserPermission('geolocation');
+    if (state === 'granted') return true;
+
+    if (state === 'denied') {
+        const retry = await showPermissionPopup({
+            mode: 'denied',
+            title: 'Allow Location',
+            body: 'Location is blocked for this site. Enable it to capture GPS on Store Front photos and stamps.',
+            steps: [
+                'Tap the lock / info icon in the browser address bar',
+                'Set Location to Allow',
+                'Reload the page, then try again'
+            ],
+            allowLabel: 'I enabled it — Try again',
+            cancelLabel: 'Cancel'
+        });
+        return retry;
+    }
+
+    // prompt — show our explain dialog, then browser prompt on Allow
+    const ok = await showPermissionPopup({
+        mode: 'ask',
+        title: 'Allow Location access?',
+        body: 'ReeferON needs your location to stamp GPS on photos and auto-fill store address / PIN.',
+        steps: [
+            'Tap Allow on the next browser popup',
+            'Keep Location / GPS ON on your phone'
+        ],
+        allowLabel: 'Allow Location',
+        cancelLabel: 'Not now'
+    });
+    return ok;
+}
+
+/**
+ * Ask for camera if needed. Returns true when getUserMedia may proceed.
+ */
+async function ensureCameraPermission() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        await showPermissionPopup({
+            mode: 'denied',
+            title: 'Camera not supported',
+            body: 'This browser cannot open the camera. Try Chrome / Safari on your phone.',
+            allowLabel: 'OK',
+            cancelLabel: 'Close'
+        });
+        return false;
+    }
+
+    // Permissions API name varies: 'camera' (Chrome)
+    const state = await queryBrowserPermission('camera');
+    if (state === 'granted') return true;
+
+    if (state === 'denied') {
+        const retry = await showPermissionPopup({
+            mode: 'denied',
+            title: 'Allow Camera',
+            body: 'Camera is blocked for this site. Enable it to capture Store Front and freezer photos.',
+            steps: [
+                'Tap the lock / info icon in the browser address bar',
+                'Set Camera to Allow',
+                'Reload the page, then try again'
+            ],
+            allowLabel: 'I enabled it — Try again',
+            cancelLabel: 'Cancel'
+        });
+        return retry;
+    }
+
+    const ok = await showPermissionPopup({
+        mode: 'ask',
+        title: 'Allow Camera access?',
+        body: 'ReeferON needs the camera to capture Store Front and freezer photos with GPS stamp.',
+        steps: [
+            'Tap Allow on the next browser popup',
+            'Prefer the rear camera for clear store photos'
+        ],
+        allowLabel: 'Allow Camera',
+        cancelLabel: 'Not now'
+    });
+    return ok;
+}
+
+async function ensureCameraAndLocationPermissions() {
+    const locOk = await ensureLocationPermission();
+    if (!locOk) return { camera: false, location: false };
+
+    const camOk = await ensureCameraPermission();
+    return { camera: camOk, location: locOk };
+}
+
+/**
+ * Normalize to 10-digit Indian mobile (no +91 / 0 prefix).
+ * Handles paste/autofill like +91XXXXXXXXXX, 91XXXXXXXXXX, 0XXXXXXXXXX.
+ */
+function normalizeIndianMobileDigits(value) {
+    let digits = String(value || '').replace(/\D/g, '');
+    if (digits.length >= 12 && digits.indexOf('91') === 0) {
+        digits = digits.slice(-10);
+    } else if (digits.length === 11 && digits.charAt(0) === '0') {
+        digits = digits.slice(1);
+    } else if (digits.length > 10) {
+        digits = digits.slice(-10);
+    }
+    return digits.slice(0, 10);
+}
+
+function isValidIndianMobile(value) {
+    const digits = normalizeIndianMobileDigits(value);
+    if (digits === '') return true; // optional empty
+    return /^[6-9]\d{9}$/.test(digits);
+}
+
 // +91 prefix fields: exactly 10 digits (6–9 start)
 function initIndianPhoneInputs() {
     document.querySelectorAll('#phone_number, #phone').forEach(function (phoneInput) {
         phoneInput.setAttribute('maxlength', '10');
         phoneInput.setAttribute('inputmode', 'numeric');
+        phoneInput.setAttribute('autocomplete', 'tel-national');
+        // Avoid cryptic browser pattern tooltips — we validate in JS
+        phoneInput.removeAttribute('pattern');
+        phoneInput.removeAttribute('required');
+
+        // Normalize existing/autofilled value once
+        if (phoneInput.value) {
+            phoneInput.value = normalizeIndianMobileDigits(phoneInput.value);
+        }
 
         phoneInput.addEventListener('input', function () {
-            this.value = this.value.replace(/\D/g, '').slice(0, 10);
+            const caret = this.selectionStart;
+            const before = this.value;
+            this.value = normalizeIndianMobileDigits(this.value);
+            // Keep caret reasonable after strip
+            if (typeof caret === 'number' && before.length === this.value.length) {
+                try { this.setSelectionRange(caret, caret); } catch (e) { /* ignore */ }
+            }
+        });
+
+        phoneInput.addEventListener('blur', function () {
+            this.value = normalizeIndianMobileDigits(this.value);
         });
 
         phoneInput.addEventListener('paste', function (e) {
             e.preventDefault();
             const text = (e.clipboardData || window.clipboardData).getData('text') || '';
-            let digits = text.replace(/\D/g, '');
-            if (digits.length === 12 && digits.indexOf('91') === 0) digits = digits.slice(2);
-            if (digits.length === 11 && digits.charAt(0) === '0') digits = digits.slice(1);
-            this.value = digits.slice(0, 10);
+            this.value = normalizeIndianMobileDigits(text);
             this.dispatchEvent(new Event('input', { bubbles: true }));
         });
     });
@@ -606,11 +871,9 @@ function initGpsCapture() {
 
     if (!captureBtn) return;
 
-    captureBtn.addEventListener('click', function () {
-        if (!navigator.geolocation) {
-            alert('Geolocation is not supported by your browser.');
-            return;
-        }
+    captureBtn.addEventListener('click', async function () {
+        const allowed = await ensureLocationPermission();
+        if (!allowed) return;
 
         if (statusPill) {
             statusPill.innerHTML = 'Getting location…';
@@ -633,28 +896,31 @@ function initGpsCapture() {
                 captureBtn.disabled = false;
                 captureBtn.innerHTML = 'Update GPS Location';
             },
-            function (error) {
+            async function (error) {
                 captureBtn.disabled = false;
                 captureBtn.innerHTML = originalHtml || 'Capture GPS Location Now';
-                let msg = 'Unable to retrieve location.';
-                switch (error.code) {
-                    case error.PERMISSION_DENIED:
-                        msg = 'GPS permission denied. Please allow location access.';
-                        break;
-                    case error.POSITION_UNAVAILABLE:
-                        msg = 'GPS signal unavailable. Please ensure location services are enabled.';
-                        break;
-                    case error.TIMEOUT:
-                        msg = 'GPS request timed out.';
-                        break;
-                }
+                const msg = geoErrorMessage(error);
                 setGpsPlaceText(msg);
                 if (statusPill) {
                     statusPill.innerHTML = '⚠️ Failed';
                     statusPill.style.color = '#dc2626';
                     statusPill.style.backgroundColor = '#fee2e2';
                 }
-                alert(msg);
+                await showPermissionPopup({
+                    mode: 'denied',
+                    title: 'Location needed',
+                    body: msg,
+                    steps: error && error.code === 1 ? [
+                        'Tap the lock / info icon in the address bar',
+                        'Set Location to Allow',
+                        'Reload and tap Capture GPS again'
+                    ] : [
+                        'Turn on Location / GPS on your phone',
+                        'Try again outdoors for a stronger signal'
+                    ],
+                    allowLabel: 'Try again',
+                    cancelLabel: 'Close'
+                });
             },
             {
                 enableHighAccuracy: true,
@@ -708,22 +974,35 @@ function formatGpsStampHeader(address) {
     return [city, state, country].filter(Boolean).join(', ') || 'Location';
 }
 
+/** Short street line for stamp — full Nominatim display_name is too long for panel. */
 function formatGpsStampAddress(data) {
     if (!data) return '';
-    if (data.display_name) return data.display_name;
+    const a = data.address || {};
+    const parts = [
+        a.house_number,
+        a.road || a.pedestrian || a.footway || a.path,
+        a.neighbourhood || a.suburb || a.quarter || a.residential,
+        a.city || a.town || a.village || a.municipality,
+        a.postcode
+    ].filter(Boolean);
+    if (parts.length) return parts.join(', ');
+    if (data.display_name) {
+        return String(data.display_name).split(',').slice(0, 4).join(',').trim();
+    }
     return formatPlaceLabel(data);
 }
 
 function formatGpsStampTimestamp(date) {
     const d = date || new Date();
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const day = days[d.getDay()];
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const yyyy = d.getFullYear();
     let h = d.getHours();
     const min = String(d.getMinutes()).padStart(2, '0');
-    const ampm = h >= 12 ? 'PM' : 'AM';
+    const sec = String(d.getSeconds()).padStart(2, '0');
+    const ampm = h >= 12 ? 'pm' : 'am';
     h = h % 12;
     if (h === 0) h = 12;
     const hh = String(h).padStart(2, '0');
@@ -732,7 +1011,18 @@ function formatGpsStampTimestamp(date) {
     const abs = Math.abs(offsetMin);
     const oh = String(Math.floor(abs / 60)).padStart(2, '0');
     const om = String(abs % 60).padStart(2, '0');
-    return `${day}, ${dd}/${mm}/${yyyy} ${hh}:${min} ${ampm} GMT ${sign}${oh}:${om}`;
+    // Compact so it fits inside the stamp panel on phone photos
+    return `${day} ${dd}/${mm}/${yyyy}  ${hh}:${min}:${sec} ${ampm}  GMT${sign}${oh}:${om}`;
+}
+
+function canvasFitText(ctx, text, maxWidth) {
+    let t = String(text || '');
+    if (!t) return '';
+    if (ctx.measureText(t).width <= maxWidth) return t;
+    while (t.length > 4 && ctx.measureText(t + '…').width > maxWidth) {
+        t = t.slice(0, -1);
+    }
+    return t + '…';
 }
 
 function canvasWrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
@@ -753,14 +1043,8 @@ function canvasWrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
         }
     }
     if (line && lines.length < maxLines) lines.push(line);
-    if (lines.length === maxLines) {
-        let last = lines[maxLines - 1];
-        while (last.length > 4 && ctx.measureText(last + '…').width > maxWidth) {
-            last = last.slice(0, -1);
-        }
-        if (ctx.measureText(last).width > maxWidth * 0.95) {
-            lines[maxLines - 1] = last.replace(/\s+\S*$/, '') + '…';
-        }
+    if (lines.length === maxLines && lines.length) {
+        lines[maxLines - 1] = canvasFitText(ctx, lines[maxLines - 1], maxWidth);
     }
     lines.forEach((ln, i) => ctx.fillText(ln, x, y + i * lineHeight));
     return lines.length || 1;
@@ -776,7 +1060,17 @@ function loadImageFromUrl(url) {
     });
 }
 
-function loadImageFromBlob(blob) {
+async function loadImageFromBlob(blob) {
+    // Honor EXIF orientation so stamp sits correctly on phone photos
+    if (typeof createImageBitmap === 'function') {
+        try {
+            return await createImageBitmap(blob, { imageOrientation: 'from-image' });
+        } catch (e) {
+            try {
+                return await createImageBitmap(blob);
+            } catch (e2) { /* fall through */ }
+        }
+    }
     return new Promise((resolve, reject) => {
         const url = URL.createObjectURL(blob);
         const img = new Image();
@@ -794,6 +1088,7 @@ function loadImageFromBlob(blob) {
 
 /**
  * Stamps GPS Map Camera overlay (map + place + lat/lng + time) onto a photo blob.
+ * Font sizes are capped for high-res phone cameras so text stays inside the panel.
  */
 async function stampGpsOverlayOnBlob(blob, lat, lng) {
     if (!blob || typeof lat !== 'number' || typeof lng !== 'number') {
@@ -807,9 +1102,9 @@ async function stampGpsOverlayOnBlob(blob, lat, lng) {
         console.warn('GPS stamp geocode failed', e);
     }
 
-    const header = formatGpsStampHeader(geo && geo.address) + ' 🇮🇳';
+    const headerRaw = formatGpsStampHeader(geo && geo.address) + ' 🇮🇳';
     const address = formatGpsStampAddress(geo) || 'Address unavailable';
-    const coords = `Lat ${Number(lat).toFixed(6)}°  Long ${Number(lng).toFixed(6)}°`;
+    const coords = `Lat ${Number(lat).toFixed(6)}°   Long ${Number(lng).toFixed(6)}°`;
     const when = formatGpsStampTimestamp(new Date());
 
     let mapImg = null;
@@ -822,32 +1117,85 @@ async function stampGpsOverlayOnBlob(blob, lat, lng) {
     }
 
     const photo = await loadImageFromBlob(blob);
-    const w = photo.naturalWidth || photo.width;
-    const h = photo.naturalHeight || photo.height;
+    const w = photo.width || photo.naturalWidth;
+    const h = photo.height || photo.naturalHeight;
+    if (!w || !h) return blob;
+
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(photo, 0, 0, w, h);
 
-    // Overlay panel (bottom) — GPS Map Camera style
-    const pad = Math.max(12, Math.round(w * 0.018));
-    const panelH = Math.max(120, Math.round(h * 0.22));
-    const panelW = w - pad * 2;
-    const panelX = pad;
-    const panelY = h - panelH - pad;
-    const radius = Math.max(10, Math.round(w * 0.012));
-    const mapSize = Math.min(panelH - pad * 0.6, Math.round(panelW * 0.28));
+    // Larger stamp for readability — still capped so 12MP phones don't explode fonts
+    const ref = Math.min(w, h);
+    const s = Math.max(0.75, Math.min(1.75, ref / 900));
+    const pad = Math.round(18 * s);
+    const titleSize = Math.round(30 * s);
+    const bodySize = Math.round(22 * s);
+    const noteSize = Math.round(16 * s);
+    const lineGap = Math.round(7 * s);
+    const radius = Math.round(14 * s);
 
+    const panelW = w - pad * 2;
+    const mapSize = Math.round(Math.min(panelW * 0.32, 240 * s));
+    const textGap = Math.round(16 * s);
+    const textX = pad + Math.round(pad * 0.55) + mapSize + textGap;
+    const textMaxW = Math.max(100, panelW - (textX - pad) - pad);
+
+    // Measure content height so location + datetime always fit inside panel
+    ctx.font = `700 ${titleSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    const headerLines = 1;
+    ctx.font = `500 ${bodySize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    // rough wrap count for address (2 lines max)
+    const addrProbe = String(address).split(/\s+/);
+    let probeLine = '';
+    let addrLineCount = 1;
+    for (let i = 0; i < addrProbe.length; i++) {
+        const t = probeLine ? probeLine + ' ' + addrProbe[i] : addrProbe[i];
+        if (ctx.measureText(t).width > textMaxW && probeLine) {
+            addrLineCount++;
+            probeLine = addrProbe[i];
+            if (addrLineCount >= 2) break;
+        } else {
+            probeLine = t;
+        }
+    }
+    addrLineCount = Math.min(2, Math.max(1, addrLineCount));
+
+    const contentH =
+        pad +
+        headerLines * titleSize + lineGap +
+        addrLineCount * (bodySize + 3) + lineGap +
+        bodySize + lineGap + // coords
+        bodySize + lineGap + // datetime
+        noteSize +
+        pad;
+
+    const panelH = Math.max(
+        mapSize + pad * 1.6,
+        contentH,
+        Math.round(160 * s)
+    );
+    const maxPanelH = Math.round(h * 0.42);
+    const finalPanelH = Math.min(panelH, maxPanelH);
+    const panelX = pad;
+    const panelY = h - finalPanelH - pad;
+
+    // Panel background
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
-    roundRectPath(ctx, panelX, panelY, panelW, panelH, radius);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    roundRectPath(ctx, panelX, panelY, panelW, finalPanelH, radius);
     ctx.fill();
 
+    // Clip all stamp content to panel so nothing spills
+    roundRectPath(ctx, panelX, panelY, panelW, finalPanelH, radius);
+    ctx.clip();
+
     // Map thumb
-    const mapX = panelX + Math.round(pad * 0.7);
-    const mapY = panelY + Math.round((panelH - mapSize) / 2);
-    const mapR = Math.max(6, Math.round(radius * 0.7));
+    const mapX = panelX + Math.round(pad * 0.55);
+    const mapY = panelY + Math.round((finalPanelH - mapSize) / 2);
+    const mapR = Math.max(6, Math.round(radius * 0.65));
     ctx.save();
     roundRectPath(ctx, mapX, mapY, mapSize, mapSize, mapR);
     ctx.clip();
@@ -863,46 +1211,58 @@ async function stampGpsOverlayOnBlob(blob, lat, lng) {
     }
     ctx.restore();
 
-    // Text block
-    const textX = mapX + mapSize + Math.round(pad * 0.9);
-    const textMaxW = panelX + panelW - textX - pad;
-    let ty = panelY + Math.round(pad * 0.85);
-    const titleSize = Math.max(13, Math.round(w * 0.028));
-    const bodySize = Math.max(11, Math.round(w * 0.022));
-    const noteSize = Math.max(10, Math.round(w * 0.018));
-
+    // Text — reserved bottom rows for coords + datetime so they never get pushed out
     ctx.textBaseline = 'top';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `700 ${titleSize}px Inter, system-ui, sans-serif`;
-    ctx.fillText(header, textX, ty);
-    // Brand chip top-right of panel
-    ctx.font = `600 ${noteSize}px Inter, system-ui, sans-serif`;
+    const textBottomReserve = bodySize + lineGap + bodySize + lineGap + noteSize + pad * 0.4;
+    let ty = panelY + Math.round(pad * 0.7);
+    const textBottomLimit = panelY + finalPanelH - textBottomReserve;
+
+    // Brand (top-right, above content)
+    ctx.font = `600 ${noteSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
     const brand = 'GPS Map Camera';
     const brandW = ctx.measureText(brand).width;
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText(brand, panelX + panelW - pad - brandW, panelY + Math.round(pad * 0.55));
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillText(brand, panelX + panelW - pad - brandW, panelY + Math.round(pad * 0.45));
 
-    ty += titleSize + Math.round(pad * 0.35);
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = `500 ${bodySize}px Inter, system-ui, sans-serif`;
-    const addrLines = canvasWrapText(ctx, address, textX, ty, textMaxW, bodySize + 4, 2);
-    ty += addrLines * (bodySize + 4) + Math.round(pad * 0.25);
-
+    // City / state header (leave room for brand)
     ctx.fillStyle = '#ffffff';
-    ctx.font = `600 ${bodySize}px JetBrains Mono, ui-monospace, monospace`;
-    ctx.fillText(coords, textX, ty);
-    ty += bodySize + Math.round(pad * 0.3);
+    ctx.font = `700 ${titleSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    const headerMaxW = Math.max(60, textMaxW - brandW - Math.round(8 * s));
+    ctx.fillText(canvasFitText(ctx, headerRaw, headerMaxW), textX, ty);
+    ty += titleSize + lineGap;
 
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.font = `500 ${bodySize}px Inter, system-ui, sans-serif`;
-    ctx.fillText(when, textX, ty);
-    ty += bodySize + Math.round(pad * 0.35);
+    // Address (max 2 lines, clipped before datetime zone)
+    if (ty < textBottomLimit) {
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.font = `500 ${bodySize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+        const maxAddrLines = Math.max(1, Math.min(2, Math.floor((textBottomLimit - ty) / (bodySize + 3))));
+        const used = canvasWrapText(ctx, address, textX, ty, textMaxW, bodySize + 3, maxAddrLines);
+        ty += used * (bodySize + 3) + lineGap;
+    }
 
-    ctx.fillStyle = 'rgba(255,255,255,0.75)';
-    ctx.font = `500 ${noteSize}px Inter, system-ui, sans-serif`;
-    ctx.fillText('Note : Captured by GPS Map Camera', textX, Math.min(ty, panelY + panelH - noteSize - pad * 0.5));
+    // Lat / Long — always inside panel
+    const coordsY = Math.min(Math.max(ty, panelY + pad), panelY + finalPanelH - (bodySize + lineGap + bodySize + noteSize + pad * 0.5));
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `600 ${bodySize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    ctx.fillText(canvasFitText(ctx, coords, textMaxW), textX, coordsY);
+
+    // Date / time — always inside panel
+    const whenY = coordsY + bodySize + lineGap;
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = `600 ${bodySize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    ctx.fillText(canvasFitText(ctx, when, textMaxW), textX, whenY);
+
+    // Note footer
+    const noteY = Math.min(whenY + bodySize + lineGap, panelY + finalPanelH - noteSize - Math.round(pad * 0.35));
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = `500 ${noteSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    ctx.fillText(canvasFitText(ctx, 'Note : Captured by GPS Map Camera', textMaxW), textX, noteY);
 
     ctx.restore();
+
+    if (typeof photo.close === 'function') {
+        try { photo.close(); } catch (e) { /* ImageBitmap */ }
+    }
 
     return await new Promise((resolve) => {
         canvas.toBlob(function (outBlob) {
@@ -1040,11 +1400,19 @@ async function openLiveCameraCapture(input) {
             }
         });
     } catch (rearErr) {
-        // Fallback: any camera (still no gallery)
-        stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: true
-        });
+        const denied = rearErr && (rearErr.name === 'NotAllowedError' || rearErr.name === 'PermissionDeniedError');
+        if (denied) {
+            throw rearErr;
+        }
+        try {
+            // Fallback: any camera (still no gallery)
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: true
+            });
+        } catch (anyErr) {
+            throw anyErr;
+        }
     }
     activeCameraStream = stream;
     video.srcObject = stream;
@@ -1129,8 +1497,12 @@ async function openCameraForInput(input) {
     input.setAttribute('capture', 'environment');
     input.setAttribute('accept', 'image/*');
 
+    // Explain + request Location then Camera (browser popups follow Allow taps)
+    const perms = await ensureCameraAndLocationPermissions();
+    if (!perms.camera) return;
+
     // Warm up GPS while camera opens (stamp + Store Front auto-fill)
-    if (navigator.geolocation) {
+    if (perms.location && navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
             function (pos) {
                 window.__captureGps = {
@@ -1139,7 +1511,23 @@ async function openCameraForInput(input) {
                     acc: pos.coords.accuracy
                 };
             },
-            function () { /* ignore warm-up errors */ },
+            async function (geoErr) {
+                console.warn('GPS warm-up failed', geoErr);
+                if (geoErr && geoErr.code === 1) {
+                    await showPermissionPopup({
+                        mode: 'denied',
+                        title: 'Allow Location',
+                        body: geoErrorMessage(geoErr),
+                        steps: [
+                            'Tap the lock / info icon in the address bar',
+                            'Set Location to Allow',
+                            'Reload, then retake the photo'
+                        ],
+                        allowLabel: 'OK',
+                        cancelLabel: 'Close'
+                    });
+                }
+            },
             { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
         );
     }
@@ -1151,7 +1539,24 @@ async function openCameraForInput(input) {
         // User cancelled live camera — do not open gallery
         return;
     } catch (err) {
-        console.warn('Live camera unavailable, using native capture', err);
+        console.warn('Live camera unavailable', err);
+        const denied = err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+        if (denied) {
+            await showPermissionPopup({
+                mode: 'denied',
+                title: 'Allow Camera',
+                body: cameraErrorMessage(err),
+                steps: [
+                    'Tap the lock / info icon in the address bar',
+                    'Set Camera to Allow',
+                    'Reload the page, then capture again'
+                ],
+                allowLabel: 'Try again',
+                cancelLabel: 'Cancel'
+            });
+            return;
+        }
+        // Device / browser cannot use getUserMedia — try native capture intent
         forceNativeCameraInput(input);
     }
 }
@@ -1596,13 +2001,30 @@ async function fillPlaceFromCoords(lat, lng, accuracyLabel) {
 
 async function fillLocationFromDeviceGps() {
     setStoreFrontLoading(true, 'Getting live GPS…', 'Phone location (camera photos have no EXIF GPS)');
-    const pos = await getDevicePosition();
-    const lat = pos.coords.latitude;
-    const lng = pos.coords.longitude;
-    const acc = pos.coords.accuracy;
-    setStoreFrontLoading(true, 'Finding place…', 'Address, city, PIN & zone');
-    await fillPlaceFromCoords(lat, lng, acc);
-    return { lat, lng, acc };
+    try {
+        const pos = await getDevicePosition();
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+        setStoreFrontLoading(true, 'Finding place…', 'Address, city, PIN & zone');
+        await fillPlaceFromCoords(lat, lng, acc);
+        return { lat, lng, acc };
+    } catch (geoErr) {
+        setStoreFrontLoading(false);
+        await showPermissionPopup({
+            mode: 'denied',
+            title: 'Location needed',
+            body: geoErrorMessage(geoErr),
+            steps: [
+                'Allow Location when the browser asks',
+                'Or enable Location in site settings (lock icon)',
+                'Retake Store Front photo after allowing'
+            ],
+            allowLabel: 'OK',
+            cancelLabel: 'Close'
+        });
+        throw geoErr;
+    }
 }
 
 function initStoreFrontExifAutofill() {
@@ -1689,6 +2111,21 @@ function initStoreFrontExifAutofill() {
                 'ok'
             );
 
+            setStoreFrontLoading(false);
+
+            await showPermissionPopup({
+                mode: 'ask',
+                title: 'Please verify store details',
+                body: 'Processing is complete. Kindly review all auto-filled information carefully. If any detail appears incorrect, please update it before continuing.',
+                steps: [
+                    'Confirm address, city, PIN code, zone and GPS location',
+                    'Cross-check with the store representative where possible',
+                    'Correct any inaccurate fields before saving the profile'
+                ],
+                allowLabel: 'Got it — Review details',
+                cancelLabel: 'Close'
+            });
+
             const anchor = document.getElementById('store-details-anchor') || document.getElementById('address');
             if (anchor) {
                 setTimeout(() => anchor.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
@@ -1725,10 +2162,18 @@ function initLightbox() {
             cursor: pointer;
         `;
         modal.innerHTML = `
-            <div style="position: relative; max-width: 90vw; max-height: 90vh;">
-                <img id="lightbox-img" src="" style="max-width: 100%; max-height: 85vh; border-radius: 8px; box-shadow: 0 0 30px rgba(0,0,0,0.8); display: block; margin: auto;">
-                <p id="lightbox-caption" style="color: #ffffff; text-align: center; margin-top: 0.75rem; font-weight: 600; font-size: 0.95rem;"></p>
-                <button style="position: absolute; top: -35px; right: 0; background: none; border: none; color: white; font-size: 2rem; cursor: pointer;">&times;</button>
+            <div id="lightbox-panel" style="position: relative; max-width: 90vw; max-height: 90vh; text-align: center;">
+                <button type="button" id="lightbox-close" aria-label="Close" style="position: absolute; top: -40px; right: 0; background: none; border: none; color: white; font-size: 2rem; cursor: pointer; line-height: 1;">&times;</button>
+                <img id="lightbox-img" src="" alt="" style="max-width: 100%; max-height: 78vh; border-radius: 8px; box-shadow: 0 0 30px rgba(0,0,0,0.8); display: block; margin: auto;">
+                <p id="lightbox-caption" style="color: #ffffff; text-align: center; margin: 0.75rem 0 0.65rem; font-weight: 600; font-size: 0.95rem;"></p>
+                <a id="lightbox-download" href="#" download style="display: inline-flex; align-items: center; gap: 0.4rem; background: #0284c7; color: #fff; text-decoration: none; font-weight: 700; font-size: 0.85rem; padding: 0.55rem 1rem; border-radius: 8px; border: none; cursor: pointer;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download image
+                </a>
             </div>
         `;
         document.body.appendChild(modal);
@@ -1736,10 +2181,68 @@ function initLightbox() {
         modal.addEventListener('click', function () {
             modal.style.display = 'none';
         });
+        const panel = document.getElementById('lightbox-panel');
+        if (panel) {
+            panel.addEventListener('click', function (e) {
+                e.stopPropagation();
+            });
+        }
+        const closeBtn = document.getElementById('lightbox-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function () {
+                modal.style.display = 'none';
+            });
+        }
     }
 
     const lightboxImg = document.getElementById('lightbox-img');
     const lightboxCap = document.getElementById('lightbox-caption');
+    const lightboxDl = document.getElementById('lightbox-download');
+
+    function lightboxFilename(src, caption) {
+        try {
+            const path = (src || '').split('?')[0];
+            const base = path.substring(path.lastIndexOf('/') + 1) || 'photo.jpg';
+            if (/\.(jpe?g|png|webp|gif|svg)$/i.test(base)) return base;
+        } catch (e) { /* ignore */ }
+        const safe = String(caption || 'photo').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+        return (safe || 'photo') + '.jpg';
+    }
+
+    async function downloadLightboxImage(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const src = lightboxImg && lightboxImg.src;
+        if (!src) return;
+        const filename = lightboxFilename(src, lightboxCap ? lightboxCap.textContent : '');
+        try {
+            const res = await fetch(src, { credentials: 'same-origin' });
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            // Fallback: open in new tab / direct link
+            const a = document.createElement('a');
+            a.href = src;
+            a.download = filename;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+    }
+
+    if (lightboxDl && !lightboxDl.dataset.bound) {
+        lightboxDl.dataset.bound = '1';
+        lightboxDl.addEventListener('click', downloadLightboxImage);
+    }
 
     images.forEach(img => {
         img.style.cursor = 'zoom-in';
@@ -1747,6 +2250,10 @@ function initLightbox() {
             e.stopPropagation();
             lightboxImg.src = this.src;
             lightboxCap.textContent = this.getAttribute('data-caption') || this.alt || '';
+            if (lightboxDl) {
+                lightboxDl.href = this.src;
+                lightboxDl.setAttribute('download', lightboxFilename(this.src, lightboxCap.textContent));
+            }
             modal.style.display = 'flex';
         });
     });
