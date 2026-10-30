@@ -118,7 +118,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card-body" style="font-size: 0.85rem; color: #475569;">
         <p style="margin-bottom: 0.75rem;">Standard format compliant with ReeferON specifications:</p>
         <div style="background: #0f172a; color: #38bdf8; font-family: var(--font-mono); font-size: 0.8rem; padding: 0.65rem; border-radius: 6px; word-break: break-all; margin-bottom: 0.75rem;">
-            DF-RW-SFR550DDU-AMD1-380058-0324-AAA004
+            DF-RW-SFR550DDU-AMD1-0324-380058-AAA004
         </div>
         <ul style="padding-left: 1.25rem; font-size: 0.775rem; display: flex; flex-direction: column; gap: 0.25rem; color: #64748b;">
             <li><strong>DF</strong>: Freezer Type (DF/DCF/UDF/FRZ)</li>

@@ -24,7 +24,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     
     <!-- Application CSS -->
-    <link rel="stylesheet" href="assets/css/app.css">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= @filemtime(__DIR__ . '/../assets/css/app.css') ?: time() ?>">
 </head>
 <body>
 <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
@@ -76,7 +76,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                 <span>Scan QR Tag</span>
             </a>
 
-            <?php if ($currentUser && AuthService::hasRole(['super_admin', 'sub_admin'])): ?>
+            <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
             <a href="import_export.php" class="nav-link <?= $currentPage === 'import_export.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M8 17l-5-5 5-5"/>

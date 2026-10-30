@@ -7,7 +7,7 @@ use App\Models\Freezer;
 use App\Models\Store;
 use App\Models\FreezerLifecycle;
 
-AuthService::requireRole(['super_admin', 'sub_admin', 'technician']);
+AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
 
 $id = (int)($_GET['id'] ?? $_POST['freezer_id'] ?? 0);

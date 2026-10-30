@@ -25,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'name' => $_POST['name'] ?? '',
                 'email' => $_POST['email'] ?? '',
                 'password' => $_POST['password'] ?? '',
-                'role' => $_POST['role'] ?? AppConfig::ROLE_VIEWER,
+                'role' => AppConfig::ROLE_SUPER_ADMIN,
                 'phone' => $_POST['phone'] ?? '',
                 'status' => 'active',
             ]);
@@ -42,37 +42,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$editUser) {
                 $error = 'User not found.';
             } else {
-                // Super Admin cannot remove their own Super Admin role
-                $newRole = $_POST['role'] ?? $editUser['role'];
-                if ($userId === (int)$currentUser['id'] && $newRole !== AppConfig::ROLE_SUPER_ADMIN) {
-                    $error = 'You cannot change your own role away from Super Admin.';
-                    $editUser = array_merge($editUser, [
-                        'name' => $_POST['name'] ?? $editUser['name'],
-                        'email' => $_POST['email'] ?? $editUser['email'],
-                        'role' => $editUser['role'],
-                        'phone' => $_POST['phone'] ?? $editUser['phone'],
-                        'status' => $_POST['status'] ?? $editUser['status'],
-                    ]);
-                } else {
-                    $result = User::update($userId, [
-                        'name' => $_POST['name'] ?? '',
-                        'email' => $_POST['email'] ?? '',
-                        'password' => $_POST['password'] ?? '',
-                        'role' => $newRole,
-                        'phone' => $_POST['phone'] ?? '',
-                        'status' => $_POST['status'] ?? $editUser['status'],
-                    ]);
+                $result = User::update($userId, [
+                    'name' => $_POST['name'] ?? '',
+                    'email' => $_POST['email'] ?? '',
+                    'password' => $_POST['password'] ?? '',
+                    'role' => AppConfig::ROLE_SUPER_ADMIN,
+                    'phone' => $_POST['phone'] ?? '',
+                    'status' => $_POST['status'] ?? $editUser['status'],
+                ]);
 
-                    if ($result['success']) {
-                        $success = 'User updated successfully.';
-                        $editUser = null;
-                        header('Location: users.php?updated=1');
-                        exit;
-                    }
-
-                    $error = $result['error'] ?? 'Failed to update user.';
-                    $editUser = User::findById($userId) ?: $editUser;
+                if ($result['success']) {
+                    $success = 'User updated successfully.';
+                    $editUser = null;
+                    header('Location: users.php?updated=1');
+                    exit;
                 }
+
+                $error = $result['error'] ?? 'Failed to update user.';
+                $editUser = User::findById($userId) ?: $editUser;
             }
         } elseif ($action === 'toggle_status') {
             $userId = (int)($_POST['user_id'] ?? 0);
@@ -115,9 +102,7 @@ $formEmail = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['email'] ?? $editUser['email']) : $editUser['email'])
     : ($keepCreate ? ($_POST['email'] ?? '') : '');
 $formPassword = $isEdit ? '' : ($keepCreate ? ($_POST['password'] ?? 'Admin@123') : 'Admin@123');
-$formRole = $isEdit
-    ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['role'] ?? $editUser['role']) : $editUser['role'])
-    : ($keepCreate ? ($_POST['role'] ?? 'technician') : 'technician');
+$formRole = AppConfig::ROLE_SUPER_ADMIN;
 $formStatus = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['status'] ?? $editUser['status']) : $editUser['status'])
     : 'active';
@@ -275,18 +260,11 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="form-grid">
                     <div class="col-4 form-group">
                         <label class="form-label required" for="role">User role</label>
-                        <?php $lockSelfRole = $isEdit && (int)$editUser['id'] === (int)$currentUser['id']; ?>
-                        <select id="role" name="role" class="form-select" required
-                            <?= $lockSelfRole ? 'disabled' : '' ?>>
-                            <option value="technician" <?= $formRole === 'technician' ? 'selected' : '' ?>>Technician — Add / Edit profiles</option>
-                            <option value="viewer" <?= $formRole === 'viewer' ? 'selected' : '' ?>>Viewer — View / Scan only</option>
-                            <option value="sub_admin" <?= $formRole === 'sub_admin' ? 'selected' : '' ?>>Sub Admin — Add / Edit (no delete)</option>
-                            <option value="super_admin" <?= $formRole === 'super_admin' ? 'selected' : '' ?>>Super Admin — Full access</option>
+                        <input type="hidden" name="role" value="super_admin">
+                        <select id="role" class="form-select" disabled>
+                            <option value="super_admin" selected>Super Admin — Full access</option>
                         </select>
-                        <?php if ($lockSelfRole): ?>
-                            <input type="hidden" name="role" value="super_admin">
-                        <?php endif; ?>
-                        <span class="form-help"><?= $lockSelfRole ? 'Your own role stays Super Admin' : 'See role guide below' ?></span>
+                        <span class="form-help">Only Super Admin role is available</span>
                     </div>
 
                     <?php if ($isEdit): ?>
@@ -333,7 +311,7 @@ require_once __DIR__ . '/includes/header.php';
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.25rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
                 <div style="font-size: 0.85rem; color: #64748b;">
                     <?= $isEdit ? 'Editing:' : 'New account:' ?>
-                    <strong id="user-form-summary" style="color: #0f172a;"><?= htmlspecialchars($isEdit ? $formName : 'Technician') ?></strong>
+                    <strong id="user-form-summary" style="color: #0f172a;"><?= htmlspecialchars($isEdit ? $formName : 'Super Admin') ?></strong>
                 </div>
                 <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
                     <?php if ($isEdit): ?>
@@ -460,50 +438,9 @@ require_once __DIR__ . '/includes/header.php';
                 </ul>
             </div>
 
-            <div class="role-access-card">
-                <div class="role-access-title">
-                    <span class="badge badge-primary">Sub Admin</span>
-                </div>
-                <ul class="role-access-list">
-                    <li>Dashboard &amp; profile directory</li>
-                    <li>Add new store / freezer profiles</li>
-                    <li>Edit existing profiles &amp; photos</li>
-                    <li>QR scan &amp; print</li>
-                    <li>Cannot delete profiles</li>
-                    <li>Cannot manage users</li>
-                </ul>
-            </div>
-
-            <div class="role-access-card">
-                <div class="role-access-title">
-                    <span class="badge badge-primary">Technician</span>
-                </div>
-                <ul class="role-access-list">
-                    <li>Field onboarding (recommended)</li>
-                    <li>Add store / freezer with photos &amp; GPS</li>
-                    <li>Edit profiles during install</li>
-                    <li>QR scan &amp; print asset tags</li>
-                    <li>Cannot delete profiles</li>
-                    <li>Cannot manage users</li>
-                </ul>
-            </div>
-
-            <div class="role-access-card">
-                <div class="role-access-title">
-                    <span class="badge badge-primary">Viewer</span>
-                </div>
-                <ul class="role-access-list">
-                    <li>View-only / store staff</li>
-                    <li>Dashboard &amp; profile view</li>
-                    <li>QR scan to open a profile</li>
-                    <li>QR print (if linked)</li>
-                    <li>Cannot add or edit profiles</li>
-                    <li>Cannot manage users or delete</li>
-                </ul>
-            </div>
         </div>
         <p style="margin-top:1rem; font-size:0.8rem; color:#94a3b8;">
-            Tip: Field workers → <strong>Technician</strong> · Store managers → <strong>Viewer</strong> · Ops leads → <strong>Sub Admin</strong> · IT / owner → <strong>Super Admin</strong>
+            Only <strong>Super Admin</strong> accounts can sign in. Create additional Super Admins from this page.
         </p>
     </div>
 </div>

@@ -25,6 +25,10 @@ class AuthService {
             return ['success' => false, 'error' => 'Invalid email address or password.'];
         }
 
+        if (($user['role'] ?? '') !== AppConfig::ROLE_SUPER_ADMIN) {
+            return ['success' => false, 'error' => 'Access denied. Only Super Admin accounts can sign in.'];
+        }
+
         // Update last login
         $upd = $pdo->prepare("UPDATE `users` SET `last_login` = NOW() WHERE `id` = :id");
         $upd->execute(['id' => $user['id']]);
@@ -62,7 +66,7 @@ class AuthService {
             'id' => $_SESSION['user_id'],
             'name' => $_SESSION['user_name'] ?? 'User',
             'email' => $_SESSION['user_email'] ?? '',
-            'role' => $_SESSION['user_role'] ?? AppConfig::ROLE_VIEWER,
+            'role' => $_SESSION['user_role'] ?? AppConfig::ROLE_SUPER_ADMIN,
         ];
     }
 

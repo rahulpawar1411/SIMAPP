@@ -23,13 +23,11 @@ class AppConfig {
     ];
 
     // User Roles
+    /** Only role in the system */
     public const ROLE_SUPER_ADMIN = 'super_admin';
-    public const ROLE_SUB_ADMIN = 'sub_admin';
-    public const ROLE_TECHNICIAN = 'technician';
-    public const ROLE_VIEWER = 'viewer';
 
-    /** IoT capture / telemetry UI — set true to re-enable */
-    public const IOT_ENABLED = false;
+    /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) */
+    public const IOT_ENABLED = true;
 
     public static function getBaseUrl(): string {
         $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";

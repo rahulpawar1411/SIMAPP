@@ -93,6 +93,8 @@ class Freezer {
             IoTDevice::registerDevice($freezerId, [
                 'device_serial' => trim($data['iot_serial']),
                 'imei_or_mac' => $data['iot_imei'] ?? null,
+                'sim_number' => $data['iot_sim_number'] ?? null,
+                'sim_company' => $data['iot_sim_company'] ?? null,
                 'device_type' => $data['iot_type'] ?? 'Temperature & GPS',
                 'device_owner' => $data['iot_owner'] ?? 'ReeferON Own Device',
                 'oem_model' => $data['iot_model'] ?? 'RF-T100',
@@ -196,6 +198,8 @@ class Freezer {
             IoTDevice::registerOrUpdateDevice($id, [
                 'device_serial' => trim($data['iot_serial']),
                 'imei_or_mac' => $data['iot_imei'] ?? null,
+                'sim_number' => $data['iot_sim_number'] ?? null,
+                'sim_company' => $data['iot_sim_company'] ?? null,
                 'device_type' => $data['iot_type'] ?? 'Temperature & GPS',
                 'device_owner' => $data['iot_owner'] ?? 'ReeferON Own Device',
                 'oem_model' => $data['iot_model'] ?? 'RF-T100',
@@ -243,7 +247,8 @@ class Freezer {
                        s.image_store_front, s.image_aadhar_card, s.image_aadhar_back,
                        ft.name as type_name,
                        b.name as brand_name,
-                       iot.device_serial, iot.imei_or_mac, iot.device_type, iot.device_owner,
+                       iot.device_serial, iot.imei_or_mac, iot.sim_number, iot.sim_company,
+                       iot.device_type, iot.device_owner,
                        iot.oem_model as iot_model, iot.battery_percentage, iot.power_status as iot_power_status,
                        iot.last_ping_at as iot_last_ping
                 FROM `freezers` f
@@ -268,11 +273,15 @@ class Freezer {
         return $id ? self::findById((int)$id) : null;
     }
 
-    public static function getFiltered(array $filters = [], int $limit = 50, int $offset = 0): array {
-        $pdo = Database::getConnection();
-
-        $where = ["1=1"];
+    /**
+     * Build WHERE + params for list/count filters (incl. Missing gaps).
+     *
+     * @return array{0: list<string>, 1: array<string, mixed>, 2: bool} [where, params, needsIotJoin]
+     */
+    private static function buildListFilters(array $filters): array {
+        $where = ['1=1'];
         $params = [];
+        $needsIotJoin = false;
 
         if (!empty($filters['q'])) {
             $where[] = "(f.unique_freezer_id LIKE :q 
@@ -284,30 +293,71 @@ class Freezer {
         }
 
         if (!empty($filters['type'])) {
-            $where[] = "f.freezer_type = :type";
+            $where[] = 'f.freezer_type = :type';
             $params['type'] = $filters['type'];
         }
 
         if (!empty($filters['brand'])) {
-            $where[] = "f.company_code = :brand";
+            $where[] = 'f.company_code = :brand';
             $params['brand'] = $filters['brand'];
         }
 
         if (!empty($filters['status'])) {
-            $where[] = "f.status = :status";
+            $where[] = 'f.status = :status';
             $params['status'] = $filters['status'];
         }
 
         if (!empty($filters['city'])) {
-            $where[] = "s.city = :city";
+            $where[] = 's.city = :city';
             $params['city'] = $filters['city'];
         }
 
+        $missing = trim((string)($filters['missing'] ?? ''));
+        if ($missing !== '') {
+            switch ($missing) {
+                case 'gps':
+                    $where[] = '(s.latitude IS NULL OR s.longitude IS NULL)';
+                    break;
+                case 'gps_approx':
+                    $where[] = 's.latitude IS NOT NULL AND s.longitude IS NOT NULL AND s.gps_accuracy IS NOT NULL AND s.gps_accuracy >= 1000';
+                    break;
+                case 'gps_exact':
+                    $where[] = 's.latitude IS NOT NULL AND s.longitude IS NOT NULL AND (s.gps_accuracy IS NULL OR s.gps_accuracy < 1000)';
+                    break;
+                case 'photos':
+                    $where[] = "(s.image_store_front IS NULL OR s.image_store_front = ''
+                                 OR f.image_left_side IS NULL OR f.image_left_side = ''
+                                 OR f.image_right_side IS NULL OR f.image_right_side = '')";
+                    break;
+                case 'iot':
+                    $needsIotJoin = true;
+                    $where[] = 'iot.id IS NULL';
+                    break;
+                case 'any':
+                    $needsIotJoin = true;
+                    $where[] = "(s.latitude IS NULL OR s.longitude IS NULL
+                                 OR (s.gps_accuracy IS NOT NULL AND s.gps_accuracy >= 1000)
+                                 OR s.image_store_front IS NULL OR s.image_store_front = ''
+                                 OR f.image_left_side IS NULL OR f.image_left_side = ''
+                                 OR f.image_right_side IS NULL OR f.image_right_side = ''
+                                 OR iot.id IS NULL)";
+                    break;
+            }
+        }
+
+        return [$where, $params, $needsIotJoin];
+    }
+
+    public static function getFiltered(array $filters = [], int $limit = 50, int $offset = 0): array {
+        $pdo = Database::getConnection();
+        [$where, $params] = self::buildListFilters($filters);
         $whereClause = implode(' AND ', $where);
 
         $sql = "SELECT f.*, 
                        s.store_name, s.outlet_id, s.city as store_city, s.state as store_state,
                        s.latitude as store_latitude, s.longitude as store_longitude,
+                       s.gps_accuracy as store_gps_accuracy,
+                       s.image_store_front as store_image_front,
                        ft.name as type_name, b.name as brand_name,
                        iot.device_serial, iot.power_status as iot_power_status
                 FROM `freezers` f
@@ -332,44 +382,17 @@ class Freezer {
 
     public static function countFiltered(array $filters = []): int {
         $pdo = Database::getConnection();
-
-        $where = ["1=1"];
-        $params = [];
-
-        if (!empty($filters['q'])) {
-            $where[] = "(f.unique_freezer_id LIKE :q 
-                        OR s.store_name LIKE :q 
-                        OR s.outlet_id LIKE :q 
-                        OR s.city LIKE :q 
-                        OR f.model_number LIKE :q)";
-            $params['q'] = '%' . trim($filters['q']) . '%';
-        }
-
-        if (!empty($filters['type'])) {
-            $where[] = "f.freezer_type = :type";
-            $params['type'] = $filters['type'];
-        }
-
-        if (!empty($filters['brand'])) {
-            $where[] = "f.company_code = :brand";
-            $params['brand'] = $filters['brand'];
-        }
-
-        if (!empty($filters['status'])) {
-            $where[] = "f.status = :status";
-            $params['status'] = $filters['status'];
-        }
-
-        if (!empty($filters['city'])) {
-            $where[] = "s.city = :city";
-            $params['city'] = $filters['city'];
-        }
-
+        [$where, $params, $needsIotJoin] = self::buildListFilters($filters);
         $whereClause = implode(' AND ', $where);
+
+        $iotJoin = $needsIotJoin
+            ? 'LEFT JOIN `iot_devices` iot ON f.id = iot.freezer_id'
+            : '';
 
         $sql = "SELECT COUNT(*)
                 FROM `freezers` f
                 INNER JOIN `stores` s ON f.store_id = s.id
+                {$iotJoin}
                 WHERE {$whereClause}";
 
         $stmt = $pdo->prepare($sql);

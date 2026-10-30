@@ -14,6 +14,6 @@
 <script src="https://unpkg.com/exifr@7.1.3/dist/full.umd.js"></script>
 
 <!-- Application Scripts -->
-<script src="assets/js/app.js"></script>
+<script src="assets/js/app.js?v=<?= @filemtime(__DIR__ . '/../assets/js/app.js') ?: time() ?>"></script>
 </body>
 </html>

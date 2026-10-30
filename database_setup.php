@@ -39,10 +39,8 @@ try {
     }
 
     echo "Database `freezer_management` created and tables migrated successfully!\n";
-    echo "Default Users Created:\n";
+    echo "Default User Created:\n";
     echo "  - Super Admin: admin@reeferon.com / {$demoPassword}\n";
-    echo "  - Technician:  tech@reeferon.com / {$demoPassword}\n";
-    echo "  - Viewer:      viewer@baskinrobbins.com / {$demoPassword}\n";
 
 } catch (Exception $e) {
     echo "ERROR during database setup: " . $e->getMessage() . "\n";

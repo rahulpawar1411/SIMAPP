@@ -4,7 +4,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Services\ImportExportService;
 
-AuthService::requireRole(['super_admin', 'sub_admin']);
+AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
 
 $error = null;
@@ -234,7 +234,8 @@ require_once __DIR__ . '/includes/header.php';
             </div>
             <p style="font-size:0.8rem; color:#64748b; margin:1rem 0 0;">
                 <strong>Combined hub v3</strong> (Export card above) = Store + Freezer + IoT in one file:
-                photos + <code>iot_serial</code>, <code>iot_imei</code>, <code>iot_type</code>, <code>iot_owner</code>, <code>iot_model</code>.
+                photos + <code>iot_serial</code>, <code>iot_imei</code>, <code>iot_sim_number</code>, <code>iot_sim_company</code>,
+                <code>iot_type</code>, <code>iot_owner</code>, <code>iot_model</code>.
                 Blank <code>iot_serial</code> = no IoT device on that row.
             </p>
         </div>
@@ -286,23 +287,25 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>company</code> *</td><td>Full name · e.g. <code>Rockwell</code> (system → RW in Unique ID)</td></tr>
                         <tr><td><code>model_number</code> *</td><td>ID seq 3 · model in Freezer ID</td></tr>
                         <tr><td><code>location_code</code></td><td>ID seq 4 · blank = auto from city (Ahmedabad → AMD1)</td></tr>
-                        <tr><td><code>pincode</code> *</td><td>ID seq 5 · 6-digit PIN</td></tr>
-                        <tr><td><code>installation_date</code></td><td>ID seq 6 · YYYY-MM-DD → MMYY</td></tr>
+                        <tr><td><code>installation_date</code></td><td>ID seq 5 · YYYY-MM-DD → MMYY (before PIN)</td></tr>
+                        <tr><td><code>pincode</code> *</td><td>ID seq 6 · 6-digit PIN (after MMYY)</td></tr>
                         <tr><td><code>unit_sequence</code></td><td>ID seq 7 · e.g. AAA001, AAA002 (order / stickers)</td></tr>
                         <tr><td><code>unique_freezer_id</code></td><td>Blank = auto from sequence above + QR</td></tr>
                         <tr><td><code>outlet_id</code></td><td>Blank = auto · existing outlet reuses store</td></tr>
+                        <tr><td><code>latitude</code> / <code>longitude</code></td><td>Optional · blank = auto city-center GPS (map shows) · exact pin later via Store Front GPS</td></tr>
                         <tr><td><code>fssai_number</code> / <code>gst_number</code></td><td>Optional compliance IDs</td></tr>
                         <tr><td><code>phone_number</code></td><td>10-digit Indian mobile</td></tr>
-                        <tr><td><code>image_store_front</code></td><td>Store photo filename in <code>uploads/import/</code></td></tr>
-                        <tr><td><code>image_aadhar_card</code></td><td>Aadhaar front photo filename in <code>uploads/import/</code></td></tr>
-                        <tr><td><code>image_aadhar_back</code></td><td>Aadhaar back photo filename</td></tr>
-                        <tr><td><code>image_left_side</code> / <code>image_right_side</code></td><td>Freezer photos — same folder, exact filename</td></tr>
+                        <tr><td><code>image_store_front</code> *</td><td>REQUIRED · store photo filename in <code>uploads/import/</code></td></tr>
+                        <tr><td><code>image_left_side</code> / <code>image_right_side</code> *</td><td>REQUIRED · freezer photos — same folder, exact filename</td></tr>
+                        <tr><td><code>image_aadhar_card</code> / <code>image_aadhar_back</code></td><td>Optional Aadhaar photos</td></tr>
                         <tr><td><code>iot_serial</code></td><td>Optional · e.g. <code>RF-IOT-99210</code> (blank = no IoT)</td></tr>
                         <tr><td><code>iot_imei</code></td><td>Optional IMEI / MAC</td></tr>
+                        <tr><td><code>iot_sim_number</code></td><td>SIM / ICCID number</td></tr>
+                        <tr><td><code>iot_sim_company</code></td><td>Jio / Airtel / VI / BSNL / Other</td></tr>
                         <tr><td><code>iot_type</code></td><td>Default <code>Temperature &amp; GPS</code></td></tr>
                         <tr><td><code>iot_owner</code></td><td><code>ReeferON Own Device</code> / <code>Outsourced Device</code></td></tr>
                         <tr><td><code>iot_model</code></td><td>Default <code>RF-T100</code></td></tr>
-                        <tr><td><code>image_iot_device</code></td><td>IoT photo filename (optional)</td></tr>
+                        <tr><td><code>image_iot_device</code></td><td>Required if <code>iot_serial</code> filled</td></tr>
                     </tbody>
                 </table>
             </div>

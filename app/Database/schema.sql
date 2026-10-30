@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS `users` (
     `name` VARCHAR(100) NOT NULL,
     `email` VARCHAR(150) NOT NULL UNIQUE,
     `password` VARCHAR(255) NOT NULL,
-    `role` ENUM('super_admin', 'sub_admin', 'technician', 'viewer') NOT NULL DEFAULT 'technician',
+    `role` ENUM('super_admin') NOT NULL DEFAULT 'super_admin',
     `phone` VARCHAR(30) NULL,
     `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
     `last_login` DATETIME NULL,
@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS `iot_devices` (
     `freezer_id` INT NOT NULL UNIQUE,
     `device_serial` VARCHAR(100) NOT NULL UNIQUE,
     `imei_or_mac` VARCHAR(100) NULL,
+    `sim_number` VARCHAR(30) NULL,
+    `sim_company` VARCHAR(50) NULL,
     `device_type` VARCHAR(50) DEFAULT 'Temperature & GPS',
     `device_owner` ENUM('ReeferON Own Device', 'Outsourced Device') DEFAULT 'ReeferON Own Device',
     `oem_model` VARCHAR(100) DEFAULT 'RF-T100',
@@ -222,7 +224,5 @@ ON DUPLICATE KEY UPDATE `name`=VALUES(`name`), `description`=VALUES(`description
 -- Initial Seed Data: Default Users (Pass: Admin@123 for all seeded demo users)
 -- bcrypt hash for 'Admin@123': $2y$10$wN1g1k3RZZk9i2bQ3jY32.g1U7T9a.oGg9q6rV7K6lO6HlI4P1l7y
 INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `status`) VALUES
-('Harshit SuperAdmin', 'admin@reeferon.com', '$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', 'super_admin', '9876543210', 'active'),
-('Tech Technician', 'tech@reeferon.com', '$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', 'technician', '9876543211', 'active'),
-('Store Viewer', 'viewer@baskinrobbins.com', '$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', 'viewer', '9876543212', 'active')
+('Harshit SuperAdmin', 'admin@reeferon.com', '$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', 'super_admin', '9876543210', 'active')
 ON DUPLICATE KEY UPDATE `name`=VALUES(`name`);

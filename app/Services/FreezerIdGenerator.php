@@ -73,7 +73,8 @@ class FreezerIdGenerator {
 
     /**
      * Builds the prefix string for the freezer ID:
-     * e.g. DF-RW-SFR550DDU-AMD1-380058-0324-
+     * TYPE-BRAND-MODEL-LOCATION-MMYY-PIN6-
+     * e.g. DF-RW-SFR550DDU-AMD1-0324-380058-
      */
     public static function buildPrefix(
         string $freezerType,
@@ -90,7 +91,7 @@ class FreezerIdGenerator {
         $pin = self::extractPinCode($pincode);
         $mmyy = self::formatInstallMonthYear($installMonthYear);
 
-        return sprintf('%s-%s-%s-%s-%s-%s-', $type, $company, $model, $loc, $pin, $mmyy);
+        return sprintf('%s-%s-%s-%s-%s-%s-', $type, $company, $model, $loc, $mmyy, $pin);
     }
 
     /**
@@ -172,34 +173,54 @@ class FreezerIdGenerator {
 
     /**
      * Validates an ID string against the standard 7-part pattern:
-     * DF-RW-SFR550DDU-AMD1-380058-0324-AAA004
-     * (also accepts legacy 3-digit PIN segment)
+     * New:  DF-RW-SFR550DDU-AMD1-0324-380058-AAA004  (MMYY then PIN6)
+     * Legacy: DF-RW-SFR550DDU-AMD1-380058-0324-AAA004 (PIN then MMYY) still accepted
      */
     public static function validateIdFormat(string $id): array {
         $id = trim($id);
-        $pattern = '/^([A-Z0-9]{2,6})-([A-Z0-9]{2,6})-([A-Z0-9_-]{2,30})-([A-Z0-9]{2,10})-([0-9]{3}|[0-9]{6})-([0-9]{4})-([A-Z0-9]{3,10})$/i';
-        
-        if (!preg_match($pattern, $id, $matches)) {
+        // New order: …-LOCATION-MMYY-PIN-SEQ
+        $patternNew = '/^([A-Z0-9]{2,6})-([A-Z0-9]{2,6})-([A-Z0-9_-]{2,30})-([A-Z0-9]{2,10})-([0-9]{4})-([0-9]{3}|[0-9]{6})-([A-Z0-9]{3,10})$/i';
+        // Legacy order: …-LOCATION-PIN-MMYY-SEQ
+        $patternLegacy = '/^([A-Z0-9]{2,6})-([A-Z0-9]{2,6})-([A-Z0-9_-]{2,30})-([A-Z0-9]{2,10})-([0-9]{3}|[0-9]{6})-([0-9]{4})-([A-Z0-9]{3,10})$/i';
+
+        if (preg_match($patternNew, $id, $matches)) {
             return [
-                'valid' => false,
-                'error' => "ID does not match expected format: {TYPE}-{COMPANY}-{MODEL}-{LOCATION}-{PIN6}-{MMYY}-{UNITSEQ} (e.g. DF-RW-SFR550DDU-AMD1-380058-0324-AAA004)",
-                'parts' => null
+                'valid' => true,
+                'error' => null,
+                'parts' => [
+                    'full' => strtoupper($id),
+                    'freezer_type' => strtoupper($matches[1]),
+                    'company_code' => strtoupper($matches[2]),
+                    'model_number' => strtoupper($matches[3]),
+                    'location_code' => strtoupper($matches[4]),
+                    'install_month_year' => $matches[5],
+                    'pincode_last3' => $matches[6],
+                    'unit_sequence' => strtoupper($matches[7]),
+                ],
+            ];
+        }
+
+        if (preg_match($patternLegacy, $id, $matches)) {
+            return [
+                'valid' => true,
+                'error' => null,
+                'parts' => [
+                    'full' => strtoupper($id),
+                    'freezer_type' => strtoupper($matches[1]),
+                    'company_code' => strtoupper($matches[2]),
+                    'model_number' => strtoupper($matches[3]),
+                    'location_code' => strtoupper($matches[4]),
+                    'pincode_last3' => $matches[5],
+                    'install_month_year' => $matches[6],
+                    'unit_sequence' => strtoupper($matches[7]),
+                ],
             ];
         }
 
         return [
-            'valid' => true,
-            'error' => null,
-            'parts' => [
-                'full' => strtoupper($id),
-                'freezer_type' => strtoupper($matches[1]),
-                'company_code' => strtoupper($matches[2]),
-                'model_number' => strtoupper($matches[3]),
-                'location_code' => strtoupper($matches[4]),
-                'pincode_last3' => $matches[5],
-                'install_month_year' => $matches[6],
-                'unit_sequence' => strtoupper($matches[7]),
-            ]
+            'valid' => false,
+            'error' => "ID does not match expected format: {TYPE}-{COMPANY}-{MODEL}-{LOCATION}-{MMYY}-{PIN6}-{UNITSEQ} (e.g. DF-RW-SFR550DDU-AMD1-0324-380058-AAA004)",
+            'parts' => null,
         ];
     }
 }

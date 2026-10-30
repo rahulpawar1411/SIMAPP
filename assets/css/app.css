@@ -1205,6 +1205,49 @@ body {
     background: linear-gradient(180deg, #fff1f2 0%, #ffffff 40%);
 }
 
+/* Capture vs Gallery chooser */
+.photo-source-modal {
+    display: none !important;
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    background: rgba(15, 23, 42, 0.65);
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+.photo-source-modal.is-open {
+    display: flex !important;
+}
+.photo-source-sheet {
+    width: 100%;
+    max-width: 420px;
+    background: #fff;
+    border-radius: 16px;
+    padding: 1.15rem 1.25rem 1.25rem;
+    box-shadow: 0 16px 48px rgba(15, 23, 42, 0.35);
+}
+.photo-source-sheet h3 {
+    margin: 0 0 0.35rem;
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #0f172a;
+}
+.photo-source-sheet > p {
+    margin: 0 0 1rem;
+    font-size: 0.85rem;
+    color: #64748b;
+}
+.photo-source-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+.photo-source-actions .btn {
+    width: 100%;
+    justify-content: center;
+}
+
 .camera-capture-modal {
     display: none;
     position: fixed;

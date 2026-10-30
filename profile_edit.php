@@ -9,7 +9,7 @@ use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
 
-AuthService::requireRole(['super_admin', 'sub_admin', 'technician']);
+AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
 
 $id = !empty($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -134,6 +134,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updatePayload['image_iot_device'] = $imgIotResult ? $imgIotResult['path'] : null;
                 $updatePayload['iot_serial'] = $_POST['iot_serial'] ?? $freezer['device_serial'];
                 $updatePayload['iot_imei'] = $_POST['iot_imei'] ?? $freezer['imei_or_mac'];
+                $updatePayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '') ?: ($freezer['sim_number'] ?? null);
+                $updatePayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '') ?: ($freezer['sim_company'] ?? null);
                 $updatePayload['iot_type'] = $_POST['iot_type'] ?? $freezer['device_type'];
                 $updatePayload['iot_owner'] = $_POST['iot_owner'] ?? $freezer['device_owner'];
             }
@@ -480,6 +482,20 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="col-6 form-group">
                     <label class="form-label" for="iot_imei">Device IMEI</label>
                     <input type="text" id="iot_imei" name="iot_imei" class="form-control" value="<?= htmlspecialchars($freezer['imei_or_mac'] ?? '') ?>">
+                </div>
+                <div class="col-6 form-group">
+                    <label class="form-label" for="iot_sim_number">SIM Number</label>
+                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="<?= htmlspecialchars($freezer['sim_number'] ?? '') ?>">
+                </div>
+                <div class="col-6 form-group">
+                    <label class="form-label" for="iot_sim_company">SIM Company</label>
+                    <?php $simCo = $freezer['sim_company'] ?? ''; ?>
+                    <select id="iot_sim_company" name="iot_sim_company" class="form-select">
+                        <option value="">Select operator</option>
+                        <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
+                            <option value="<?= $op ?>" <?= $simCo === $op ? 'selected' : '' ?>><?= $op ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
             </div>
         </div>

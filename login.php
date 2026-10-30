@@ -128,13 +128,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </form>
 
         <div class="demo-roles-box">
-            <div style="font-weight: 700; color: #334155; margin-bottom: 0.4rem;">Quick Demo Logins (Click to autofill):</div>
+            <div style="font-weight: 700; color: #334155; margin-bottom: 0.4rem;">Quick Demo Login (Click to autofill):</div>
             <div>
                 <span class="demo-pill" onclick="fillCreds('admin@reeferon.com', 'Admin@123')">Super Admin</span>
-                <span class="demo-pill" onclick="fillCreds('tech@reeferon.com', 'Admin@123')">Field Technician</span>
-                <span class="demo-pill" onclick="fillCreds('viewer@baskinrobbins.com', 'Admin@123')">Store Viewer</span>
             </div>
-            <div style="color: #94a3b8; font-size: 0.725rem; margin-top: 0.4rem;">All demo accounts use password: <code style="font-weight: bold; color: #0284c7;">Admin@123</code></div>
+            <div style="color: #94a3b8; font-size: 0.725rem; margin-top: 0.4rem;">Password: <code style="font-weight: bold; color: #0284c7;">Admin@123</code></div>
         </div>
     </div>
 </div>

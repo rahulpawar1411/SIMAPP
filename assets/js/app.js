@@ -392,7 +392,8 @@ function initIdGenerator() {
         const autoSeq = !seqRaw;
         const seq = seqRaw || 'AUTO';
 
-        const candidateId = `${type}-${brand}-${model}-${loc}-${pinCode}-${mmyy}-${seq}`;
+        // Order: TYPE-BRAND-MODEL-LOC-MMYY-PIN-SEQ
+        const candidateId = `${type}-${brand}-${model}-${loc}-${mmyy}-${pinCode}-${seq}`;
         previewDisplay.textContent = candidateId;
 
         // Update chips if present
@@ -1492,6 +1493,90 @@ async function openLiveCameraCapture(input) {
     });
 }
 
+/** Pick existing photo from device gallery (must run inside a user click). */
+function openGalleryForInput(input) {
+    if (!input) return;
+    const tmp = document.createElement('input');
+    tmp.type = 'file';
+    tmp.accept = 'image/jpeg,image/png,image/webp,image/*';
+    // No capture attribute → opens gallery / file picker
+    tmp.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;width:1px;height:1px;';
+    document.body.appendChild(tmp);
+    tmp.addEventListener('change', function () {
+        const file = tmp.files && tmp.files[0];
+        setTimeout(function () { try { tmp.remove(); } catch (e) { /* ignore */ } }, 0);
+        if (!file) return;
+        assignFileToInput(input, file);
+    }, { once: true });
+    tmp.click();
+}
+
+/**
+ * Show Capture / Open Gallery sheet. Gallery opens in the same click
+ * (browsers block file-picker after async await).
+ */
+function choosePhotoForInput(input) {
+    if (!input) return;
+
+    let modal = document.getElementById('photo-source-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'photo-source-modal';
+        modal.className = 'photo-source-modal';
+        modal.setAttribute('aria-hidden', 'true');
+        modal.innerHTML = `
+            <div class="photo-source-sheet" role="dialog" aria-modal="true" aria-labelledby="photo-source-title">
+                <h3 id="photo-source-title">Add photo</h3>
+                <p>Choose Capture (camera) or Open Gallery</p>
+                <div class="photo-source-actions">
+                    <button type="button" class="btn btn-primary" id="photo-source-camera">Capture</button>
+                    <button type="button" class="btn btn-secondary" id="photo-source-gallery">Open Gallery</button>
+                    <button type="button" class="btn btn-outline" id="photo-source-cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    const cam = modal.querySelector('#photo-source-camera');
+    const gal = modal.querySelector('#photo-source-gallery');
+    const cancel = modal.querySelector('#photo-source-cancel');
+
+    const closeChooser = function () {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+        cam.onclick = null;
+        gal.onclick = null;
+        cancel.onclick = null;
+        modal.onclick = null;
+    };
+
+    cam.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeChooser();
+        openCameraForInput(input);
+    };
+    gal.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeChooser();
+        // Must stay synchronous with this click — do not await
+        openGalleryForInput(input);
+    };
+    cancel.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeChooser();
+    };
+    modal.onclick = function (e) {
+        if (e.target === modal) closeChooser();
+    };
+
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+}
+
 async function openCameraForInput(input) {
     if (!input) return;
     input.setAttribute('capture', 'environment');
@@ -1612,11 +1697,11 @@ function ensurePreviewControls(previewContainer, input) {
         btn.type = 'button';
         btn.className = 'upload-retake-btn';
         btn.innerHTML = '<span aria-hidden="true">↻</span> Retake';
-        btn.title = 'Open camera again';
+        btn.title = 'Capture or open gallery';
         btn.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
-            openCameraForInput(input);
+            choosePhotoForInput(input);
         });
         previewContainer.appendChild(btn);
     }
@@ -1635,6 +1720,7 @@ function initImageUploadPreviews() {
         input.classList.add('upload-input-camera-only');
 
         if (box) {
+            box.style.cursor = 'pointer';
             box.addEventListener('click', function (e) {
                 if (e.target.closest('.upload-retake-btn, .upload-remove-btn, .upload-loading-overlay')) return;
                 if (box.classList.contains('is-loading')) return;
@@ -1642,7 +1728,12 @@ function initImageUploadPreviews() {
                 if (box.classList.contains('has-preview')) return;
                 e.preventDefault();
                 e.stopPropagation();
-                openCameraForInput(input);
+                try {
+                    choosePhotoForInput(input);
+                } catch (err) {
+                    console.warn('Photo chooser failed, opening camera', err);
+                    openCameraForInput(input);
+                }
             });
         }
 
@@ -2140,30 +2231,38 @@ function initStoreFrontExifAutofill() {
 }
 
 // -------------------------------------------------------------
-// Modal Lightbox for Full-Size Images
+// Image Gallery Lightbox (prev / next / download)
 // -------------------------------------------------------------
 function initLightbox() {
-    const images = document.querySelectorAll('.lightbox-trigger');
+    const images = Array.from(document.querySelectorAll('.lightbox-trigger'));
     if (!images.length) return;
+
+    let currentIndex = 0;
 
     let modal = document.getElementById('lightbox-modal');
     if (!modal) {
         modal = document.createElement('div');
         modal.id = 'lightbox-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-label', 'Photo gallery');
         modal.style.cssText = `
             display: none;
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(0, 0, 0, 0.92);
             z-index: 1000;
             align-items: center;
             justify-content: center;
             padding: 1.5rem;
-            cursor: pointer;
+            cursor: default;
         `;
         modal.innerHTML = `
+            <button type="button" id="lightbox-prev" aria-label="Previous photo" style="position:absolute;left:0.75rem;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:999px;border:none;background:rgba(255,255,255,0.12);color:#fff;font-size:1.75rem;cursor:pointer;z-index:2;line-height:1;">&#8249;</button>
+            <button type="button" id="lightbox-next" aria-label="Next photo" style="position:absolute;right:0.75rem;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:999px;border:none;background:rgba(255,255,255,0.12);color:#fff;font-size:1.75rem;cursor:pointer;z-index:2;line-height:1;">&#8250;</button>
             <div id="lightbox-panel" style="position: relative; max-width: 90vw; max-height: 90vh; text-align: center;">
-                <button type="button" id="lightbox-close" aria-label="Close" style="position: absolute; top: -40px; right: 0; background: none; border: none; color: white; font-size: 2rem; cursor: pointer; line-height: 1;">&times;</button>
+                <button type="button" id="lightbox-close" aria-label="Close" style="position: absolute; top: -44px; right: 0; background: none; border: none; color: white; font-size: 2rem; cursor: pointer; line-height: 1;">&times;</button>
+                <div id="lightbox-counter" style="position:absolute;top:-40px;left:0;color:#cbd5e1;font-size:0.85rem;font-weight:600;"></div>
                 <img id="lightbox-img" src="" alt="" style="max-width: 100%; max-height: 78vh; border-radius: 8px; box-shadow: 0 0 30px rgba(0,0,0,0.8); display: block; margin: auto;">
                 <p id="lightbox-caption" style="color: #ffffff; text-align: center; margin: 0.75rem 0 0.65rem; font-weight: 600; font-size: 0.95rem;"></p>
                 <a id="lightbox-download" href="#" download style="display: inline-flex; align-items: center; gap: 0.4rem; background: #0284c7; color: #fff; text-decoration: none; font-weight: 700; font-size: 0.85rem; padding: 0.55rem 1rem; border-radius: 8px; border: none; cursor: pointer;">
@@ -2178,8 +2277,8 @@ function initLightbox() {
         `;
         document.body.appendChild(modal);
 
-        modal.addEventListener('click', function () {
-            modal.style.display = 'none';
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) closeGallery();
         });
         const panel = document.getElementById('lightbox-panel');
         if (panel) {
@@ -2189,15 +2288,39 @@ function initLightbox() {
         }
         const closeBtn = document.getElementById('lightbox-close');
         if (closeBtn) {
-            closeBtn.addEventListener('click', function () {
-                modal.style.display = 'none';
+            closeBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                closeGallery();
             });
         }
+        const prevBtn = document.getElementById('lightbox-prev');
+        const nextBtn = document.getElementById('lightbox-next');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                showGalleryAt(currentIndex - 1);
+            });
+        }
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                showGalleryAt(currentIndex + 1);
+            });
+        }
+        document.addEventListener('keydown', function (e) {
+            if (!modal || modal.style.display !== 'flex') return;
+            if (e.key === 'Escape') closeGallery();
+            if (e.key === 'ArrowLeft') showGalleryAt(currentIndex - 1);
+            if (e.key === 'ArrowRight') showGalleryAt(currentIndex + 1);
+        });
     }
 
     const lightboxImg = document.getElementById('lightbox-img');
     const lightboxCap = document.getElementById('lightbox-caption');
     const lightboxDl = document.getElementById('lightbox-download');
+    const lightboxCounter = document.getElementById('lightbox-counter');
+    const prevBtn = document.getElementById('lightbox-prev');
+    const nextBtn = document.getElementById('lightbox-next');
 
     function lightboxFilename(src, caption) {
         try {
@@ -2207,6 +2330,33 @@ function initLightbox() {
         } catch (e) { /* ignore */ }
         const safe = String(caption || 'photo').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
         return (safe || 'photo') + '.jpg';
+    }
+
+    function closeGallery() {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    function showGalleryAt(index) {
+        if (!images.length) return;
+        currentIndex = ((index % images.length) + images.length) % images.length;
+        const el = images[currentIndex];
+        const src = el.currentSrc || el.src;
+        const caption = el.getAttribute('data-caption') || el.alt || '';
+        lightboxImg.src = src;
+        lightboxCap.textContent = caption;
+        if (lightboxCounter) {
+            lightboxCounter.textContent = (currentIndex + 1) + ' / ' + images.length;
+        }
+        if (lightboxDl) {
+            lightboxDl.href = src;
+            lightboxDl.setAttribute('download', lightboxFilename(src, caption));
+        }
+        const multi = images.length > 1;
+        if (prevBtn) prevBtn.style.display = multi ? 'block' : 'none';
+        if (nextBtn) nextBtn.style.display = multi ? 'block' : 'none';
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
     }
 
     async function downloadLightboxImage(e) {
@@ -2227,7 +2377,6 @@ function initLightbox() {
             a.remove();
             URL.revokeObjectURL(url);
         } catch (err) {
-            // Fallback: open in new tab / direct link
             const a = document.createElement('a');
             a.href = src;
             a.download = filename;
@@ -2244,17 +2393,13 @@ function initLightbox() {
         lightboxDl.addEventListener('click', downloadLightboxImage);
     }
 
-    images.forEach(img => {
+    images.forEach(function (img, idx) {
         img.style.cursor = 'zoom-in';
+        if (img.dataset.galleryBound) return;
+        img.dataset.galleryBound = '1';
         img.addEventListener('click', function (e) {
             e.stopPropagation();
-            lightboxImg.src = this.src;
-            lightboxCap.textContent = this.getAttribute('data-caption') || this.alt || '';
-            if (lightboxDl) {
-                lightboxDl.href = this.src;
-                lightboxDl.setAttribute('download', lightboxFilename(this.src, lightboxCap.textContent));
-            }
-            modal.style.display = 'flex';
+            showGalleryAt(idx);
         });
     });
 }

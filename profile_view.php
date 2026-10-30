@@ -252,7 +252,12 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <div style="font-size: 0.75rem; color: #94a3b8; text-align: center;">
-                    IoT Serial: <strong><?= htmlspecialchars($freezer['device_serial'] ?? 'RF-IOT-99210') ?></strong> &bull; ReeferON RaaS Telemetry
+                    IoT Serial: <strong><?= htmlspecialchars($freezer['device_serial'] ?? 'RF-IOT-99210') ?></strong>
+                    <?php if (!empty($freezer['sim_number']) || !empty($freezer['sim_company'])): ?>
+                        &bull; SIM: <strong><?= htmlspecialchars($freezer['sim_number'] ?? '—') ?></strong>
+                        (<?= htmlspecialchars($freezer['sim_company'] ?? '—') ?>)
+                    <?php endif; ?>
+                    &bull; ReeferON RaaS Telemetry
                 </div>
             </div>
         </div>
@@ -395,7 +400,13 @@ require_once __DIR__ . '/includes/header.php';
                     <div style="position: relative; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color);">
                         <div id="store-view-map" style="width: 100%; height: 240px; z-index: 1;"></div>
                         <div style="position: absolute; bottom: 8px; left: 8px; z-index: 1000; background: rgba(15, 23, 42, 0.85); color: #ffffff; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-family: var(--font-mono);">
-                            GPS: <?= $freezer['store_latitude'] ?>, <?= $freezer['store_longitude'] ?> (±<?= $freezer['store_gps_accuracy'] ?? 3.5 ?>m)
+                            <?php
+                            $gpsAcc = (float)($freezer['store_gps_accuracy'] ?? 3.5);
+                            $gpsLabel = $gpsAcc >= 1000
+                                ? 'City approx (Excel import) — capture Store Front GPS for exact pin'
+                                : ('GPS: ' . $freezer['store_latitude'] . ', ' . $freezer['store_longitude'] . ' (±' . $gpsAcc . 'm)');
+                            ?>
+                            <?= htmlspecialchars($gpsLabel) ?>
                         </div>
                     </div>
                 <?php endif; ?>
@@ -411,7 +422,7 @@ require_once __DIR__ . '/includes/header.php';
                         <circle cx="8.5" cy="8.5" r="1.5"/>
                         <polyline points="21 15 16 10 5 21"/>
                     </svg>
-                    <span>Photographic Verification (Click to Zoom)</span>
+                    <span>Photo gallery (click to open · arrows to browse)</span>
                 </div>
             </div>
             <div class="card-body">

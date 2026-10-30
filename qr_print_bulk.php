@@ -6,7 +6,7 @@ use App\Config\AppConfig;
 use App\Config\Database;
 use App\Services\QRCodeService;
 
-AuthService::requireRole(['super_admin', 'sub_admin', 'technician']);
+AuthService::requireRole('super_admin');
 
 $city = trim((string)($_GET['city'] ?? ''));
 $status = trim((string)($_GET['status'] ?? ''));

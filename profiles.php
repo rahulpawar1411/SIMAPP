@@ -15,6 +15,7 @@ $type = $_GET['type'] ?? '';
 $brand = $_GET['brand'] ?? '';
 $status = $_GET['status'] ?? '';
 $city = $_GET['city'] ?? '';
+$missing = $_GET['missing'] ?? '';
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20;
 $offset = ($page - 1) * $limit;
@@ -25,6 +26,7 @@ $filters = [
     'brand' => $brand,
     'status' => $status,
     'city' => $city,
+    'missing' => $missing,
 ];
 
 // Handle CSV export
@@ -135,11 +137,24 @@ require_once __DIR__ . '/includes/header.php';
                 </select>
             </div>
 
+            <div style="flex: 1; min-width: 160px;">
+                <label class="form-label" style="font-size: 0.75rem;">Missing / GPS</label>
+                <select name="missing" class="form-select">
+                    <option value="">All profiles</option>
+                    <option value="any" <?= $missing === 'any' ? 'selected' : '' ?>>Any gap (GPS / photos / IoT)</option>
+                    <option value="gps" <?= $missing === 'gps' ? 'selected' : '' ?>>Missing GPS</option>
+                    <option value="gps_approx" <?= $missing === 'gps_approx' ? 'selected' : '' ?>>City approx GPS (Excel)</option>
+                    <option value="gps_exact" <?= $missing === 'gps_exact' ? 'selected' : '' ?>>Exact GPS only</option>
+                    <option value="photos" <?= $missing === 'photos' ? 'selected' : '' ?>>Missing photos</option>
+                    <option value="iot" <?= $missing === 'iot' ? 'selected' : '' ?>>Missing IoT</option>
+                </select>
+            </div>
+
             <div style="display: flex; gap: 0.5rem;">
                 <button type="submit" class="btn btn-primary" style="padding: 0.65rem 1rem;">
                     Filter
                 </button>
-                <?php if ($search || $type || $brand || $status || $city): ?>
+                <?php if ($search || $type || $brand || $status || $city || $missing): ?>
                     <a href="profiles.php" class="btn btn-secondary" style="padding: 0.65rem 0.85rem;" title="Clear Filters">Clear</a>
                 <?php endif; ?>
             </div>
@@ -198,10 +213,15 @@ require_once __DIR__ . '/includes/header.php';
                             </td>
                             <td>
                                 <div style="font-weight: 600; color: #334155; font-size: 0.85rem;"><?= htmlspecialchars($row['store_city']) ?></div>
-                                <?php if (!empty($row['store_latitude'])): ?>
-                                    <span style="font-size: 0.7rem; color: #15803d; background: #dcfce7; padding: 0.1rem 0.35rem; border-radius: 4px;">
-                                        GPS Pinned
-                                    </span>
+                                <?php
+                                $hasGps = !empty($row['store_latitude']) && !empty($row['store_longitude']);
+                                $gpsAcc = isset($row['store_gps_accuracy']) ? (float)$row['store_gps_accuracy'] : null;
+                                if (!$hasGps): ?>
+                                    <span style="font-size: 0.7rem; color: #b91c1c; background: #fee2e2; padding: 0.1rem 0.35rem; border-radius: 4px;">Missing GPS</span>
+                                <?php elseif ($gpsAcc !== null && $gpsAcc >= 1000): ?>
+                                    <span style="font-size: 0.7rem; color: #b45309; background: #ffedd5; padding: 0.1rem 0.35rem; border-radius: 4px;">City approx</span>
+                                <?php else: ?>
+                                    <span style="font-size: 0.7rem; color: #15803d; background: #dcfce7; padding: 0.1rem 0.35rem; border-radius: 4px;">Exact GPS</span>
                                 <?php endif; ?>
                             </td>
                             <?php if (AppConfig::IOT_ENABLED): ?>

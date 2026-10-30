@@ -8,7 +8,7 @@ use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
 
-AuthService::requireRole(['super_admin', 'sub_admin', 'technician']);
+AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
 
 $error = null;
@@ -169,6 +169,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (AppConfig::IOT_ENABLED) {
                 $freezerPayload['iot_serial'] = $_POST['iot_serial'] ?? ('RF-IOT-' . rand(10000, 99999));
                 $freezerPayload['iot_imei'] = $_POST['iot_imei'] ?? null;
+                $freezerPayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '') ?: null;
+                $freezerPayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '') ?: null;
                 $freezerPayload['iot_type'] = $_POST['iot_type'] ?? 'Temperature & GPS';
                 $freezerPayload['iot_owner'] = $_POST['iot_owner'] ?? 'ReeferON Own Device';
                 $freezerPayload['iot_model'] = $_POST['iot_model'] ?? 'RF-T100';
@@ -656,6 +658,23 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <div class="col-4 form-group">
+                    <label class="form-label" for="iot_sim_number">SIM Number</label>
+                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="">
+                </div>
+
+                <div class="col-4 form-group">
+                    <label class="form-label" for="iot_sim_company">SIM Company</label>
+                    <select id="iot_sim_company" name="iot_sim_company" class="form-select">
+                        <option value="">Select operator</option>
+                        <option value="Jio">Jio</option>
+                        <option value="Airtel">Airtel</option>
+                        <option value="VI">VI</option>
+                        <option value="BSNL">BSNL</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+
+                <div class="col-4 form-group">
                     <label class="form-label" for="iot_type">IoT Device Type</label>
                     <select id="iot_type" name="iot_type" class="form-select">
                         <option value="Temperature & GPS" selected>Temperature & GPS (Standard)</option>
@@ -665,7 +684,7 @@ require_once __DIR__ . '/includes/header.php';
                     </select>
                 </div>
 
-                <div class="col-6 form-group">
+                <div class="col-4 form-group">
                     <label class="form-label" for="iot_owner">Hardware Ownership</label>
                     <select id="iot_owner" name="iot_owner" class="form-select">
                         <option value="ReeferON Own Device" selected>ReeferON Own Device</option>
@@ -686,7 +705,7 @@ require_once __DIR__ . '/includes/header.php';
     </div><!-- /step 3 -->
 
     <!-- Hidden targets so ID generator JS still fills unique_freezer_id -->
-    <span id="id-preview-display" hidden>DF-RW-SFR550DDU-AMD1-380058-0324-AAA004</span>
+    <span id="id-preview-display" hidden>DF-RW-SFR550DDU-AMD1-0324-380058-AAA004</span>
     <span id="id-status-badge" hidden></span>
     <span id="chip-type" hidden></span>
     <span id="chip-brand" hidden></span>

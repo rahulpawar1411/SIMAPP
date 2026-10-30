@@ -43,14 +43,11 @@ class User {
         $name = trim($data['name'] ?? '');
         $email = strtolower(trim($data['email'] ?? ''));
         $password = $data['password'] ?? '';
-        $role = trim($data['role'] ?? $existing['role']);
+        $role = AppConfig::ROLE_SUPER_ADMIN;
         $status = trim($data['status'] ?? $existing['status']);
 
         $allowedRoles = [
             AppConfig::ROLE_SUPER_ADMIN,
-            AppConfig::ROLE_SUB_ADMIN,
-            AppConfig::ROLE_TECHNICIAN,
-            AppConfig::ROLE_VIEWER,
         ];
 
         if ($name === '' || $email === '') {
@@ -161,14 +158,11 @@ class User {
         $name = trim($data['name'] ?? '');
         $email = strtolower(trim($data['email'] ?? ''));
         $password = $data['password'] ?? '';
-        $role = trim($data['role'] ?? AppConfig::ROLE_VIEWER);
+        $role = AppConfig::ROLE_SUPER_ADMIN;
         $status = trim($data['status'] ?? 'active');
 
         $allowedRoles = [
             AppConfig::ROLE_SUPER_ADMIN,
-            AppConfig::ROLE_SUB_ADMIN,
-            AppConfig::ROLE_TECHNICIAN,
-            AppConfig::ROLE_VIEWER,
         ];
 
         if ($name === '' || $email === '' || $password === '') {

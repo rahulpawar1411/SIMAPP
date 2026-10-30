@@ -14,9 +14,9 @@ An enterprise-grade, mobile-responsive Cold-Chain Asset Management System built 
 ### 2. Standardized Unique Freezer ID Generation
 Automatically generates, validates, and prevents duplicate IDs adhering to the exact ReeferON specification:
 ```
-{TYPE}-{COMPANY}-{MODEL}-{LOCATION}-{PIN3}-{MMYY}-{UNITSEQ}
+{TYPE}-{COMPANY}-{MODEL}-{LOCATION}-{MMYY}-{PIN6}-{UNITSEQ}
 ```
-**Example:** `DF-RW-SFR550DDU-AMD1-058-0324-AAA004`
+**Example:** `DF-RW-SFR550DDU-AMD1-0324-380058-AAA004`
 
 | Component | Example | Description |
 |---|---|---|
@@ -24,8 +24,8 @@ Automatically generates, validates, and prevents duplicate IDs adhering to the e
 | **Company / Series Code** | `RW` | Brand/OEM: `RW` (Rockwell), `VL` (Voltas), `BS` (Blue Star), `HV` (Havells), `LG`, etc. |
 | **Model Number** | `SFR550DDU` | Sanitized alphanumeric model number |
 | **Location Code** | `AMD1` | Standard location code (e.g. `AMD1`, `MUM1`, `DEL1`) |
-| **PIN Code (Last 3)** | `058` | Automatically extracted from the store's 6-digit PIN (e.g. `380058` &rarr; `058`) |
-| **Install MMYY** | `0324` | Installation month/year (`0324` for March 2024) |
+| **Install MMYY** | `0324` | Installation month/year first (`0324` for March 2024) |
+| **PIN Code (6)** | `380058` | Full 6-digit PIN after MMYY |
 | **Unique Unit Sequence** | `AAA004` | Auto-incremented sequence (`AAA001`, `AAA002`...) queried against the database to guarantee zero duplicate collisions |
 
 - **Real-Time Dynamic Generator:** The Add Profile wizard displays a live ID preview and color-coded validity badge as the technician fills the form.
@@ -43,10 +43,8 @@ Automatically generates, validates, and prevents duplicate IDs adhering to the e
 - **Mobile Camera QR Scanner:** Built-in web scanner (`qr_scanner.php`) utilizing camera viewfinder and audio beep to immediately look up and open corresponding freezer profiles.
 - **Printable Industrial Asset Tag:** (`qr_print.php`) Thermal sticker/label ready for printing and pasting onto freezer chassis.
 
-### 5. Role-Based Access Control (RBAC)
-- **Super Admin (`super_admin`):** Full access to create, view, edit, delete, export CSV, and print tags.
-- **Field Technician (`technician`):** Create store/freezer profiles, capture mobile GPS, upload photos, scan QR codes.
-- **Store Viewer (`viewer`):** Read-only view of store profile, live temperature telemetry, and asset specifications.
+### 5. Access Control
+- **Super Admin only (`super_admin`):** Full access — profiles, import/export, users, QR, KYC, transfer.
 - **Security Practices:** Password hashing with `password_hash()` (bcrypt), prepared statements (PDO), and CSRF tokens.
 
 ### 6. IoT Telemetry Ready
@@ -115,8 +113,6 @@ All seeded test accounts use password: **`Admin@123`**
 | Role | Email | Password |
 |---|---|---|
 | **Super Admin** | `admin@reeferon.com` | `Admin@123` |
-| **Field Technician** | `tech@reeferon.com` | `Admin@123` |
-| **Store Viewer** | `viewer@baskinrobbins.com` | `Admin@123` |
 
 ---
 

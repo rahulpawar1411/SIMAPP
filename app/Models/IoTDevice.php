@@ -10,14 +10,16 @@ class IoTDevice {
         $pdo = Database::getConnection();
 
         $sql = "INSERT INTO `iot_devices` (
-            `freezer_id`, `device_serial`, `imei_or_mac`, `device_type`,
+            `freezer_id`, `device_serial`, `imei_or_mac`, `sim_number`, `sim_company`, `device_type`,
             `device_owner`, `oem_model`, `battery_percentage`, `power_status`, `last_ping_at`
         ) VALUES (
-            :freezer_id, :device_serial, :imei_or_mac, :device_type,
+            :freezer_id, :device_serial, :imei_or_mac, :sim_number, :sim_company, :device_type,
             :device_owner, :oem_model, :battery_percentage, :power_status, NOW()
         ) ON DUPLICATE KEY UPDATE
             `device_serial` = VALUES(`device_serial`),
             `imei_or_mac` = VALUES(`imei_or_mac`),
+            `sim_number` = VALUES(`sim_number`),
+            `sim_company` = VALUES(`sim_company`),
             `device_type` = VALUES(`device_type`),
             `device_owner` = VALUES(`device_owner`),
             `oem_model` = VALUES(`oem_model`),
@@ -28,6 +30,8 @@ class IoTDevice {
             'freezer_id' => $freezerId,
             'device_serial' => trim($data['device_serial']),
             'imei_or_mac' => !empty($data['imei_or_mac']) ? trim($data['imei_or_mac']) : null,
+            'sim_number' => !empty($data['sim_number']) ? trim($data['sim_number']) : null,
+            'sim_company' => !empty($data['sim_company']) ? trim($data['sim_company']) : null,
             'device_type' => $data['device_type'] ?? 'Temperature & GPS',
             'device_owner' => $data['device_owner'] ?? 'ReeferON Own Device',
             'oem_model' => $data['oem_model'] ?? 'RF-T100',
