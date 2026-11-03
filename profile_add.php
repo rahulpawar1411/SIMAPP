@@ -7,6 +7,7 @@ use App\Config\AppConfig;
 use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
+use App\Models\AssetTag;
 
 AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
@@ -20,12 +21,53 @@ $brands = MasterData::getBrands();
 $customers = MasterData::getCustomerList();
 $conditions = MasterData::getConditions();
 
-// Handle form submission — Store + Freezer → Unique ID → QR
+// Scan-first workflow: blank QR must be scanned (or opened) before filling data
+$boundTagCode = strtoupper(trim((string)($_GET['tag'] ?? $_POST['asset_tag_code'] ?? '')));
+$boundTag = null;
+if ($boundTagCode !== '') {
+    $boundTag = AssetTag::findByCode($boundTagCode);
+    if (!$boundTag) {
+        $error = "Blank QR tag '{$boundTagCode}' was not found. Generate & print tags under Blank QR Tags, then scan.";
+        $boundTagCode = '';
+    } elseif ($boundTag['status'] === 'assigned' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        $freezer = !empty($boundTag['freezer_id']) ? Freezer::findById((int)$boundTag['freezer_id']) : null;
+        if ($freezer) {
+            header('Location: profile_view.php?id=' . urlencode($freezer['unique_freezer_id']));
+            exit;
+        }
+        $error = "QR tag '{$boundTagCode}' is already assigned.";
+        $boundTagCode = '';
+        $boundTag = null;
+    } elseif ($boundTag['status'] !== 'unused' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        $error = "QR tag '{$boundTagCode}' is not available for registration.";
+        $boundTagCode = '';
+        $boundTag = null;
+    }
+}
+if (!empty($_GET['err']) && $_GET['err'] === 'assigned' && empty($error)) {
+    $error = 'This QR tag is already assigned — scan shows existing details.';
+}
+
+$requireScanFirst = ($boundTag === null || $boundTagCode === '');
+
+// Handle form submission — only after QR scanned; data is linked to that QR
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security CSRF token. Please submit again.';
     } else {
         try {
+            $postTagCode = strtoupper(trim((string)($_POST['asset_tag_code'] ?? '')));
+            if ($postTagCode === '') {
+                throw new Exception('Scan a blank QR tag first, then fill store & freezer details.');
+            }
+            $tagCheck = AssetTag::findByCode($postTagCode);
+            if (!$tagCheck || $tagCheck['status'] !== 'unused') {
+                throw new Exception("Blank QR tag '{$postTagCode}' is not available. Scan an unused sticker.");
+            }
+            $boundTagCode = $postTagCode;
+            $boundTag = $tagCheck;
+            $requireScanFirst = false;
+
             $requiredText = [
                 'store_name' => 'Store / Outlet name',
                 'address' => 'Street address',
@@ -52,53 +94,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception('Freezer Left and Right photos are required for asset verification.');
             }
 
-            // 1. Process uploads: store front + Aadhaar + freezer sides + IoT
-            $imgStoreFront = FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'store_front');
+            // 1. Process uploads — filename: Tag-YYYYMMDD-StoreName-ImageType.ext
+            $imgNameMeta = [
+                'tag_code' => $postTagCode,
+                'store_name' => trim((string)($_POST['store_name'] ?? 'Store')),
+                'datetime' => date('Ymd'),
+            ];
+            $imgStoreFront = FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'store_front', $imgNameMeta);
             if (!$imgStoreFront['success']) {
                 throw new Exception('Store Front Image Error: ' . $imgStoreFront['error']);
             }
 
             $imgAadhar = null;
             if (!empty($_FILES['image_aadhar_card']['name'])) {
-                $imgAadhar = FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front');
+                $imgAadhar = FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front', $imgNameMeta);
                 if (!$imgAadhar['success']) {
                     throw new Exception('Aadhaar Front Image Error: ' . $imgAadhar['error']);
                 }
             }
             $imgAadharBack = null;
             if (!empty($_FILES['image_aadhar_back']['name'])) {
-                $imgAadharBack = FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back');
+                $imgAadharBack = FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back', $imgNameMeta);
                 if (!$imgAadharBack['success']) {
                     throw new Exception('Aadhaar Back Image Error: ' . $imgAadharBack['error']);
                 }
             }
 
-            $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left');
+            $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left', $imgNameMeta);
             if (!$imgLeftResult['success']) {
                 throw new Exception('Left Side Image Error: ' . $imgLeftResult['error']);
             }
 
-            $imgRightResult = FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right');
+            $imgRightResult = FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right', $imgNameMeta);
             if (!$imgRightResult['success']) {
                 throw new Exception('Right Side Image Error: ' . $imgRightResult['error']);
             }
 
             $imgIotResult = null;
             if (AppConfig::IOT_ENABLED && !empty($_FILES['image_iot_device']['name'])) {
-                $imgIotResult = FileUploadService::handleImageUpload($_FILES['image_iot_device'], 'iot', 'iot_dev');
+                $imgIotResult = FileUploadService::handleImageUpload($_FILES['image_iot_device'], 'iot', 'iot_dev', $imgNameMeta);
                 if (!$imgIotResult['success']) {
                     throw new Exception('IoT Device Image Error: ' . $imgIotResult['error']);
                 }
             }
 
-            // 2. Create Store Profile (KYS master details)
-            $outletId = !empty($_POST['outlet_id'])
-                ? trim($_POST['outlet_id'])
-                : Store::generateOutletId([
-                    'city' => $_POST['city'] ?? 'AMD',
-                    'pincode' => $_POST['pincode'] ?? '',
-                    'location_code' => $_POST['location_code'] ?? '',
-                ]);
+            // 2. Create Store Profile (KYS master details) — Outlet ID always auto
+            $outletId = Store::generateOutletId([
+                'city' => $_POST['city'] ?? 'AMD',
+                'pincode' => $_POST['pincode'] ?? '',
+                'location_code' => $_POST['location_code'] ?? '',
+            ]);
             $hasGps = !empty($_POST['latitude']) && !empty($_POST['longitude']);
             $storeId = Store::create([
                 'outlet_id' => $outletId,
@@ -121,6 +166,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'longitude' => $hasGps ? (float)$_POST['longitude'] : null,
                 'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : null,
                 'gps_captured_at' => $hasGps ? date('Y-m-d H:i:s') : null,
+                'location_link' => $hasGps
+                    ? (trim((string)($_POST['location_link'] ?? '')) !== ''
+                        ? trim((string)$_POST['location_link'])
+                        : ('https://maps.google.com/?q=' . rawurlencode((float)$_POST['latitude'] . ',' . (float)$_POST['longitude'])))
+                    : null,
                 'image_store_front' => $imgStoreFront['path'],
                 'image_aadhar_card' => $imgAadhar ? $imgAadhar['path'] : null,
                 'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
@@ -142,7 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Unique ID + random unit sequence assigned on save
             $candidateId = null;
 
-            // 4. Create Freezer (auto ID + QR generation)
+            // 4. Create Freezer — Unique ID generated; physical QR sticker stays the scanned blank tag
             $freezerPayload = [
                 'unique_freezer_id' => $candidateId,
                 'store_id' => $storeId,
@@ -162,6 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'status' => $_POST['freezer_status'] ?? 'Active',
                 'notes' => $_POST['notes'] ?? '',
                 'created_by' => $currentUser['id'],
+                'asset_tag_code' => $boundTagCode,
             ];
 
             if (AppConfig::IOT_ENABLED) {
@@ -190,38 +241,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$pageTitle = 'Create Store & Freezer Profile';
+$pageTitle = $requireScanFirst ? 'Scan QR to Register' : 'Fill Store & Freezer Details';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div class="checkout-page">
-    <div class="checkout-intro" style="margin-bottom: 0.85rem; text-align: center;">
-        <h2 style="font-weight: 800; color: #0a2540; letter-spacing: -0.02em;">Create Store &amp; Freezer Profile</h2>
-        <p style="color: #697386; margin-top: 0.2rem; max-width: 36rem; margin-left: auto; margin-right: auto;">
-            Fill <strong>store</strong> + <strong>freezer</strong> details with photos. On save we build the Unique Freezer ID and generate the QR asset tag.
-        </p>
-    </div>
-
 <?php if ($error): ?>
     <div class="alert alert-danger" style="margin-bottom: 1rem;">
         <span><?= htmlspecialchars($error) ?></span>
     </div>
 <?php endif; ?>
 
-<div class="checkout-card">
-    <div class="checkout-methods" id="checkout-methods" style="padding-top: 1rem;">
-        <button type="button" class="checkout-method active" data-goto="1">1. Store Info</button>
-        <button type="button" class="checkout-method" data-goto="2">2. Freezer Info</button>
-        <button type="button" class="checkout-method" data-goto="3">3. Review &amp; QR</button>
+<?php if ($requireScanFirst): ?>
+    <div class="card" style="max-width: 520px; margin: 0 auto; text-align: center;">
+        <div class="card-body" style="padding: 2rem 1.5rem;">
+            <h2 style="font-weight: 800; color: #0a2540; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
+                Step 1 — Scan blank QR first
+            </h2>
+            <p style="color: #64748b; font-size: 0.9rem; margin: 0 auto 1.25rem; max-width: 26rem;">
+                Print blank stickers (Logo + QR), stick on freezer, then scan.
+                After you fill &amp; submit, <strong>that same QR</strong> will open all store &amp; freezer details.
+            </p>
+            <ol style="text-align: left; max-width: 22rem; margin: 0 auto 1.5rem; color: #475569; font-size: 0.875rem; line-height: 1.55; padding-left: 1.2rem;">
+                <li>Print blank QR tags</li>
+                <li>Scan the sticker on the freezer</li>
+                <li>Fill store + freezer info &amp; photos</li>
+                <li>Done — next scan shows full details</li>
+            </ol>
+            <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
+                <a href="qr_scanner.php" class="btn btn-primary">Scan QR now</a>
+                <a href="blank_qr.php" class="btn btn-secondary">Print blank QR tags</a>
+            </div>
+        </div>
     </div>
+</div><!-- /checkout-page -->
+<?php else: ?>
 
-    <div class="checkout-secure">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        Store Info + Freezer Info · photos required · QR after save<?= AppConfig::IOT_ENABLED ? '' : ' · IoT disabled' ?>
-    </div>
+    <header class="onboard-hero">
+        <p class="onboard-kicker">Step 2 of 2</p>
+        <h1 class="onboard-title">Fill store &amp; freezer details</h1>
+        <div class="onboard-tag-chip" title="Scanned QR tag">
+            <span class="onboard-tag-dot" aria-hidden="true"></span>
+            <span>QR</span>
+            <code><?= htmlspecialchars($boundTag['tag_code']) ?></code>
+        </div>
+        <p class="onboard-lead">Photo pehle, details baad mein. Save hone pe yeh sticker pe profile link ho jayegi.</p>
+    </header>
+
+<div class="checkout-card onboard-card">
+    <nav class="onboard-steps" id="checkout-methods" aria-label="Form steps">
+        <button type="button" class="onboard-step checkout-method active" data-goto="1">
+            <span class="onboard-step-num">1</span>
+            <span class="onboard-step-label">Store</span>
+        </button>
+        <button type="button" class="onboard-step checkout-method" data-goto="2">
+            <span class="onboard-step-num">2</span>
+            <span class="onboard-step-label">Freezer</span>
+        </button>
+        <button type="button" class="onboard-step checkout-method" data-goto="3">
+            <span class="onboard-step-num">3</span>
+            <span class="onboard-step-label">Review</span>
+        </button>
+    </nav>
 
 <form method="POST" action="" enctype="multipart/form-data" id="onboard-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+    <input type="hidden" name="asset_tag_code" value="<?= htmlspecialchars($boundTagCode) ?>">
     <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="">
 
     <div class="checkout-body">
@@ -229,11 +314,11 @@ require_once __DIR__ . '/includes/header.php';
     <!-- STEP 1: STORE INFO                         -->
     <!-- ========================================== -->
     <div class="checkout-step active" data-step="1">
-    <div class="checkout-section-title">1 · Store Info</div>
     <div class="card">
         <div class="card-body">
             <input type="hidden" id="latitude" name="latitude" value="">
             <input type="hidden" id="longitude" name="longitude" value="">
+            <input type="hidden" id="location_link" name="location_link" value="">
             <input type="hidden" id="gps_accuracy" name="gps_accuracy" value="">
             <input type="hidden" id="state" name="state" value="">
 
@@ -268,23 +353,30 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
-                <div class="gps-capture-widget" style="margin: 1rem 0 0;">
+                <div class="gps-capture-widget gps-capture-widget-compact" style="margin: 1rem 0 0;">
                     <div class="gps-header">
-                        <strong style="font-size: 0.9rem; color: #14532d;">Store GPS location</strong>
-                        <span id="gps-status-pill" class="gps-status-pill">Not captured</span>
+                        <strong style="font-size: 0.9rem; color: #14532d;">Store location</strong>
+                        <span id="gps-status-pill" class="gps-status-pill">Not set</span>
                     </div>
-                    <div class="gps-place-card">
-                        <label>Detected place</label>
-                        <div class="gps-place-text" id="disp-place">Take Store Front photo or tap Capture GPS</div>
-                        <div class="gps-coords-meta">
-                            <span>Lat: <span class="gps-coords-muted" id="disp-lat">—</span></span>
-                            <span>Lng: <span class="gps-coords-muted" id="disp-lng">—</span></span>
-                            <span>Acc: <span class="gps-coords-muted" id="disp-acc">—</span></span>
-                        </div>
+                    <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
+                        <span class="gps-process-spinner" aria-hidden="true"></span>
+                        <span class="gps-process-text">Processing…</span>
                     </div>
-                    <button type="button" class="btn btn-success" id="btn-capture-gps" style="align-self: flex-start;">
-                        Capture GPS Location Now
-                    </button>
+                    <!-- Hidden hooks for JS GPS fill (not shown in UI) -->
+                    <span id="disp-place" hidden></span>
+                    <span id="disp-lat" hidden></span>
+                    <span id="disp-lng" hidden></span>
+                    <span id="disp-acc" hidden></span>
+                    <div class="gps-action-row" style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+                        <button type="button" class="btn btn-success" data-save-current-location
+                            data-wa-title="Store location (onboarding)">
+                            Save my current location
+                        </button>
+                        <button type="button" class="btn btn-primary js-share-location-btn" data-share-location="saved"
+                            data-wa-title="Store location" hidden>
+                            Share location
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -298,23 +390,25 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <div class="form-grid">
-                    <div class="col-12 form-group">
-                        <label class="form-label required" for="address">Street address <span class="label-tag">from photo</span></label>
-                        <input type="text" id="address" name="address" class="form-control" placeholder="Shop No, Building, Street, Area" value="<?= htmlspecialchars($_POST['address'] ?? '') ?>" required>
-                        <div class="form-error">Address is required.</div>
+                    <div class="col-6 form-group">
+                        <label class="form-label required" for="store_name">Store / Outlet name</label>
+                        <input type="text" id="store_name" name="store_name" class="form-control" placeholder="e.g. Baskin Robbins - CG Road Hub" value="<?= htmlspecialchars($_POST['store_name'] ?? '') ?>" required>
+                        <div class="form-error">Store name is required.</div>
                     </div>
 
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="city">City <span class="label-tag">from photo</span></label>
-                        <input type="text" id="city" name="city" class="form-control" list="city-list" placeholder="City" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" required autocomplete="off">
-                        <datalist id="city-list"></datalist>
+                    <div class="col-3 form-group">
+                        <label class="form-label" for="outlet_id_preview">Outlet ID / Code</label>
+                        <input type="text" id="outlet_id_preview" class="form-control" value="Auto on save" readonly
+                               style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
                     </div>
 
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="pincode">PIN code <span class="label-tag">from photo</span></label>
-                        <input type="text" id="pincode" name="pincode" class="form-control" placeholder="6 digits" value="<?= htmlspecialchars($_POST['pincode'] ?? '') ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
-                        <div class="form-error">Enter a valid 6-digit PIN code.</div>
-                        <span class="form-help">Full 6-digit PIN goes into Freezer ID</span>
+                    <div class="col-3 form-group">
+                        <label class="form-label" for="customer_name">Customer account</label>
+                        <select id="customer_name" name="customer_name" class="form-select">
+                            <?php foreach ($customers as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= (($_POST['customer_name'] ?? '') === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
 
                     <div class="col-4 form-group">
@@ -329,34 +423,30 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                     </div>
 
-                    <div class="col-6 form-group">
-                        <label class="form-label required" for="store_name">Store / Outlet name</label>
-                        <input type="text" id="store_name" name="store_name" class="form-control" placeholder="e.g. Baskin Robbins - CG Road Hub" value="<?= htmlspecialchars($_POST['store_name'] ?? '') ?>" required>
-                        <div class="form-error">Store name is required.</div>
+                    <div class="col-8 form-group">
+                        <label class="form-label required" for="city">City <span class="label-tag">from photo</span></label>
+                        <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" required autocomplete="off">
+                        <datalist id="city-list"></datalist>
                     </div>
 
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="outlet_id">Outlet ID / Code</label>
-                        <input type="text" id="outlet_id" name="outlet_id" class="form-control" placeholder="Auto e.g. AMD1-380009-0001" value="<?= htmlspecialchars($_POST['outlet_id'] ?? '') ?>">
-                        <span class="form-help">Blank = auto like freezer: <code>AMD1-380009-0001</code> (location code + full PIN + seq)</span>
-                        <span class="form-help">Leave blank to auto-generate</span>
+                    <div class="col-12 form-group">
+                        <label class="form-label required" for="address">Street address <span class="label-tag">from photo</span></label>
+                        <input type="text" id="address" name="address" class="form-control" placeholder="Shop No, Building, Street, Area" value="<?= htmlspecialchars($_POST['address'] ?? '') ?>" required>
+                        <div class="form-error">Address is required.</div>
                     </div>
 
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="customer_name">Customer account</label>
-                        <select id="customer_name" name="customer_name" class="form-select">
-                            <?php foreach ($customers as $c): ?>
-                                <option value="<?= htmlspecialchars($c) ?>" <?= (($_POST['customer_name'] ?? '') === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-                            <?php endforeach; ?>
-                        </select>
+                    <div class="col-4 form-group">
+                        <label class="form-label required" for="pincode">PIN code <span class="label-tag">from photo</span></label>
+                        <input type="text" id="pincode" name="pincode" class="form-control" placeholder="6 digits" value="<?= htmlspecialchars($_POST['pincode'] ?? '') ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
+                        <div class="form-error">Enter a valid 6-digit PIN code.</div>
                     </div>
 
-                    <div class="col-6 form-group">
+                    <div class="col-4 form-group">
                         <label class="form-label" for="distributor_name">Distributor</label>
                         <input type="text" id="distributor_name" name="distributor_name" class="form-control" placeholder="Distributor / dealer name" value="<?= htmlspecialchars($_POST['distributor_name'] ?? '') ?>">
                     </div>
 
-                    <div class="col-6 form-group">
+                    <div class="col-4 form-group">
                         <label class="form-label" for="location_type">Location type</label>
                         <select id="location_type" name="location_type" class="form-select">
                             <?php
@@ -372,14 +462,12 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="col-6 form-group">
                         <label class="form-label" for="fssai_number">FSSAI number</label>
                         <input type="text" id="fssai_number" name="fssai_number" class="form-control" placeholder="14-digit FSSAI licence" value="<?= htmlspecialchars($_POST['fssai_number'] ?? '') ?>" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off">
-                        <span class="form-help">Optional · exactly 14 digits</span>
                         <div class="form-error">Enter a valid 14-digit FSSAI number.</div>
                     </div>
 
                     <div class="col-6 form-group">
                         <label class="form-label" for="gst_number">GST number</label>
                         <input type="text" id="gst_number" name="gst_number" class="form-control" placeholder="15-character GSTIN" value="<?= htmlspecialchars($_POST['gst_number'] ?? '') ?>" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;">
-                        <span class="form-help">Optional · 15-character GSTIN</span>
                         <div class="form-error">Enter a valid 15-character GSTIN.</div>
                     </div>
                 </div>
@@ -406,20 +494,17 @@ require_once __DIR__ . '/includes/header.php';
                             <span class="phone-prefix" aria-hidden="true">+91</span>
                             <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars($_POST['phone_number'] ?? '') ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
                         </div>
-                        <span class="form-help">Exactly 10 digits starting with 6–9 · saved as +91XXXXXXXXXX</span>
                         <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
                     </div>
 
                     <div class="col-6 form-group">
                         <label class="form-label" for="email">Store operator email ID</label>
                         <input type="email" id="email" name="email" class="form-control" placeholder="operator@example.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>" autocomplete="email">
-                        <span class="form-help">Operator / store manager email</span>
                     </div>
 
                     <div class="col-6 form-group">
                         <label class="form-label" for="aadhar_number">Store operator Aadhaar number</label>
                         <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" placeholder="12-digit Aadhaar" value="<?= htmlspecialchars($_POST['aadhar_number'] ?? '') ?>" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
-                        <span class="form-help">Exactly 12 digits</span>
                         <div class="form-error">Enter a valid 12-digit Aadhaar number.</div>
                     </div>
 
@@ -429,13 +514,13 @@ require_once __DIR__ . '/includes/header.php';
                             <div class="upload-box">
                                 <input type="file" name="image_aadhar_card" id="image_aadhar_card" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-card">
                                 <div class="upload-title">Aadhaar front</div>
-                                <div class="upload-hint">Optional · JPG / PNG / WebP</div>
+                                <div class="upload-hint">Optional · date-time stamp only</div>
                                 <div class="upload-preview-container" id="preview-aadhar-card"></div>
                             </div>
                             <div class="upload-box">
                                 <input type="file" name="image_aadhar_back" id="image_aadhar_back" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-back">
                                 <div class="upload-title">Aadhaar back</div>
-                                <div class="upload-hint">Optional · JPG / PNG / WebP</div>
+                                <div class="upload-hint">Optional · date-time stamp only</div>
                                 <div class="upload-preview-container" id="preview-aadhar-back"></div>
                             </div>
                         </div>
@@ -450,7 +535,6 @@ require_once __DIR__ . '/includes/header.php';
     <!-- STEP 2: FREEZER INFO                       -->
     <!-- ========================================== -->
     <div class="checkout-step" data-step="2">
-    <div class="checkout-section-title">2 · Freezer Info</div>
     <div class="card">
         <div class="card-body">
             <!-- Sub: Freezer photos -->
@@ -470,7 +554,7 @@ require_once __DIR__ . '/includes/header.php';
                             <circle cx="12" cy="13" r="4"/>
                         </svg>
                         <div class="upload-title">Freezer Left *</div>
-                        <div class="upload-hint">Required · Left side</div>
+                        <div class="upload-hint">Required · date-time stamp only</div>
                         <div class="upload-preview-container" id="preview-left">
                             <img src="" alt="Left Side Preview">
                             <span class="preview-badge">Left</span>
@@ -484,7 +568,7 @@ require_once __DIR__ . '/includes/header.php';
                             <circle cx="12" cy="13" r="4"/>
                         </svg>
                         <div class="upload-title">Freezer Right *</div>
-                        <div class="upload-hint">Required · Right side</div>
+                        <div class="upload-hint">Required · date-time stamp only</div>
                         <div class="upload-preview-container" id="preview-right">
                             <img src="" alt="Right Side Preview">
                             <span class="preview-badge">Right</span>
@@ -512,8 +596,7 @@ require_once __DIR__ . '/includes/header.php';
                                 </option>
                             <?php endforeach; ?>
                         </select>
-                        <span class="form-help">Unique ID uses code e.g. <code>DF</code></span>
-                    </div>
+</div>
 
                     <div class="col-4 form-group">
                         <label class="form-label required" for="company_code">Brand / company</label>
@@ -524,36 +607,27 @@ require_once __DIR__ . '/includes/header.php';
                                 </option>
                             <?php endforeach; ?>
                         </select>
-                        <span class="form-help">Unique ID uses code e.g. <code>RW</code></span>
-                    </div>
+</div>
 
                     <div class="col-4 form-group">
                         <label class="form-label required" for="model_number">Model number</label>
                         <input type="text" id="model_number" name="model_number" class="form-control" placeholder="e.g. SFR550DDU" value="<?= htmlspecialchars($_POST['model_number'] ?? '') ?>" required maxlength="32" autocomplete="off">
                         <div class="form-error">Model number is required.</div>
-                        <span class="form-help">Alphanumeric · used in Freezer ID</span>
-                    </div>
+</div>
 
                 <div class="col-3 form-group">
                     <label class="form-label" for="location_code">Location code</label>
-                    <select id="location_code" name="location_code" class="form-select">
-                        <option value="">Auto from city…</option>
-                        <?php
-                        $postedLoc = strtoupper(trim((string)($_POST['location_code'] ?? '')));
-                        if ($postedLoc !== ''):
-                        ?>
-                            <option value="<?= htmlspecialchars($postedLoc) ?>" selected><?= htmlspecialchars($postedLoc) ?></option>
-                        <?php endif; ?>
-                    </select>
-                    <span class="form-help">Auto from city (Ahmedabad → AMD1) · change 1/2/3 if needed</span>
+                    <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
+                           value="<?= htmlspecialchars(strtoupper(trim((string)($_POST['location_code'] ?? '')))) ?>"
+                           placeholder="Auto from city"
+                           readonly tabindex="-1" autocomplete="off">
                 </div>
 
                     <div class="col-3 form-group">
                         <label class="form-label required" for="installation_date">Installation date</label>
                         <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($_POST['installation_date'] ?? '') ?>" required>
                         <div class="form-error">Installation date is required.</div>
-                        <span class="form-help">Becomes MMYY in Freezer ID</span>
-                    </div>
+</div>
 
                     <div class="col-3 form-group">
                         <label class="form-label" for="capacity_litres">Capacity (litres)</label>
@@ -587,21 +661,14 @@ require_once __DIR__ . '/includes/header.php';
     <!-- STEP 3: REVIEW + SAVE / QR (IoT disabled) -->
     <!-- ========================================== -->
     <div class="checkout-step" data-step="3">
-    <div class="checkout-section-title">3 · Review &amp; generate QR</div>
-
-    <div class="card" style="margin-bottom: 1rem;">
+    <div class="card onboard-review-card" style="margin-bottom: 1rem;">
         <div class="card-body">
-            <p class="photo-step-sub" style="margin-top:0;">Save summary</p>
+            <p class="onboard-review-label">Save summary</p>
             <div class="form-grid" style="gap: 0.75rem;">
-                <div class="col-6" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.75rem;">
+                <div class="col-12" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.75rem;">
                     <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:#64748b; margin-bottom:0.35rem;">Store</div>
                     <div id="summary-store" style="font-weight:700; color:#0f172a;">—</div>
                     <div id="summary-store-meta" style="font-size:0.8rem; color:#64748b; margin-top:0.25rem;">—</div>
-                </div>
-                <div class="col-6" style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; padding:0.75rem;">
-                    <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:#0369a1; margin-bottom:0.35rem;">Unique Freezer ID → QR</div>
-                    <div id="summary-freezer-id" style="font-family:var(--font-mono); font-size:0.8rem; font-weight:700; color:#0284c7; word-break:break-all;">Preview…</div>
-                    <div style="font-size:0.75rem; color:#64748b; margin-top:0.35rem;">QR opens this profile after save</div>
                 </div>
             </div>
         </div>
@@ -609,16 +676,17 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="card">
         <div class="card-body">
-            <?php if (!AppConfig::IOT_ENABLED): ?>
-                <p class="form-step-hint" style="margin-top:0;">
-                    IoT capture is temporarily disabled. Save store + freezer to generate the QR asset tag.
-                </p>
-            <?php endif; ?>
-
             <?php if (AppConfig::IOT_ENABLED): ?>
             <p class="form-step-hint">
                 Optional IoT photo &amp; serial. Then save — store + freezer are stored and QR is generated.
             </p>
+            <?php else: ?>
+            <p class="form-step-hint" style="margin-top:0;">
+                Review details, then save — store + freezer are stored and the QR asset tag is generated.
+            </p>
+            <?php endif; ?>
+
+            <?php if (AppConfig::IOT_ENABLED): ?>
 
             <p class="photo-step-sub" style="margin-top:0;">IoT photo <span style="font-weight:500; color:#94a3b8;">(recommended)</span></p>
             <div class="upload-box upload-box-featured" id="dropzone-iot" style="margin-bottom: 1.25rem;">
@@ -708,22 +776,17 @@ require_once __DIR__ . '/includes/header.php';
     <span id="chip-seq" hidden></span>
     </div><!-- /checkout-body -->
 
-    <div class="checkout-footer">
-        <div class="checkout-total-row">
-            <span>Unique Freezer ID</span>
-            <strong id="checkout-id-summary">Preview…</strong>
-        </div>
+    <div class="checkout-footer onboard-footer">
         <button type="button" class="btn btn-checkout" id="checkout-next-btn">
-            Continue to Freezer Info
+            Continue
         </button>
         <button type="submit" class="btn btn-checkout" id="checkout-submit-btn" style="display:none;">
-            Save Store + Freezer &amp; generate QR
+            Save &amp; link to QR
         </button>
         <div class="checkout-nav-row">
             <button type="button" class="btn btn-secondary" id="checkout-back-btn" style="flex:1; display:none;">Back</button>
-            <a href="profiles.php" class="btn btn-outline" style="flex:1; justify-content:center;">Cancel</a>
+            <a href="qr_scanner.php" class="btn btn-outline" style="flex:1; justify-content:center;">Cancel</a>
         </div>
-        <div class="checkout-powered">ReeferON SIM · Store master + freezer asset · QR after save</div>
     </div>
 </form>
 </div><!-- /checkout-card -->
@@ -741,7 +804,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const nextBtn = document.getElementById('checkout-next-btn');
     const backBtn = document.getElementById('checkout-back-btn');
     const submitBtn = document.getElementById('checkout-submit-btn');
-    const idSummary = document.getElementById('checkout-id-summary');
     const previewDisplay = document.getElementById('id-preview-display');
 
     function setFieldError(el, on) {
@@ -764,10 +826,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const meta = [customer, city, pin ? ('PIN ' + pin) : ''].filter(Boolean).join(' · ') || '—';
         const sEl = document.getElementById('summary-store');
         const mEl = document.getElementById('summary-store-meta');
-        const fEl = document.getElementById('summary-freezer-id');
         if (sEl) sEl.textContent = storeName;
         if (mEl) mEl.textContent = meta;
-        if (fEl && previewDisplay) fEl.textContent = previewDisplay.textContent.trim() || 'Preview…';
     }
 
     function validateStep(n) {
@@ -868,10 +928,7 @@ document.addEventListener('DOMContentLoaded', function() {
         nextBtn.style.display = step < maxStep ? 'inline-flex' : 'none';
         submitBtn.style.display = step === maxStep ? 'inline-flex' : 'none';
         if (nextBtn) {
-            nextBtn.textContent = step === 1 ? 'Continue to Freezer Info' : (step === 2 ? 'Continue to Review & QR' : 'Continue');
-        }
-        if (previewDisplay && idSummary) {
-            idSummary.textContent = previewDisplay.textContent.trim() || 'Preview…';
+            nextBtn.textContent = step === 1 ? 'Continue to Freezer' : (step === 2 ? 'Continue to Review' : 'Continue');
         }
         if (step === 3) updateSummary();
     }
@@ -882,6 +939,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }));
 
     nextBtn.addEventListener('click', () => {
+        if (typeof isAnyImageProcessing === 'function' && isAnyImageProcessing()) {
+            alert('Please wait — a photo is still being processed.');
+            return;
+        }
         if (!validateStep(step)) return;
         goStep(step + 1);
     });
@@ -899,6 +960,11 @@ document.addEventListener('DOMContentLoaded', function() {
     };
 
     document.getElementById('onboard-form').addEventListener('submit', function (e) {
+        if (typeof isAnyImageProcessing === 'function' && isAnyImageProcessing()) {
+            e.preventDefault();
+            alert('Please wait — a photo is still being processed and analyzed.');
+            return;
+        }
         for (let i = 1; i <= maxStep; i++) {
             if (!validateStep(i)) {
                 e.preventDefault();
@@ -969,5 +1035,7 @@ document.addEventListener('DOMContentLoaded', function() {
     goStep(1);
 });
 </script>
+
+<?php endif; /* requireScanFirst else — form */ ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

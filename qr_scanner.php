@@ -3,29 +3,42 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
 use App\Models\Freezer;
+use App\Models\AssetTag;
 
 AuthService::requireLogin();
 
-// Manual lookup submission
+// Manual lookup submission (freezer Unique ID or blank tag RO-XXXXXX)
 if (!empty($_POST['manual_freezer_id'])) {
     $searchId = trim($_POST['manual_freezer_id']);
     $found = Freezer::findByUniqueId($searchId);
     if ($found) {
         header("Location: profile_view.php?id=" . urlencode($found['unique_freezer_id']));
         exit;
-    } else {
-        $error = "No freezer found matching ID '{$searchId}'.";
     }
+    $tag = AssetTag::findByCode($searchId);
+    if ($tag) {
+        header('Location: tag.php?t=' . urlencode($tag['tag_code']));
+        exit;
+    }
+    $error = "No freezer or blank QR tag found matching '{$searchId}'.";
 }
 
 $pageTitle = 'Scan Freezer QR Tag';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<div style="max-width: 600px; margin: 0 auto;">
-    <div style="text-align: center; margin-bottom: 1.5rem;">
-        <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Scan Freezer QR Tag</h2>
-        <p style="color: #64748b; font-size: 0.875rem;">Point your device camera at the freezer asset tag or enter ID manually.</p>
+<div class="field-scan-wrap" style="max-width: 600px; margin: 0 auto;">
+    <div style="text-align: center; margin-bottom: 1rem;">
+        <h2 style="font-size: clamp(1.15rem, 4.5vw, 1.4rem); font-weight: 800; color: #0f172a;">Scan QR → Register / View</h2>
+        <p style="color: #64748b; font-size: 0.9rem; max-width: 28rem; margin: 0.35rem auto 0; line-height: 1.45;">
+            <strong>Unused</strong> sticker → fill form.<br>
+            <strong>Registered</strong> sticker → show details.
+        </p>
+        <div class="field-scan-steps" style="display:flex; justify-content:center; gap:0.5rem; flex-wrap:wrap; margin-top:0.85rem; font-size:0.75rem; font-weight:700; color:#475569;">
+            <span style="background:#e0f2fe; color:#0369a1; padding:0.25rem 0.55rem; border-radius:999px;">1. Scan</span>
+            <span style="background:#fef3c7; color:#92400e; padding:0.25rem 0.55rem; border-radius:999px;">2. Fill info</span>
+            <span style="background:#d1fae5; color:#065f46; padding:0.25rem 0.55rem; border-radius:999px;">3. Done</span>
+        </div>
     </div>
 
     <?php if (!empty($error)): ?>
@@ -50,8 +63,8 @@ require_once __DIR__ . '/includes/header.php';
             <span id="cam-status" class="badge badge-primary">Starting Camera...</span>
         </div>
 
-        <div style="position: relative; background: #0f172a; min-height: 320px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
-            <video id="qr-video" playsinline style="width: 100%; max-height: 380px; object-fit: cover;"></video>
+        <div class="field-scan-camera" style="position: relative; background: #0f172a; min-height: 320px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+            <video id="qr-video" playsinline muted style="width: 100%; max-height: 380px; object-fit: cover;"></video>
             <canvas id="qr-canvas" style="display: none;"></canvas>
 
             <!-- Target Reticle Overlay -->
@@ -60,33 +73,33 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
 
-        <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
-            <button type="button" id="btn-toggle-cam" class="btn btn-sm btn-secondary">
+        <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="button" id="btn-toggle-cam" class="btn btn-secondary" style="flex:1; min-width:140px; justify-content:center;">
                 Restart Camera
             </button>
-            <label class="btn btn-sm btn-outline" style="margin: 0; cursor: pointer;">
+            <label class="btn btn-outline" style="margin: 0; cursor: pointer; flex:1; min-width:140px; justify-content:center;">
                 <span>Upload QR Image</span>
-                <input type="file" id="qr-file-input" accept="image/*" style="display: none;">
+                <input type="file" id="qr-file-input" accept="image/*" capture="environment" style="display: none;">
             </label>
         </div>
     </div>
 
     <!-- Manual ID Fallback Form -->
-    <div class="card">
+    <div class="card field-scan-manual">
         <div class="card-header">
             <div class="card-title">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"/>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <span>Manual Freezer ID Lookup</span>
+                <span>Type code if camera fails</span>
             </div>
         </div>
         <div class="card-body">
             <form method="POST" action="" style="display: flex; gap: 0.75rem;">
-                <input type="text" name="manual_freezer_id" class="form-control" placeholder="e.g. DF-RW-SFR550DDU-AMD1-058-0324-AAA004" required>
+                <input type="text" name="manual_freezer_id" class="form-control" inputmode="text" autocomplete="off" placeholder="RO-XXXXXX or DF Unique ID" required>
                 <button type="submit" class="btn btn-primary" style="white-space: nowrap;">
-                    Open Profile
+                    Open
                 </button>
             </form>
         </div>
@@ -165,14 +178,28 @@ document.addEventListener('DOMContentLoaded', function () {
             osc.stop(audioCtx.currentTime + 0.15);
         } catch (e) {}
 
-        // Check if QR data is a URL or direct ID
-        let freezerId = data.trim();
-        if (freezerId.includes('id=')) {
-            const url = new URL(freezerId, window.location.origin);
-            freezerId = url.searchParams.get('id') || freezerId;
+        // Blank tag URL, profile URL, or raw ID / RO-XXXXXX
+        let raw = data.trim();
+        try {
+            const url = new URL(raw, window.location.origin);
+            const tagCode = url.searchParams.get('t');
+            if (tagCode || /tag\.php$/i.test(url.pathname)) {
+                window.location.href = 'tag.php?t=' + encodeURIComponent(tagCode || '');
+                return;
+            }
+            const freezerId = url.searchParams.get('id');
+            if (freezerId) {
+                window.location.href = 'profile_view.php?id=' + encodeURIComponent(freezerId);
+                return;
+            }
+        } catch (e) {}
+
+        if (/^RO-[A-Z0-9]+$/i.test(raw)) {
+            window.location.href = 'tag.php?t=' + encodeURIComponent(raw.toUpperCase());
+            return;
         }
 
-        window.location.href = 'profile_view.php?id=' + encodeURIComponent(freezerId);
+        window.location.href = 'profile_view.php?id=' + encodeURIComponent(raw);
     }
 
     // File upload scanner

@@ -8,6 +8,7 @@ use App\Config\AppConfig;
 use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
+use App\Models\AssetTag;
 
 AuthService::requireRole('super_admin');
 $currentUser = AuthService::currentUser();
@@ -33,37 +34,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Invalid security CSRF token.';
     } else {
         try {
-            // Check for new image uploads
+            $editTag = AssetTag::findByFreezerId((int)$freezer['id']);
+            $imgNameMeta = [
+                'tag_code' => $editTag['tag_code'] ?? preg_replace('/[^A-Z0-9\-]/', '', strtoupper((string)$freezer['unique_freezer_id'])),
+                'store_name' => trim((string)($_POST['store_name'] ?? $freezer['store_name'] ?? 'Store')),
+                'datetime' => date('Ymd'),
+            ];
+
+            // Check for new image uploads — Tag-date-Store-ImageType
             $imgStoreFront = !empty($_FILES['image_store_front']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'store_front')
+                ? FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'store_front', $imgNameMeta)
                 : null;
             if ($imgStoreFront && !$imgStoreFront['success']) {
                 throw new Exception("Store Front Image Error: " . $imgStoreFront['error']);
             }
 
             $imgAadhar = !empty($_FILES['image_aadhar_card']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front')
+                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_card'], 'stores', 'aadhar_front', $imgNameMeta)
                 : null;
             if ($imgAadhar && !$imgAadhar['success']) {
                 throw new Exception("Aadhaar Front Image Error: " . $imgAadhar['error']);
             }
 
             $imgAadharBack = !empty($_FILES['image_aadhar_back']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back')
+                ? FileUploadService::handleImageUpload($_FILES['image_aadhar_back'], 'stores', 'aadhar_back', $imgNameMeta)
                 : null;
             if ($imgAadharBack && !$imgAadharBack['success']) {
                 throw new Exception("Aadhaar Back Image Error: " . $imgAadharBack['error']);
             }
 
             $imgLeftResult = !empty($_FILES['image_left_side']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left')
+                ? FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left', $imgNameMeta)
                 : null;
             if ($imgLeftResult && !$imgLeftResult['success']) {
                 throw new Exception("Left Side Image Error: " . $imgLeftResult['error']);
             }
 
             $imgRightResult = !empty($_FILES['image_right_side']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right')
+                ? FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right', $imgNameMeta)
                 : null;
             if ($imgRightResult && !$imgRightResult['success']) {
                 throw new Exception("Right Side Image Error: " . $imgRightResult['error']);
@@ -71,15 +79,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $imgIotResult = null;
             if (AppConfig::IOT_ENABLED && !empty($_FILES['image_iot_device']['name'])) {
-                $imgIotResult = FileUploadService::handleImageUpload($_FILES['image_iot_device'], 'iot', 'iot_dev');
+                $imgIotResult = FileUploadService::handleImageUpload($_FILES['image_iot_device'], 'iot', 'iot_dev', $imgNameMeta);
                 if ($imgIotResult && !$imgIotResult['success']) {
                     throw new Exception("IoT Device Image Error: " . $imgIotResult['error']);
                 }
             }
 
-            // Update Store
+            // Update Store — Outlet ID locked (auto at create; no typing)
             Store::update((int)$freezer['store_id'], [
-                'outlet_id' => $_POST['outlet_id'] ?? $freezer['outlet_id'],
+                'outlet_id' => $freezer['outlet_id'],
                 'store_name' => $_POST['store_name'],
                 'customer_name' => $_POST['customer_name'] ?? $freezer['customer_name'],
                 'distributor_name' => $_POST['distributor_name'] ?? '',
@@ -98,14 +106,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'latitude' => !empty($_POST['latitude']) ? (float)$_POST['latitude'] : null,
                 'longitude' => !empty($_POST['longitude']) ? (float)$_POST['longitude'] : null,
                 'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : null,
+                'location_link' => !empty($_POST['location_link'])
+                    ? trim((string)$_POST['location_link'])
+                    : (!empty($_POST['latitude']) && !empty($_POST['longitude'])
+                        ? ('https://maps.google.com/?q=' . rawurlencode((float)$_POST['latitude'] . ',' . (float)$_POST['longitude']))
+                        : null),
                 'image_store_front' => $imgStoreFront ? $imgStoreFront['path'] : null,
                 'image_aadhar_card' => $imgAadhar ? $imgAadhar['path'] : null,
                 'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
                 'status' => 'Active',
             ]);
 
-            // Update Freezer Profile
-            $candidateId = strtoupper(trim($_POST['unique_freezer_id'] ?? $freezer['unique_freezer_id']));
+            // Update Freezer Profile — Unique Freezer ID never changes after create
+            $candidateId = $freezer['unique_freezer_id'];
             $installDate = $_POST['installation_date'] ?? $freezer['installation_date'];
             $installMmYy = date('my', strtotime($installDate));
 
@@ -175,22 +188,9 @@ require_once __DIR__ . '/includes/header.php';
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" id="exclude_freezer_id" value="<?= (int)$freezer['id'] ?>">
 
-    <!-- ID Preview Card -->
-    <div class="id-generator-card" style="margin-bottom: 1.5rem;">
-        <div class="id-preview-header">
-            <div>
-                <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; font-weight: 700;">Unique Freezer ID</span>
-                <div style="font-size: 0.85rem; color: #cbd5e1; margin-top: 0.1rem;">Validated Unique ID:</div>
-            </div>
-            <span id="id-status-badge" class="id-preview-badge">Current Profile</span>
-        </div>
-
-        <div class="id-preview-display">
-            <span id="id-preview-display"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></span>
-            <span style="font-size: 0.7rem; font-family: var(--font-sans); color: #94a3b8; background: rgba(255,255,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px;">Assigned ID</span>
-        </div>
-        <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="<?= htmlspecialchars($freezer['unique_freezer_id']) ?>">
-    </div>
+    <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="<?= htmlspecialchars($freezer['unique_freezer_id']) ?>">
+    <span id="id-preview-display" hidden><?= htmlspecialchars($freezer['unique_freezer_id']) ?></span>
+    <span id="id-status-badge" hidden></span>
 
     <!-- Store Profile (GPS from Store Front photo) -->
     <div class="card">
@@ -207,6 +207,13 @@ require_once __DIR__ . '/includes/header.php';
             <input type="hidden" id="latitude" name="latitude" value="<?= htmlspecialchars($freezer['store_latitude'] ?? '') ?>">
             <input type="hidden" id="longitude" name="longitude" value="<?= htmlspecialchars($freezer['store_longitude'] ?? '') ?>">
             <input type="hidden" id="gps_accuracy" name="gps_accuracy" value="<?= htmlspecialchars($freezer['store_gps_accuracy'] ?? '') ?>">
+            <?php
+            $editLocLink = trim((string)($freezer['store_location_link'] ?? ''));
+            if ($editLocLink === '' && !empty($freezer['store_latitude']) && !empty($freezer['store_longitude'])) {
+                $editLocLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+            }
+            ?>
+            <input type="hidden" id="location_link" name="location_link" value="<?= htmlspecialchars($editLocLink) ?>">
 
             <div class="form-grid">
                 <div class="col-6 form-group">
@@ -215,7 +222,8 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
                 <div class="col-3 form-group">
                     <label class="form-label" for="outlet_id">Outlet ID</label>
-                    <input type="text" id="outlet_id" name="outlet_id" class="form-control" value="<?= htmlspecialchars($freezer['outlet_id']) ?>" required>
+                    <input type="text" id="outlet_id" class="form-control" value="<?= htmlspecialchars($freezer['outlet_id']) ?>" readonly
+                           style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
                 </div>
                 <div class="col-3 form-group">
                     <label class="form-label" for="customer_name">Customer Account</label>
@@ -227,7 +235,7 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
                 <input type="hidden" id="state" name="state" value="<?= htmlspecialchars($freezer['store_state'] ?? '') ?>">
                 <div class="col-4 form-group">
-                    <label class="form-label required" for="zone">Operational Zone</label>
+                    <label class="form-label required" for="zone">Zone</label>
                     <select id="zone" name="zone" class="form-select" required>
                         <option value="CENTRAL" <?= ($freezer['store_zone'] ?? '') === 'CENTRAL' ? 'selected' : '' ?>>CENTRAL</option>
                         <option value="WEST" <?= ($freezer['store_zone'] ?? 'WEST') === 'WEST' ? 'selected' : '' ?>>WEST</option>
@@ -236,20 +244,20 @@ require_once __DIR__ . '/includes/header.php';
                         <option value="EAST" <?= ($freezer['store_zone'] ?? '') === 'EAST' ? 'selected' : '' ?>>EAST</option>
                     </select>
                 </div>
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="city">City / Location</label>
-                    <input type="text" id="city" name="city" class="form-control" list="city-list" value="<?= htmlspecialchars($freezer['store_city']) ?>" placeholder="Type City" required autocomplete="off">
+                <div class="col-8 form-group">
+                    <label class="form-label required" for="city">City</label>
+                    <input type="text" id="city" name="city" class="form-control" value="<?= htmlspecialchars($freezer['store_city']) ?>" placeholder="Select zone, then type city…" required autocomplete="off">
                     <datalist id="city-list"></datalist>
                 </div>
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="pincode">PIN Code</label>
-                    <input type="text" id="pincode" name="pincode" class="form-control" value="<?= htmlspecialchars($freezer['store_pincode']) ?>" required>
-                </div>
-                <div class="col-6 form-group">
+                <div class="col-12 form-group">
                     <label class="form-label required" for="address">Address</label>
                     <input type="text" id="address" name="address" class="form-control" value="<?= htmlspecialchars($freezer['store_address']) ?>" required>
                 </div>
-                <div class="col-6 form-group">
+                <div class="col-4 form-group">
+                    <label class="form-label required" for="pincode">PIN code</label>
+                    <input type="text" id="pincode" name="pincode" class="form-control" value="<?= htmlspecialchars($freezer['store_pincode']) ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
+                </div>
+                <div class="col-8 form-group">
                     <label class="form-label" for="contact_person">Store operator name</label>
                     <input type="text" id="contact_person" name="contact_person" class="form-control" value="<?= htmlspecialchars($freezer['contact_person'] ?? '') ?>">
                 </div>
@@ -266,7 +274,6 @@ require_once __DIR__ . '/includes/header.php';
                         <span class="phone-prefix" aria-hidden="true">+91</span>
                         <input type="tel" id="phone_number" name="phone_number" class="form-control" value="<?= htmlspecialchars($editPhone) ?>" maxlength="10" inputmode="numeric" placeholder="10-digit mobile" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
                     </div>
-                    <span class="form-help">Exactly 10 digits starting with 6–9 · saved as +91XXXXXXXXXX</span>
                     <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
                 </div>
                 <div class="col-6 form-group">
@@ -276,18 +283,15 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="col-6 form-group">
                     <label class="form-label" for="aadhar_number">Store operator Aadhaar number</label>
                     <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" value="<?= htmlspecialchars($freezer['aadhar_number'] ?? '') ?>" placeholder="12-digit Aadhaar" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
-                    <span class="form-help">Exactly 12 digits</span>
                 </div>
                 <div class="col-6 form-group">
                     <label class="form-label" for="fssai_number">FSSAI number</label>
                     <input type="text" id="fssai_number" name="fssai_number" class="form-control" value="<?= htmlspecialchars($freezer['fssai_number'] ?? '') ?>" placeholder="14-digit FSSAI licence" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off">
-                    <span class="form-help">Optional · exactly 14 digits</span>
-                </div>
+</div>
                 <div class="col-6 form-group">
                     <label class="form-label" for="gst_number">GST number</label>
                     <input type="text" id="gst_number" name="gst_number" class="form-control" value="<?= htmlspecialchars($freezer['gst_number'] ?? '') ?>" placeholder="15-character GSTIN" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;">
-                    <span class="form-help">Optional · 15-character GSTIN</span>
-                </div>
+</div>
             </div>
         </div>
     </div>
@@ -313,8 +317,7 @@ require_once __DIR__ . '/includes/header.php';
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <span class="form-help">Unique ID uses type code e.g. <code>DF</code></span>
-                </div>
+</div>
                 <div class="col-4 form-group">
                     <label class="form-label required" for="company_code">Brand / OEM</label>
                     <select id="company_code" name="company_code" class="form-select" required>
@@ -324,32 +327,17 @@ require_once __DIR__ . '/includes/header.php';
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <span class="form-help">Unique ID uses brand code e.g. <code>RW</code></span>
-                </div>
+</div>
                 <div class="col-4 form-group">
                     <label class="form-label required" for="model_number">Model Number</label>
                     <input type="text" id="model_number" name="model_number" class="form-control" value="<?= htmlspecialchars($freezer['model_number']) ?>" required>
                 </div>
                 <div class="col-3 form-group">
-                    <label class="form-label required" for="location_code">Location Code</label>
-                    <select id="location_code" name="location_code" class="form-select" required>
-                        <?php
-                        $curLoc = strtoupper(trim((string)($freezer['location_code'] ?? '')));
-                        $cityName = (string)($freezer['store_city'] ?? '');
-                        $prefixes = MasterData::getCityLocationPrefixes();
-                        $prefix = $prefixes[$cityName] ?? preg_replace('/\d+$/', '', $curLoc);
-                        if ($prefix === '' || $prefix === null) {
-                            $prefix = 'LOC';
-                        }
-                        foreach (MasterData::locationCodesForPrefix((string)$prefix, 3) as $code):
-                        ?>
-                            <option value="<?= htmlspecialchars($code) ?>" <?= $curLoc === $code ? 'selected' : '' ?>><?= htmlspecialchars($code) ?></option>
-                        <?php endforeach; ?>
-                        <?php if ($curLoc !== '' && !preg_match('/^' . preg_quote((string)$prefix, '/') . '[123]$/', $curLoc)): ?>
-                            <option value="<?= htmlspecialchars($curLoc) ?>" selected><?= htmlspecialchars($curLoc) ?> (current)</option>
-                        <?php endif; ?>
-                    </select>
-                    <span class="form-help">From city · e.g. AMD1/2/3, BPL1/2/3, MUM1/2/3</span>
+                    <label class="form-label" for="location_code">Location code</label>
+                    <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
+                           value="<?= htmlspecialchars(strtoupper(trim((string)($freezer['location_code'] ?? '')))) ?>"
+                           placeholder="Auto from city"
+                           readonly tabindex="-1" autocomplete="off">
                 </div>
                 <div class="col-3 form-group">
                     <label class="form-label required" for="installation_date">Installation Date</label>
@@ -358,8 +346,7 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="col-3 form-group">
                     <label class="form-label">Unit sequence</label>
                     <input type="text" class="form-control" value="<?= htmlspecialchars($freezer['unit_sequence'] ?? '') ?>" readonly disabled>
-                    <span class="form-help">Auto-generated · not editable</span>
-                </div>
+</div>
                 <div class="col-3 form-group">
                     <label class="form-label" for="freezer_status">Status</label>
                     <select id="freezer_status" name="freezer_status" class="form-select">

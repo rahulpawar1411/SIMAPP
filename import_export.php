@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/vendor/autoload.php';
 
+use App\Config\AppConfig;
 use App\Services\AuthService;
 use App\Services\ImportExportService;
 
@@ -32,6 +33,10 @@ if (!empty($_GET['action'])) {
         exit;
     }
     if ($action === 'template_iot') {
+        if (!AppConfig::IOT_ENABLED) {
+            http_response_code(404);
+            exit('IoT templates are disabled until the next phase.');
+        }
         ImportExportService::streamIotTemplate();
         exit;
     }
@@ -83,7 +88,7 @@ require_once __DIR__ . '/includes/header.php';
         <div>
             <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Import / Export Hub</h2>
             <p style="color: #64748b; font-size: 0.875rem; margin-top: 0.25rem;">
-                Admin tools to bulk import Store + Freezer + IoT from one CSV, or export existing hub data.
+                Admin tools to bulk import Store + Freezer from one CSV, or export existing hub data.
             </p>
         </div>
     </div>
@@ -133,10 +138,12 @@ require_once __DIR__ . '/includes/header.php';
             </div>
             <div class="card-body">
                 <p style="font-size: 0.875rem; color: #475569; margin-bottom: 1rem;">
-                    Export = full details (full name + short code + GPS/QR/IoT). Same header colors:
+                    Export = full details (full name + short code + GPS/QR). Same header colors:
                     <span style="background:#93C5FD;color:#1E3A8A;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">STORE</span>
                     <span style="background:#FCD34D;color:#78350F;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">FREEZER</span>
+                    <?php if (AppConfig::IOT_ENABLED): ?>
                     <span style="background:#86EFAC;color:#14532D;padding:0.1rem 0.4rem;border-radius:4px;font-weight:700;font-size:0.75rem;">IOT</span>
+                    <?php endif; ?>
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
                     <a href="import_export.php?action=export" class="btn btn-primary">
@@ -188,12 +195,12 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="card" style="margin-top: 1.25rem;">
         <div class="card-header">
-            <div class="card-title"><span>Download templates (Store / Freezer / IoT)</span></div>
+            <div class="card-title"><span>Download templates (Store / Freezer<?= AppConfig::IOT_ENABLED ? ' / IoT' : '' ?>)</span></div>
         </div>
         <div class="card-body">
             <p style="font-size: 0.875rem; color: #475569; margin-bottom: 1rem;">
                 Separate sheets optional —
-                prefer <strong>combined hub v3</strong> (Store + Freezer + IoT together).
+                prefer <strong>combined hub</strong> (Store + Freezer<?= AppConfig::IOT_ENABLED ? ' + IoT' : '' ?> together).
                 Filter order <strong>Zone → State → City → PIN → location_code</strong>.
                 Files: <code>uploads/import/</code> · <strong>download again</strong> (old files outdated).
             </p>
@@ -221,6 +228,7 @@ require_once __DIR__ . '/includes/header.php';
                     </p>
                     <a href="import_export.php?action=template_freezer" class="btn btn-secondary btn-sm">Download Freezer Excel</a>
                 </div>
+                <?php if (AppConfig::IOT_ENABLED): ?>
                 <div class="col-4" style="background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:1rem;">
                     <div style="font-weight:800; color:#14532d; margin-bottom:0.35rem;">IoT template</div>
                     <p style="font-size:0.8rem; color:#64748b; margin:0 0 0.5rem;">
@@ -231,12 +239,18 @@ require_once __DIR__ . '/includes/header.php';
                     </p>
                     <a href="import_export.php?action=template_iot" class="btn btn-secondary btn-sm">Download IoT Excel</a>
                 </div>
+                <?php endif; ?>
             </div>
             <p style="font-size:0.8rem; color:#64748b; margin:1rem 0 0;">
-                <strong>Combined hub v3</strong> (Export card above) = Store + Freezer + IoT in one file:
+                <?php if (AppConfig::IOT_ENABLED): ?>
+                <strong>Combined hub</strong> (Export card above) = Store + Freezer + IoT in one file:
                 photos + <code>iot_serial</code>, <code>iot_imei</code>, <code>iot_sim_number</code>, <code>iot_sim_company</code>,
                 <code>iot_type</code>, <code>iot_owner</code>, <code>iot_model</code>.
                 Blank <code>iot_serial</code> = no IoT device on that row.
+                <?php else: ?>
+                <strong>Combined hub</strong> (Export card above) = Store + Freezer in one file (photos + Unique ID fields).
+                IoT columns are reserved for a later phase.
+                <?php endif; ?>
             </p>
         </div>
     </div>
@@ -297,6 +311,7 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>image_store_front</code> *</td><td>REQUIRED · store photo filename in <code>uploads/import/</code></td></tr>
                         <tr><td><code>image_left_side</code> / <code>image_right_side</code> *</td><td>REQUIRED · freezer photos — same folder, exact filename</td></tr>
                         <tr><td><code>image_aadhar_card</code> / <code>image_aadhar_back</code></td><td>Optional Aadhaar photos</td></tr>
+                        <?php if (AppConfig::IOT_ENABLED): ?>
                         <tr><td><code>iot_serial</code></td><td>Optional · e.g. <code>RF-IOT-99210</code> (blank = no IoT)</td></tr>
                         <tr><td><code>iot_imei</code></td><td>Optional IMEI / MAC</td></tr>
                         <tr><td><code>iot_sim_number</code></td><td>SIM / ICCID number</td></tr>
@@ -305,6 +320,7 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>iot_owner</code></td><td><code>ReeferON Own Device</code> / <code>Outsourced Device</code></td></tr>
                         <tr><td><code>iot_model</code></td><td>Default <code>RF-T100</code></td></tr>
                         <tr><td><code>image_iot_device</code></td><td>Required if <code>iot_serial</code> filled</td></tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -324,7 +340,9 @@ require_once __DIR__ . '/includes/header.php';
                         <li><code>image_aadhar_card</code> → Aadhaar front</li>
                         <li><code>image_aadhar_back</code> → Aadhaar back</li>
                         <li><code>image_left_side</code> / <code>image_right_side</code> → that freezer’s photos</li>
+                        <?php if (AppConfig::IOT_ENABLED): ?>
                         <li><code>image_iot_device</code> → that IoT device photo</li>
+                        <?php endif; ?>
                     </ul>
                 </li>
                 <li>Import the CSV — each row attaches only the files named on that row (same store/freezer as that row’s data).</li>

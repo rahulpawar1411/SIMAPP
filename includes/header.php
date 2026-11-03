@@ -18,7 +18,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     
     <!-- Leaflet Map CSS for GPS View/Picker -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -34,13 +34,13 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
         <div class="sidebar-brand">
             <img src="assets/img/logo.png" alt="ReeferON Logo" style="height: 40px; width: auto; max-width: 44px; object-fit: contain; filter: drop-shadow(0 2px 6px rgba(56, 189, 248, 0.4));">
             <div class="brand-text">
-                <h1>ReeferON</h1>
-                <span>SIM Asset Hub</span>
+                <h1>ReeferON DF</h1>
+                <span>Cold-Chain Assets</span>
             </div>
         </div>
 
         <nav class="sidebar-nav">
-            <div class="nav-label">Navigation</div>
+            <div class="nav-label">Main</div>
             <a href="index.php" class="nav-link <?= $currentPage === 'index.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -49,46 +49,42 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                 <span>Dashboard</span>
             </a>
 
-            <a href="profiles.php" class="nav-link <?= $currentPage === 'profiles.php' ? 'active' : '' ?>">
+            <a href="profiles.php" class="nav-link <?= in_array($currentPage, ['profiles.php', 'profile_view.php', 'profile_edit.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
                     <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
                 </svg>
-                <span>Freezer Profiles</span>
+                <span>Freezer Assets</span>
             </a>
 
-            <a href="profile_add.php" class="nav-link <?= $currentPage === 'profile_add.php' ? 'active' : '' ?>">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="8" x2="12" y2="16"/>
-                    <line x1="8" y1="12" x2="16" y2="12"/>
-                </svg>
-                <span>Create Store &amp; Freezer</span>
-            </a>
-
-            <a href="qr_scanner.php" class="nav-link <?= $currentPage === 'qr_scanner.php' ? 'active' : '' ?>">
+            <a href="qr_scanner.php" class="nav-link <?= in_array($currentPage, ['qr_scanner.php', 'profile_add.php', 'tag.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="3" y="3" width="7" height="7"/>
                     <rect x="14" y="3" width="7" height="7"/>
                     <rect x="14" y="14" width="7" height="7"/>
                     <rect x="3" y="14" width="7" height="7"/>
                 </svg>
-                <span>Scan QR Tag</span>
+                <span>Scan QR</span>
             </a>
 
             <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
+            <div class="nav-label">Operations</div>
+            <a href="blank_qr.php" class="nav-link <?= in_array($currentPage, ['blank_qr.php', 'blank_qr_print.php'], true) ? 'active' : '' ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/>
+                </svg>
+                <span>QR Management</span>
+            </a>
             <a href="import_export.php" class="nav-link <?= $currentPage === 'import_export.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M8 17l-5-5 5-5"/>
-                    <path d="M3 12h13"/>
-                    <path d="M16 7l5 5-5 5"/>
-                    <path d="M21 12H11"/>
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
                 </svg>
-                <span>Import / Export</span>
+                <span>Reports</span>
             </a>
-            <?php endif; ?>
-
-            <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
             <a href="users.php" class="nav-link <?= $currentPage === 'users.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -96,7 +92,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                     <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
                     <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                 </svg>
-                <span>Manage Users</span>
+                <span>Technicians</span>
             </a>
             <?php endif; ?>
         </nav>
@@ -139,19 +135,12 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
             </div>
 
             <div class="topbar-right">
-                <a href="qr_scanner.php" class="btn btn-sm btn-secondary" title="Scan with Camera">
+                <a href="qr_scanner.php" class="btn btn-sm btn-primary" title="Scan QR then fill details">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
                         <circle cx="12" cy="13" r="4"/>
                     </svg>
-                    <span class="d-none-mobile">Scan Tag</span>
-                </a>
-                <a href="profile_add.php" class="btn btn-sm btn-primary">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="5" x2="12" y2="19"/>
-                        <line x1="5" y1="12" x2="19" y2="12"/>
-                    </svg>
-                    <span>+ New Profile</span>
+                    <span>Scan</span>
                 </a>
             </div>
         </header>

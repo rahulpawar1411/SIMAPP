@@ -1,16 +1,20 @@
 <?php
+/**
+ * Profile QR reprint — same sticker style as blank hub QR:
+ * Logo + QR + tag code only (no type/store/model details).
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
-use App\Config\AppConfig;
 use App\Models\Freezer;
+use App\Models\AssetTag;
 use App\Services\QRCodeService;
 
 AuthService::requireLogin();
 
 $idParam = $_GET['id'] ?? null;
 if (!$idParam) {
-    die("Error: Missing freezer identifier.");
+    die('Error: Missing freezer identifier.');
 }
 
 if (is_numeric($idParam)) {
@@ -20,302 +24,209 @@ if (is_numeric($idParam)) {
 }
 
 if (!$freezer) {
-    die("Error: Freezer profile not found.");
+    die('Error: Freezer profile not found.');
 }
 
-$qrPath = $freezer['qr_code_path'];
+// Every profile sticker must show Tag code (RO-…) + Unique Freezer ID
+$user = AuthService::currentUser();
+$assetTag = AssetTag::ensureForFreezer((int)$freezer['id'], isset($user['id']) ? (int)$user['id'] : null);
+$tagCode = $assetTag['tag_code'];
+
+$qrPath = $assetTag['qr_code_path'] ?? ($freezer['qr_code_path'] ?? null);
 if (!$qrPath || !file_exists(__DIR__ . '/' . $qrPath)) {
-    $gen = QRCodeService::generateAndSave($freezer['unique_freezer_id']);
-    $qrPath = $gen['file_path'];
+    $gen = QRCodeService::generateAndSaveTag($tagCode);
+    $qrPath = $gen['file_path'] ?? null;
 }
-
-$installDdm = !empty($freezer['installation_date'])
-    ? date('dm', strtotime($freezer['installation_date']))
-    : ($freezer['install_month_year'] ?? '—');
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Print Asset Tag | <?= htmlspecialchars($freezer['unique_freezer_id']) ?></title>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;700;800&family=JetBrains+Mono:wght@700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/app.css">
+    <title>Print QR | <?= htmlspecialchars($tagCode ?: $freezer['unique_freezer_id']) ?></title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@600;800&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --tag-ink: #0f172a;
-            --tag-blue: #0284c7;
-            --tag-muted: #64748b;
-            --tag-line: #cbd5e1;
-        }
         * { box-sizing: border-box; }
         body {
             margin: 0;
             background: #e8eef4;
-            padding: 2rem 1rem;
+            padding: 1.25rem;
             font-family: 'DM Sans', system-ui, sans-serif;
-            color: var(--tag-ink);
+            color: #0f172a;
         }
         .print-actions {
-            max-width: 620px;
-            margin: 0 auto 1.25rem;
+            width: 210mm;
+            max-width: 100%;
+            margin: 0 auto 1rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 0.75rem;
+            flex-wrap: wrap;
         }
-        .industrial-tag {
-            max-width: 620px;
-            margin: 0 auto;
-            background: #fff;
-            border: 2.5px solid var(--tag-ink);
-            border-radius: 4px;
-            padding: 1.35rem 1.5rem 1.1rem;
-            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
-        }
-
-        .tag-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid var(--tag-ink);
-            margin-bottom: 1rem;
-        }
-        .tag-header img {
-            height: 68px;
-            width: auto;
-            object-fit: contain;
-            flex-shrink: 0;
-        }
-        .tag-brand {
-            flex: 1;
-            min-width: 0;
-        }
-        .tag-brand h1 {
+        .print-actions p {
             margin: 0;
-            font-size: 1.45rem;
-            font-weight: 800;
-            color: var(--tag-blue);
-            letter-spacing: -0.03em;
-            line-height: 1.1;
-            white-space: nowrap;
+            font-size: 0.85rem;
+            color: #64748b;
         }
-        .tag-brand p {
-            margin: 0.2rem 0 0;
-            font-size: 0.68rem;
-            font-weight: 700;
-            color: var(--tag-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            white-space: nowrap;
-        }
-        .tag-type {
-            flex-shrink: 0;
-            background: var(--tag-ink);
-            color: #fff;
-            font-size: 0.72rem;
-            font-weight: 800;
-            letter-spacing: 0.06em;
-            padding: 0.4rem 0.65rem;
-            border-radius: 3px;
-            white-space: nowrap;
-        }
-
-        .tag-id-block {
-            margin-bottom: 1.15rem;
-            padding-bottom: 0.95rem;
-            border-bottom: 1px solid var(--tag-line);
-        }
-        .tag-id-label {
-            display: block;
-            font-size: 0.65rem;
-            font-weight: 700;
-            color: var(--tag-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            margin-bottom: 0.25rem;
-        }
-        .tag-id-value {
-            font-family: 'JetBrains Mono', ui-monospace, monospace;
-            font-size: 1.08rem;
-            font-weight: 800;
-            color: var(--tag-ink);
-            white-space: nowrap;
-            letter-spacing: -0.03em;
-            line-height: 1.25;
-        }
-
-        .tag-body {
-            display: flex;
-            gap: 1.35rem;
-            align-items: stretch;
-        }
-        .tag-qr {
-            width: 168px;
-            height: 168px;
-            flex-shrink: 0;
-            border: 2px solid var(--tag-ink);
-            border-radius: 3px;
-            padding: 6px;
-            background: #fff;
-            display: flex;
+        .btn {
+            display: inline-flex;
             align-items: center;
-            justify-content: center;
+            gap: 0.35rem;
+            border: none;
+            border-radius: 8px;
+            padding: 0.55rem 1rem;
+            font-weight: 700;
+            font-size: 0.875rem;
+            cursor: pointer;
+            text-decoration: none;
         }
-        .tag-qr img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
+        .btn-primary { background: #0284c7; color: #fff; }
+        .btn-secondary { background: #e2e8f0; color: #0f172a; }
 
-        .tag-meta {
-            flex: 1;
-            min-width: 0;
+        /* Same cell size as blank A4 2×2 sticker */
+        .a4-page {
+            width: 210mm;
+            height: 297mm;
+            margin: 0 auto;
+            padding: 8mm;
+            background: #fff;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 6mm;
+        }
+        .blank-tag {
+            border: 2.5px solid #0f172a;
+            border-radius: 4px;
+            padding: 6mm 4mm 4mm;
+            text-align: center;
             display: flex;
             flex-direction: column;
-            justify-content: center;
-            gap: 0.55rem;
-        }
-        .meta-row {
-            display: flex;
-            align-items: baseline;
-            gap: 0.55rem;
-            white-space: nowrap;
-            overflow: hidden;
-            min-width: 0;
-        }
-        .meta-label {
-            flex-shrink: 0;
-            width: 5.4rem;
-            font-size: 0.65rem;
-            font-weight: 700;
-            color: var(--tag-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-        .meta-value {
-            font-size: 0.88rem;
-            font-weight: 700;
-            color: var(--tag-ink);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            min-width: 0;
-        }
-        .meta-value.mono {
-            font-family: 'JetBrains Mono', ui-monospace, monospace;
-            font-size: 0.82rem;
-            letter-spacing: -0.02em;
-        }
-
-        .tag-footer {
-            margin-top: 1.1rem;
-            padding-top: 0.7rem;
-            border-top: 1px dashed var(--tag-line);
-            display: flex;
-            justify-content: space-between;
             align-items: center;
-            gap: 1rem;
-            font-size: 0.68rem;
-            color: var(--tag-muted);
+            justify-content: center;
+            min-height: 0;
+            background: #fff;
         }
-        .tag-footer .scan {
-            font-weight: 800;
-            color: var(--tag-ink);
+        .blank-tag.empty {
+            border-style: dashed;
+            border-color: #cbd5e1;
+            background: #f8fafc;
+        }
+        .blank-tag img.logo {
+            height: 22mm;
+            width: auto;
+            max-width: 85%;
+            object-fit: contain;
+            margin: 0 auto 5mm;
+            display: block;
+        }
+        .blank-tag img.qr {
+            width: 68mm;
+            height: 68mm;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+            background: #fff;
+        }
+        .blank-tag .meta-label {
+            margin-top: 2.5mm;
+            font-size: 2.4mm;
+            font-weight: 700;
+            color: #94a3b8;
             letter-spacing: 0.08em;
-            white-space: nowrap;
-            flex-shrink: 0;
+            text-transform: uppercase;
         }
-        .tag-footer .note {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+        .blank-tag .tag-code {
+            margin-top: 1mm;
+            font-family: ui-monospace, 'JetBrains Mono', monospace;
+            font-size: 4.2mm;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            color: #0f172a;
+        }
+        .blank-tag .freezer-id-label {
+            margin-top: 2.5mm;
+            font-size: 2.4mm;
+            font-weight: 700;
+            color: #94a3b8;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .blank-tag .freezer-id {
+            margin-top: 1mm;
+            font-family: ui-monospace, 'JetBrains Mono', monospace;
+            font-size: 3.2mm;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            color: #0284c7;
+            word-break: break-all;
+            line-height: 1.25;
+            max-width: 90%;
+        }
+        .blank-tag .batch-line {
+            margin-top: 2mm;
+            font-size: 2.5mm;
+            font-weight: 700;
+            color: #475569;
+            letter-spacing: 0.02em;
+            max-width: 92%;
+            word-break: break-all;
+            line-height: 1.3;
+        }
+        .blank-tag .batch-line strong {
+            color: #0f172a;
+            font-weight: 800;
+        }
+        .blank-tag .hint {
+            margin-top: 2mm;
+            font-size: 2.4mm;
+            font-weight: 700;
+            color: #94a3b8;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
         }
 
+        @page { size: A4 portrait; margin: 0; }
         @media print {
-            body {
-                background: #fff;
-                padding: 0;
-            }
+            html, body { background: #fff; padding: 0; margin: 0; width: 210mm; }
             .print-actions { display: none !important; }
-            .industrial-tag {
-                box-shadow: none;
-                max-width: 100%;
-                width: 100%;
-                border-color: #000;
-            }
+            .a4-page { margin: 0; box-shadow: none; }
         }
     </style>
 </head>
 <body>
-
-<div class="print-actions">
-    <a href="profile_view.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-secondary">&larr; Return to Profile</a>
-    <button type="button" onclick="window.print()" class="btn btn-primary">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="6 9 6 2 18 2 18 9"/>
-            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-            <rect x="6" y="14" width="12" height="8"/>
-        </svg>
-        <span>Print QR Image</span>
-    </button>
-</div>
-
-<div class="industrial-tag">
-    <header class="tag-header">
-        <img src="assets/img/logo.png" alt="ReeferON Logo">
-        <div class="tag-brand">
-            <h1>ReeferON RaaS</h1>
-            <p>Asset identification tag</p>
-        </div>
-        <span class="tag-type"><?= htmlspecialchars($freezer['freezer_type']) ?></span>
-    </header>
-
-    <section class="tag-id-block">
-        <span class="tag-id-label">Unique Freezer ID</span>
-        <div class="tag-id-value"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></div>
-    </section>
-
-    <div class="tag-body">
-        <div class="tag-qr">
-            <img src="<?= htmlspecialchars($qrPath) ?>" alt="QR Code">
-        </div>
-
-        <div class="tag-meta">
-            <div class="meta-row">
-                <span class="meta-label">Store</span>
-                <span class="meta-value"><?= htmlspecialchars($freezer['store_name']) ?></span>
-            </div>
-            <div class="meta-row">
-                <span class="meta-label">Outlet</span>
-                <span class="meta-value mono"><?= htmlspecialchars($freezer['outlet_id']) ?> · <?= htmlspecialchars($freezer['store_city']) ?></span>
-            </div>
-            <div class="meta-row">
-                <span class="meta-label">Model</span>
-                <span class="meta-value mono"><?= htmlspecialchars($freezer['model_number']) ?></span>
-            </div>
-            <div class="meta-row">
-                <span class="meta-label">Installed</span>
-                <span class="meta-value mono"><?= htmlspecialchars($installDdm) ?></span>
-            </div>
-            <?php if (AppConfig::IOT_ENABLED): ?>
-            <div class="meta-row">
-                <span class="meta-label">IoT Serial</span>
-                <span class="meta-value mono"><?= htmlspecialchars($freezer['device_serial'] ?? '—') ?></span>
-            </div>
+    <div class="print-actions">
+        <p>
+            Same hub sticker style · Logo + QR + code only
+            <?php if ($assetTag): ?>
+                · <code><?= htmlspecialchars($assetTag['tag_code']) ?></code>
             <?php endif; ?>
-            <div class="meta-row">
-                <span class="meta-label">Capacity</span>
-                <span class="meta-value"><?= (int)($freezer['capacity_litres'] ?? 550) ?> L</span>
-            </div>
+        </p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <a href="profile_view.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-secondary">&larr; Profile</a>
+            <button type="button" class="btn btn-primary" onclick="window.print()">Print A4</button>
         </div>
     </div>
 
-    <footer class="tag-footer">
-        <span class="note">Property of ReeferON RaaS · Tampering prohibited</span>
-        <span class="scan">SCAN FOR SERVICE</span>
-    </footer>
-</div>
-
+    <div class="a4-page">
+        <div class="blank-tag">
+            <img class="logo" src="assets/img/logo.png" alt="ReeferON">
+            <?php if ($qrPath): ?>
+                <img class="qr" src="<?= htmlspecialchars($qrPath) ?>" alt="QR">
+            <?php else: ?>
+                <div style="width:68mm;height:68mm;background:#f1f5f9;"></div>
+            <?php endif; ?>
+            <div class="meta-label">Tag code</div>
+            <div class="tag-code"><?= htmlspecialchars($tagCode) ?></div>
+            <div class="freezer-id-label">Unique Freezer ID · Registered</div>
+            <div class="freezer-id"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></div>
+            <div class="hint">Scan for details</div>
+        </div>
+        <div class="blank-tag empty" aria-hidden="true"></div>
+        <div class="blank-tag empty" aria-hidden="true"></div>
+        <div class="blank-tag empty" aria-hidden="true"></div>
+    </div>
 </body>
 </html>

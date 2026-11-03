@@ -8,14 +8,75 @@ use finfo;
 class FileUploadService {
 
     /**
+     * Map upload role / input key → readable image-type label for filename.
+     */
+    public static function imageTypeLabel(string $role): string {
+        $map = [
+            'store_front' => 'Store-Front',
+            'aadhar_front' => 'Aadhaar-Front',
+            'aadhar_back' => 'Aadhaar-Back',
+            'aadhar_card' => 'Aadhaar-Front',
+            'frz_left' => 'Freezer-Left-Side',
+            'frz_right' => 'Freezer-Right-Side',
+            'image_left_side' => 'Freezer-Left-Side',
+            'image_right_side' => 'Freezer-Right-Side',
+            'image_store_front' => 'Store-Front',
+            'image_aadhar_card' => 'Aadhaar-Front',
+            'image_aadhar_back' => 'Aadhaar-Back',
+            'image_iot_device' => 'IoT-Device',
+            'iot_dev' => 'IoT-Device',
+            'kyc_store' => 'KYC-Store-Front',
+            'kyc_frz' => 'KYC-Freezer',
+            'image_freezer' => 'KYC-Freezer',
+        ];
+        $key = strtolower(trim($role));
+        if (isset($map[$key])) {
+            return $map[$key];
+        }
+        $clean = preg_replace('/[^A-Za-z0-9]+/', '-', $role);
+        $clean = trim((string)$clean, '-');
+        return $clean !== '' ? $clean : 'Photo';
+    }
+
+    /**
+     * Build safe filename: TagCode-YYYYMMDD-StoreName-ImageType.ext
+     * (no HHMMSS — image type from input/role instead)
+     *
+     * @param array{tag_code?:string,store_name?:string,datetime?:string,role?:string} $meta
+     */
+    public static function buildNamedFileName(string $extension, string $roleFallback = 'img', array $meta = []): string {
+        $tag = strtoupper(trim((string)($meta['tag_code'] ?? '')));
+        $tag = preg_replace('/[^A-Z0-9\-]/', '', $tag) ?: 'TAG';
+
+        // Date only (YYYYMMDD) — time replaced by image type
+        $dt = trim((string)($meta['datetime'] ?? ''));
+        if (preg_match('/^(\d{8})/', $dt, $m)) {
+            $datePart = $m[1];
+        } else {
+            $datePart = date('Ymd');
+        }
+
+        $store = trim((string)($meta['store_name'] ?? ''));
+        $store = preg_replace('/\s+/', '-', $store);
+        $store = preg_replace('/[^A-Za-z0-9\-_]/', '', $store) ?: 'Store';
+        $store = substr($store, 0, 40);
+
+        $role = trim((string)($meta['role'] ?? $roleFallback));
+        $typeLabel = self::imageTypeLabel($role);
+
+        return $tag . '-' . $datePart . '-' . $store . '-' . $typeLabel . '.' . $extension;
+    }
+
+    /**
      * Handles single image upload with rigorous validation.
      *
      * @param array $file $_FILES['image_field']
      * @param string $subDir 'freezers' or 'iot'
-     * @param string $prefix Prefix for generated filename
+     * @param string $prefix Role suffix in filename (store_front, frz_left, …)
+     * @param array{tag_code?:string,store_name?:string,datetime?:string} $meta Naming context
      * @return array [success => bool, path => string|null, error => string|null]
      */
-    public static function handleImageUpload(array $file, string $subDir = 'freezers', string $prefix = 'img'): array {
+    public static function handleImageUpload(array $file, string $subDir = 'freezers', string $prefix = 'img', array $meta = []): array {
         AppConfig::initUploadDirs();
 
         if (!isset($file['error']) || is_array($file['error'])) {
@@ -58,9 +119,11 @@ class FileUploadService {
         }
 
         $extension = AppConfig::ALLOWED_IMAGE_MIMES[$mime];
-        $randomHex = bin2hex(random_bytes(10));
-        $timestamp = time();
-        $safeFileName = sprintf('%s_%d_%s.%s', $prefix, $timestamp, $randomHex, $extension);
+        $meta['role'] = $prefix;
+        if (empty($meta['datetime'])) {
+            $meta['datetime'] = date('Ymd');
+        }
+        $safeFileName = self::buildNamedFileName($extension, $prefix, $meta);
 
         $targetDir = match ($subDir) {
             'iot' => AppConfig::UPLOAD_IOT,
@@ -70,7 +133,18 @@ class FileUploadService {
         if (!in_array($subDir, ['iot', 'stores', 'freezers'], true)) {
             $subDir = 'freezers';
         }
+
+        // Uniqueness: same tag/date/store/type → append short id (keep type readable)
         $targetFilePath = $targetDir . '/' . $safeFileName;
+        if (file_exists($targetFilePath)) {
+            $typeLabel = self::imageTypeLabel($prefix);
+            $tag = preg_replace('/[^A-Z0-9\-]/', '', strtoupper(trim((string)($meta['tag_code'] ?? '')))) ?: 'TAG';
+            $datePart = preg_match('/^(\d{8})/', (string)($meta['datetime'] ?? ''), $m) ? $m[1] : date('Ymd');
+            $store = preg_replace('/[^A-Za-z0-9\-_]/', '', preg_replace('/\s+/', '-', trim((string)($meta['store_name'] ?? 'Store')))) ?: 'Store';
+            $store = substr($store, 0, 40);
+            $safeFileName = $tag . '-' . $datePart . '-' . $store . '-' . $typeLabel . '-' . substr(bin2hex(random_bytes(2)), 0, 4) . '.' . $extension;
+            $targetFilePath = $targetDir . '/' . $safeFileName;
+        }
         $relativeWebPath = 'uploads/' . $subDir . '/' . $safeFileName;
 
         if (!move_uploaded_file($file['tmp_name'], $targetFilePath)) {
@@ -122,7 +196,12 @@ class FileUploadService {
         }
 
         $extension = AppConfig::ALLOWED_IMAGE_MIMES[$mime];
-        $safeFileName = sprintf('%s_%d_%s.%s', $prefix, time(), bin2hex(random_bytes(8)), $extension);
+        $safeFileName = self::buildNamedFileName($extension, $prefix, [
+            'tag_code' => 'IMPORT',
+            'store_name' => pathinfo($filename, PATHINFO_FILENAME) ?: 'Store',
+            'datetime' => date('Ymd'),
+            'role' => $prefix,
+        ]);
 
         $targetDir = match ($subDir) {
             'iot' => AppConfig::UPLOAD_IOT,

@@ -1,6 +1,7 @@
 <?php
 namespace App\Services;
 
+use App\Config\AppConfig;
 use App\Models\Store;
 use App\Models\Freezer;
 use App\Models\MasterData;
@@ -9,12 +10,30 @@ use Exception;
 
 class ImportExportService {
 
+    /** IoT columns reserved for next phase when AppConfig::IOT_ENABLED is false */
+    private static function iotFieldNames(): array {
+        return [
+            'iot_serial', 'iot_imei', 'iot_sim_number', 'iot_sim_company',
+            'iot_type', 'iot_owner', 'iot_model',
+            'iot_battery_percentage', 'iot_power_status', 'iot_last_ping_at',
+            'image_iot_device',
+        ];
+    }
+
+    private static function withoutIotColumns(array $columns): array {
+        if (AppConfig::IOT_ENABLED) {
+            return $columns;
+        }
+        $iot = array_flip(self::iotFieldNames());
+        return array_values(array_filter($columns, static fn($col) => !isset($iot[$col])));
+    }
+
     /**
      * Canonical CSV columns — Freezer ID parts kept in sequence order:
      * TYPE → BRAND → MODEL → LOCATION → MMYY → PIN → (random seq auto) → UNIQUE_ID
      */
     public static function hubColumns(): array {
-        return [
+        return self::withoutIotColumns([
             // Filter sequence: Zone → State → City → PIN → location type
             'zone',
             'state',
@@ -53,7 +72,7 @@ class ImportExportService {
             // Freezer photos
             'image_left_side',
             'image_right_side',
-            // IoT device (optional — blank = no device)
+            // IoT device (optional — blank = no device; next phase)
             'iot_serial',
             'iot_imei',
             'iot_sim_number',
@@ -63,7 +82,7 @@ class ImportExportService {
             'iot_model',
             'image_iot_device',
             'notes',
-        ];
+        ]);
     }
 
     public static function sampleRows(): array {
@@ -280,7 +299,7 @@ class ImportExportService {
      * Full export columns — full names + short codes + all store/freezer/IoT fields.
      */
     public static function exportColumns(): array {
-        return [
+        return self::withoutIotColumns([
             // STORE
             'zone',
             'state',
@@ -329,7 +348,7 @@ class ImportExportService {
             'qr_code_data',
             'freezer_created_at',
             'freezer_updated_at',
-            // IOT
+            // IOT (next phase)
             'iot_serial',
             'iot_imei',
             'iot_sim_number',
@@ -342,7 +361,7 @@ class ImportExportService {
             'iot_last_ping_at',
             'image_iot_device',
             'notes',
-        ];
+        ]);
     }
 
     /** Real .xlsx — only header cell fill colors differ (Store / Freezer / IoT). */
@@ -360,10 +379,13 @@ class ImportExportService {
             ->stream($filename);
     }
 
-    /** Combined Store + Freezer + IoT hub template (normal Excel .xlsx). */
+    /** Combined Store + Freezer hub template (IoT columns only when enabled). */
     public static function streamTemplate(): void {
+        $name = AppConfig::IOT_ENABLED
+            ? 'reeferon_hub_store_freezer_iot_template_v3.xlsx'
+            : 'reeferon_hub_store_freezer_template_v3.xlsx';
         self::streamXlsx(
-            'reeferon_hub_store_freezer_iot_template_v3.xlsx',
+            $name,
             self::hubColumns(),
             self::sampleRows(),
             [self::class, 'hubColumnSection']
@@ -372,8 +394,11 @@ class ImportExportService {
 
     /** Same columns as hub Excel, plain CSV for direct import. */
     public static function streamTemplateCsv(): void {
+        $name = AppConfig::IOT_ENABLED
+            ? 'reeferon_hub_store_freezer_iot_template_v3.csv'
+            : 'reeferon_hub_store_freezer_template_v3.csv';
         self::streamCsv(
-            'reeferon_hub_store_freezer_iot_template_v3.csv',
+            $name,
             self::hubColumns(),
             self::sampleRows()
         );
@@ -758,8 +783,9 @@ class ImportExportService {
         $storeFrontName = trim((string)($row['image_store_front'] ?? ''));
         $leftName = trim((string)($row['image_left_side'] ?? ''));
         $rightName = trim((string)($row['image_right_side'] ?? ''));
-        $iotSerialCheck = trim((string)($row['iot_serial'] ?? ''));
-        $iotImgName = trim((string)($row['image_iot_device'] ?? ''));
+        $iotEnabled = AppConfig::IOT_ENABLED;
+        $iotSerialCheck = $iotEnabled ? trim((string)($row['iot_serial'] ?? '')) : '';
+        $iotImgName = $iotEnabled ? trim((string)($row['image_iot_device'] ?? '')) : '';
 
         if ($leftName === '' || $rightName === '') {
             throw new Exception('image_left_side and image_right_side are required (filenames in uploads/import/).');
@@ -770,7 +796,7 @@ class ImportExportService {
         if ($storeFrontName === '' && $existingStore && empty($existingStore['image_store_front'])) {
             throw new Exception('image_store_front is required (existing store has no store photo yet).');
         }
-        if ($iotSerialCheck !== '' && $iotImgName === '') {
+        if ($iotEnabled && $iotSerialCheck !== '' && $iotImgName === '') {
             throw new Exception('image_iot_device is required when iot_serial is provided.');
         }
 
@@ -790,7 +816,7 @@ class ImportExportService {
             $imgAadharBack = FileUploadService::promoteImportImage($row['image_aadhar_back'] ?? '', 'stores', 'aadhar_back');
             $imgLeft = FileUploadService::promoteImportImage($leftName, 'freezers', 'frz_left');
             $imgRight = FileUploadService::promoteImportImage($rightName, 'freezers', 'frz_right');
-            if ($iotImgName !== '') {
+            if ($iotEnabled && $iotImgName !== '') {
                 $imgIot = FileUploadService::promoteImportImage($iotImgName, 'iot', 'iot_dev');
             }
         } catch (\Throwable $e) {
@@ -857,7 +883,7 @@ class ImportExportService {
             $storeId = Store::create($storePayload);
         }
 
-        Freezer::create([
+        $freezerPayload = [
             'unique_freezer_id' => $uniqueId !== '' ? $uniqueId : null,
             'store_id' => $storeId,
             'freezer_type' => $freezerType,
@@ -873,16 +899,19 @@ class ImportExportService {
             'image_left_side' => $imgLeft,
             'image_right_side' => $imgRight,
             'image_iot_device' => $imgIot,
-            'iot_serial' => trim($row['iot_serial'] ?? ''),
-            'iot_imei' => trim($row['iot_imei'] ?? ''),
-            'iot_sim_number' => trim($row['iot_sim_number'] ?? ''),
-            'iot_sim_company' => trim($row['iot_sim_company'] ?? ''),
-            'iot_type' => trim($row['iot_type'] ?? '') !== '' ? trim($row['iot_type']) : 'Temperature & GPS',
-            'iot_owner' => trim($row['iot_owner'] ?? '') !== '' ? trim($row['iot_owner']) : 'ReeferON Own Device',
-            'iot_model' => trim($row['iot_model'] ?? '') !== '' ? trim($row['iot_model']) : 'RF-T100',
             'status' => ($row['status'] ?? '') !== '' ? $row['status'] : 'Active',
             'notes' => $row['notes'] ?? '',
             'created_by' => $createdBy,
-        ]);
+        ];
+        if ($iotEnabled) {
+            $freezerPayload['iot_serial'] = trim($row['iot_serial'] ?? '');
+            $freezerPayload['iot_imei'] = trim($row['iot_imei'] ?? '');
+            $freezerPayload['iot_sim_number'] = trim($row['iot_sim_number'] ?? '');
+            $freezerPayload['iot_sim_company'] = trim($row['iot_sim_company'] ?? '');
+            $freezerPayload['iot_type'] = trim($row['iot_type'] ?? '') !== '' ? trim($row['iot_type']) : 'Temperature & GPS';
+            $freezerPayload['iot_owner'] = trim($row['iot_owner'] ?? '') !== '' ? trim($row['iot_owner']) : 'ReeferON Own Device';
+            $freezerPayload['iot_model'] = trim($row['iot_model'] ?? '') !== '' ? trim($row['iot_model']) : 'RF-T100';
+        }
+        Freezer::create($freezerPayload);
     }
 }

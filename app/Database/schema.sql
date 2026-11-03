@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS `stores` (
     `longitude` DECIMAL(11, 8) NULL,
     `gps_accuracy` DECIMAL(8, 2) NULL,
     `gps_captured_at` DATETIME NULL,
+    `location_link` VARCHAR(500) NULL COMMENT 'Google Maps share link',
     `image_store_front` VARCHAR(255) NULL,
     `image_aadhar_card` VARCHAR(255) NULL COMMENT 'Aadhaar front',
     `image_aadhar_back` VARCHAR(255) NULL COMMENT 'Aadhaar back',
@@ -187,7 +188,25 @@ CREATE TABLE IF NOT EXISTS `kyc_verifications` (
     CONSTRAINT `fk_kyc_store` FOREIGN KEY (`store_id`) REFERENCES `stores` (`id`) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 10. Audit Logs Table
+-- 10. Blank asset QR tags (print Logo+QR first; bind store/freezer data on scan)
+CREATE TABLE IF NOT EXISTS `asset_tags` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `tag_code` VARCHAR(32) NOT NULL UNIQUE,
+    `status` ENUM('unused','assigned') NOT NULL DEFAULT 'unused',
+    `freezer_id` INT NULL,
+    `qr_code_path` VARCHAR(255) NULL,
+    `qr_code_data` TEXT NULL,
+    `batch_label` VARCHAR(100) NULL,
+    `created_by` INT NULL,
+    `assigned_at` DATETIME NULL,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_asset_tags_status` (`status`),
+    INDEX `idx_asset_tags_freezer` (`freezer_id`),
+    CONSTRAINT `fk_asset_tags_freezer` FOREIGN KEY (`freezer_id`) REFERENCES `freezers` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 11. Audit Logs Table
 CREATE TABLE IF NOT EXISTS `audit_logs` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
     `user_id` INT NULL,

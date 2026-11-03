@@ -204,8 +204,7 @@ require_once __DIR__ . '/includes/header.php';
                             title="Letters only (spaces, ., ', - allowed)"
                             value="<?= htmlspecialchars($formName) ?>"
                         >
-                        <span class="form-help">Letters &amp; spaces only — no numbers</span>
-                        <div class="form-error">Enter a valid full name.</div>
+<div class="form-error">Enter a valid full name.</div>
                     </div>
 
                     <div class="col-4 form-group">
@@ -224,8 +223,7 @@ require_once __DIR__ . '/includes/header.php';
                             title="Valid email format: name@domain.com"
                             value="<?= htmlspecialchars($formEmail) ?>"
                         >
-                        <span class="form-help">Login ID · name@domain.com</span>
-                        <div class="form-error">Enter a valid email address.</div>
+<div class="form-error">Enter a valid email address.</div>
                     </div>
 
                     <div class="col-4 form-group">
@@ -242,8 +240,7 @@ require_once __DIR__ . '/includes/header.php';
                             placeholder="<?= $isEdit ? 'Leave blank to keep current' : 'Min 6 characters' ?>"
                             value="<?= htmlspecialchars($formPassword) ?>"
                         >
-                        <span class="form-help"><?= $isEdit ? 'Optional · blank = no change' : 'Share with user for first login' ?></span>
-                        <div class="form-error">Password must be at least 6 characters.</div>
+<div class="form-error">Password must be at least 6 characters.</div>
                     </div>
                 </div>
             </div>
@@ -264,8 +261,7 @@ require_once __DIR__ . '/includes/header.php';
                         <select id="role" class="form-select" disabled>
                             <option value="super_admin" selected>Super Admin — Full access</option>
                         </select>
-                        <span class="form-help">Only Super Admin role is available</span>
-                    </div>
+</div>
 
                     <?php if ($isEdit): ?>
                     <div class="col-4 form-group">
@@ -277,9 +273,6 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                         <?php if ((int)$editUser['id'] === (int)$currentUser['id']): ?>
                             <input type="hidden" name="status" value="active">
-                            <span class="form-help">You cannot deactivate yourself</span>
-                        <?php else: ?>
-                            <span class="form-help">Inactive users cannot sign in</span>
                         <?php endif; ?>
                     </div>
                     <?php endif; ?>
@@ -302,7 +295,6 @@ require_once __DIR__ . '/includes/header.php';
                                 autocomplete="tel-national"
                             >
                         </div>
-                        <span class="form-help">Optional · 10 digits · starts with 6–9</span>
                         <div class="form-error">Enter a valid 10-digit Indian mobile.</div>
                     </div>
                 </div>

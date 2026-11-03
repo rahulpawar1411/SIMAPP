@@ -88,8 +88,8 @@ require_once __DIR__ . '/includes/header.php';
             </svg>
             <span>Export CSV</span>
         </a>
-        <a href="profile_add.php" class="btn btn-primary">
-            + Add New Profile
+        <a href="qr_scanner.php" class="btn btn-primary">
+            Scan QR → Register
         </a>
     </div>
 </div>
@@ -141,12 +141,14 @@ require_once __DIR__ . '/includes/header.php';
                 <label class="form-label" style="font-size: 0.75rem;">Missing / GPS</label>
                 <select name="missing" class="form-select">
                     <option value="">All profiles</option>
-                    <option value="any" <?= $missing === 'any' ? 'selected' : '' ?>>Any gap (GPS / photos / IoT)</option>
+                    <option value="any" <?= $missing === 'any' ? 'selected' : '' ?>>Any gap (GPS / photos<?= \App\Config\AppConfig::IOT_ENABLED ? ' / IoT' : '' ?>)</option>
                     <option value="gps" <?= $missing === 'gps' ? 'selected' : '' ?>>Missing GPS</option>
                     <option value="gps_approx" <?= $missing === 'gps_approx' ? 'selected' : '' ?>>City approx GPS (Excel)</option>
                     <option value="gps_exact" <?= $missing === 'gps_exact' ? 'selected' : '' ?>>Exact GPS only</option>
                     <option value="photos" <?= $missing === 'photos' ? 'selected' : '' ?>>Missing photos</option>
+                    <?php if (\App\Config\AppConfig::IOT_ENABLED): ?>
                     <option value="iot" <?= $missing === 'iot' ? 'selected' : '' ?>>Missing IoT</option>
+                    <?php endif; ?>
                 </select>
             </div>
 
@@ -191,7 +193,7 @@ require_once __DIR__ . '/includes/header.php';
                         <td colspan="<?= AppConfig::IOT_ENABLED ? 8 : 7 ?>" style="text-align: center; padding: 3rem 1rem; color: #94a3b8;">
                             <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">No freezer profiles matched your search</div>
                             <p style="font-size: 0.85rem;">Try modifying your keyword filter or register a new freezer.</p>
-                            <a href="profile_add.php" class="btn btn-primary" style="margin-top: 1rem;">+ Add Store & Freezer Profile</a>
+                            <a href="qr_scanner.php" class="btn btn-primary" style="margin-top: 1rem;">Scan QR → Register</a>
                         </td>
                     </tr>
                 <?php else: ?>

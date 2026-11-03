@@ -1,10 +1,12 @@
 <?php
 namespace App\Models;
 
+use App\Config\AppConfig;
 use App\Config\Database;
 use App\Services\FreezerIdGenerator;
 use App\Services\QRCodeService;
 use App\Services\FileUploadService;
+use App\Models\AssetTag;
 use PDO;
 use Exception;
 
@@ -42,10 +44,24 @@ class Freezer {
             $installMmYy = $validation['parts']['install_month_year'];
         }
 
-        // 2. Generate and save QR Code for this unique ID
-        $qrResult = QRCodeService::generateAndSave($uniqueId);
-        $qrPath = $qrResult['file_path'] ?? null;
-        $qrData = $qrResult['payload'] ?? $uniqueId;
+        // 2. QR: reuse blank asset tag sticker when provided; else generate from Unique ID
+        $assetTagCode = strtoupper(trim((string)($data['asset_tag_code'] ?? '')));
+        $blankTag = null;
+        if ($assetTagCode !== '') {
+            $blankTag = AssetTag::findByCode($assetTagCode);
+            if (!$blankTag) {
+                throw new Exception("Blank QR tag '{$assetTagCode}' not found.");
+            }
+            if ($blankTag['status'] === 'assigned') {
+                throw new Exception("Blank QR tag '{$assetTagCode}' is already assigned.");
+            }
+            $qrPath = $blankTag['qr_code_path'] ?? null;
+            $qrData = $blankTag['qr_code_data'] ?? QRCodeService::getTagScanUrl($assetTagCode);
+        } else {
+            $qrResult = QRCodeService::generateAndSave($uniqueId);
+            $qrPath = $qrResult['file_path'] ?? null;
+            $qrData = $qrResult['payload'] ?? $uniqueId;
+        }
 
         // 3. Insert Freezer Record
         $sql = "INSERT INTO `freezers` (
@@ -88,8 +104,12 @@ class Freezer {
 
         $freezerId = (int)$pdo->lastInsertId();
 
-        // 4. Create/Link IoT Device record if provided
-        if (!empty($data['iot_serial'])) {
+        if ($blankTag) {
+            AssetTag::assignToFreezer($assetTagCode, $freezerId);
+        }
+
+        // 4. Create/Link IoT Device record if provided (next phase)
+        if (AppConfig::IOT_ENABLED && !empty($data['iot_serial'])) {
             IoTDevice::registerDevice($freezerId, [
                 'device_serial' => trim($data['iot_serial']),
                 'imei_or_mac' => $data['iot_imei'] ?? null,
@@ -193,8 +213,8 @@ class Freezer {
             'notes' => $data['notes'] ?? $existing['notes'],
         ]);
 
-        // Update IoT device info if passed
-        if (!empty($data['iot_serial'])) {
+        // Update IoT device info if passed (next phase)
+        if (AppConfig::IOT_ENABLED && !empty($data['iot_serial'])) {
             IoTDevice::registerOrUpdateDevice($id, [
                 'device_serial' => trim($data['iot_serial']),
                 'imei_or_mac' => $data['iot_imei'] ?? null,
@@ -244,6 +264,7 @@ class Freezer {
                        s.pincode as store_pincode, s.zone as store_zone, s.location_type,
                        s.latitude as store_latitude, s.longitude as store_longitude,
                        s.gps_accuracy as store_gps_accuracy, s.gps_captured_at as store_gps_captured_at,
+                       s.location_link as store_location_link,
                        s.image_store_front, s.image_aadhar_card, s.image_aadhar_back,
                        ft.name as type_name,
                        b.name as brand_name,
@@ -330,17 +351,22 @@ class Freezer {
                                  OR f.image_right_side IS NULL OR f.image_right_side = '')";
                     break;
                 case 'iot':
-                    $needsIotJoin = true;
-                    $where[] = 'iot.id IS NULL';
+                    if (AppConfig::IOT_ENABLED) {
+                        $needsIotJoin = true;
+                        $where[] = 'iot.id IS NULL';
+                    }
                     break;
                 case 'any':
-                    $needsIotJoin = true;
-                    $where[] = "(s.latitude IS NULL OR s.longitude IS NULL
+                    $anyGaps = "s.latitude IS NULL OR s.longitude IS NULL
                                  OR (s.gps_accuracy IS NOT NULL AND s.gps_accuracy >= 1000)
                                  OR s.image_store_front IS NULL OR s.image_store_front = ''
                                  OR f.image_left_side IS NULL OR f.image_left_side = ''
-                                 OR f.image_right_side IS NULL OR f.image_right_side = ''
-                                 OR iot.id IS NULL)";
+                                 OR f.image_right_side IS NULL OR f.image_right_side = ''";
+                    if (AppConfig::IOT_ENABLED) {
+                        $needsIotJoin = true;
+                        $anyGaps .= ' OR iot.id IS NULL';
+                    }
+                    $where[] = "({$anyGaps})";
                     break;
             }
         }

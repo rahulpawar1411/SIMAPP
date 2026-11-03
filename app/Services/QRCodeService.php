@@ -77,6 +77,22 @@ class QRCodeService {
         return $baseUrl . '/profile_view.php?id=' . urlencode($freezerId);
     }
 
+    /** Blank asset-tag URL — same sticker works before and after data is filled. */
+    public static function getTagScanUrl(string $tagCode): string {
+        $baseUrl = AppConfig::getBaseUrl();
+        return $baseUrl . '/tag.php?t=' . urlencode(strtoupper(trim($tagCode)));
+    }
+
+    /**
+     * Generate QR SVG for a blank asset tag (payload = tag.php?t=RO-XXXXXX).
+     */
+    public static function generateAndSaveTag(string $tagCode): array {
+        return self::generateAndSave(
+            'TAG-' . strtoupper(trim($tagCode)),
+            self::getTagScanUrl($tagCode)
+        );
+    }
+
     /**
      * Generates a base64 Data URI on the fly for immediate inline display.
      */

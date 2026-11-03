@@ -5,11 +5,13 @@ use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
+use App\Models\AssetTag;
 use App\Models\IoTDevice;
 use App\Services\QRCodeService;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
+$csrfToken = AuthService::generateCsrfToken();
 
 $idParam = $_GET['id'] ?? null;
 if (!$idParam) {
@@ -49,62 +51,95 @@ $kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
 $kycHistory = FreezerLifecycle::kycHistory((int)$freezer['id'], 50);
 $lifecycleTimeline = FreezerLifecycle::buildTimeline((int)$freezer['id']);
 
-$pageTitle = 'Freezer Profile: ' . $freezer['unique_freezer_id'];
+// Tag inventory row for this freezer (Tag code / Status / Batch / Linked freezer / Created)
+try {
+    $profileAssetTag = AssetTag::ensureForFreezer(
+        (int)$freezer['id'],
+        isset($currentUser['id']) ? (int)$currentUser['id'] : null
+    );
+} catch (Throwable $e) {
+    $profileAssetTag = AssetTag::findByFreezerId((int)$freezer['id']);
+}
+if ($profileAssetTag && !empty($profileAssetTag['qr_code_path']) && file_exists(__DIR__ . '/' . $profileAssetTag['qr_code_path'])) {
+    $qrPath = $profileAssetTag['qr_code_path'];
+}
+
+// Sibling freezers at same store (Associated Freezers card)
+$storeFreezers = [$freezer];
+try {
+    $pdoSf = \App\Config\Database::getConnection();
+    $sfStmt = $pdoSf->prepare("SELECT f.id, f.unique_freezer_id, f.status, f.company_code, f.model_number, f.freezer_type
+        FROM freezers f WHERE f.store_id = :sid ORDER BY f.id ASC");
+    $sfStmt->execute(['sid' => (int)$freezer['store_id']]);
+    $rows = $sfStmt->fetchAll();
+    if ($rows) {
+        $storeFreezers = $rows;
+    }
+} catch (Throwable $e) {
+    $storeFreezers = [$freezer];
+}
+
+$viewPhone = trim((string)($freezer['phone_number'] ?? ''));
+if ($viewPhone !== '' && !str_starts_with($viewPhone, '+')) {
+    $d = preg_replace('/\D/', '', $viewPhone);
+    if (strlen($d) === 10) {
+        $viewPhone = '+91' . $d;
+    }
+}
+$aadhar = preg_replace('/\D/', '', (string)($freezer['aadhar_number'] ?? ''));
+$aadharDisplay = strlen($aadhar) === 12
+    ? (substr($aadhar, 0, 4) . '-' . substr($aadhar, 4, 4) . '-' . substr($aadhar, 8, 4))
+    : 'N/A';
+$storeFrontOk = !empty($freezer['image_store_front']) && file_exists(__DIR__ . '/' . $freezer['image_store_front']);
+
+$hasGps = !empty($freezer['store_latitude']) && !empty($freezer['store_longitude']);
+$storeMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
+if ($storeMapsLink === '' && $hasGps) {
+    $storeMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+}
+$storeAddressLine = trim(implode(', ', array_filter([
+    trim((string)($freezer['store_address'] ?? '')),
+    trim((string)($freezer['store_city'] ?? '')),
+    trim((string)($freezer['store_state'] ?? '')),
+])));
+if (!empty($freezer['store_pincode'])) {
+    $storeAddressLine = trim($storeAddressLine . ' - ' . $freezer['store_pincode'], ' -');
+}
+$valOrDash = static function ($v): string {
+    $s = trim((string)($v ?? ''));
+    return $s !== '' ? $s : '—';
+};
+
+$activeTab = $_GET['tab'] ?? 'overview';
+if ($activeTab === 'documents') {
+    $activeTab = 'overview'; // merged into Overview
+}
+if (!in_array($activeTab, ['overview', 'freezers', 'location', 'history'], true)) {
+    $activeTab = 'overview';
+}
+
+$pageTitle = 'Store Profile: ' . ($freezer['outlet_id'] ?? $freezer['store_name']);
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- Header Action Bar -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-    <div>
-        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
-            <h2 style="font-size: 1.4rem; font-weight: 800; font-family: var(--font-mono); color: #0284c7;">
-                <?= htmlspecialchars($freezer['unique_freezer_id']) ?>
-            </h2>
-            <?php if ($freezer['status'] === 'Active'): ?>
-                <span class="badge badge-success">Active & Operational</span>
-            <?php else: ?>
-                <span class="badge badge-warning"><?= htmlspecialchars($freezer['status']) ?></span>
-            <?php endif; ?>
-        </div>
-        <p style="color: #64748b; font-size: 0.875rem; margin-top: 0.2rem;">
-            <?= htmlspecialchars($freezer['store_name']) ?> &bull; <?= htmlspecialchars($freezer['store_city']) ?>, <?= htmlspecialchars($freezer['store_state']) ?>
-        </p>
-    </div>
+<nav class="sp-breadcrumb" aria-label="Breadcrumb">
+    <a href="index.php">Home</a>
+    <span>/</span>
+    <a href="profiles.php">Store Profile</a>
+    <span>/</span>
+    <strong><?= htmlspecialchars($freezer['outlet_id'] ?? '—') ?></strong>
+</nav>
 
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <a href="profiles.php" class="btn btn-secondary">
-            &larr; Back to List
-        </a>
-        <a href="freezer_transfer.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-outline">
-            Transfer store
-        </a>
-        <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-outline">
-            KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?>
-        </a>
-        <a href="profile_export.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline">
-            Export data
-        </a>
-        <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline" target="_blank">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 6 2 18 2 18 9"/>
-                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-                <rect x="6" y="14" width="12" height="8"/>
-            </svg>
-            <span>Print Asset Tag</span>
-        </a>
-        <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 20h9"/>
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-            </svg>
-            <span>Edit Profile</span>
-        </a>
-        <?php if (AuthService::hasRole('super_admin')): ?>
-            <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this freezer profile and all attached records?');">
-                Delete
-            </a>
-        <?php endif; ?>
-    </div>
+<div class="sp-actions field-actions-row">
+    <a href="qr_scanner.php" class="btn btn-primary btn-sm">Scan QR</a>
+    <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank">Print QR</a>
+    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Edit</a>
+    <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm <?= $kycStatus['due'] ? 'btn-primary' : 'btn-outline' ?>">
+        KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?>
+    </a>
+    <?php if (AuthService::hasRole('super_admin')): ?>
+        <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('Delete this freezer profile and attached records?');">Delete</a>
+    <?php endif; ?>
 </div>
 
 <?php if (!empty($_GET['created'])): ?>
@@ -161,367 +196,562 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
-<div class="form-grid">
-    <!-- LEFT COLUMN: QR Code Card & Photographic Verification -->
-    <div class="col-4">
-        <!-- QR Code Tag Card -->
-        <div class="card" style="margin-bottom: 1.5rem;">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="7" height="7"/>
-                        <rect x="14" y="3" width="7" height="7"/>
-                        <rect x="14" y="14" width="7" height="7"/>
-                        <rect x="3" y="14" width="7" height="7"/>
-                    </svg>
-                    <span>Freezer QR Asset Code</span>
+<!-- Store Profile hero (mockup) -->
+<div class="sp-hero-grid">
+    <div class="card sp-hero">
+        <div class="sp-hero-media">
+            <?php if ($storeFrontOk): ?>
+                <img src="<?= htmlspecialchars($freezer['image_store_front']) ?>" alt="Store front" class="lightbox-trigger" data-caption="<?= htmlspecialchars($freezer['store_name']) ?>">
+            <?php else: ?>
+                <div class="sp-hero-placeholder">No store photo</div>
+            <?php endif; ?>
+        </div>
+        <div class="sp-hero-body">
+            <div class="sp-hero-top">
+                <div>
+                    <h2 class="sp-store-name"><?= htmlspecialchars($freezer['store_name']) ?></h2>
+                    <div class="sp-outlet"><?= htmlspecialchars($freezer['outlet_id'] ?? '—') ?></div>
                 </div>
+                <?php if (($freezer['status'] ?? '') === 'Active'): ?>
+                    <span class="badge badge-success">Active</span>
+                <?php else: ?>
+                    <span class="badge badge-warning"><?= htmlspecialchars($freezer['status'] ?? '—') ?></span>
+                <?php endif; ?>
             </div>
-            <div class="card-body" style="text-align: center;">
-                <div style="background: #ffffff; padding: 1rem; border-radius: var(--radius-md); border: 2px dashed #cbd5e1; display: inline-block; box-shadow: var(--shadow-sm); margin-bottom: 1rem;">
-                    <?php if ($qrPath && file_exists(__DIR__ . '/' . $qrPath)): ?>
-                        <img src="<?= htmlspecialchars($qrPath) ?>" alt="QR Code" style="width: 190px; height: 190px; display: block;">
-                    <?php else: ?>
-                        <div style="width: 190px; height: 190px; display: flex; align-items: center; justify-content: center; background: #f1f5f9;">
-                            QR Generated
-                        </div>
-                    <?php endif; ?>
-                </div>
-
-                <div style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: #0f172a; word-break: break-all; margin-bottom: 0.5rem;">
-                    <?= htmlspecialchars($freezer['unique_freezer_id']) ?>
-                </div>
-
-                <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 1rem;">
-                    Scan using smartphone camera or the in-app scanner to open this profile.
-                </p>
-
-                <div style="display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap;">
-                    <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" target="_blank" class="btn btn-sm btn-primary">
-                        Print QR Image
+            <div class="sp-contact-row">
+                <div><span>Owner / Operator</span><strong><?= htmlspecialchars(($freezer['contact_person'] ?? '') !== '' ? $freezer['contact_person'] : 'N/A') ?></strong></div>
+                <div><span>Phone</span><strong><?= htmlspecialchars($viewPhone !== '' ? $viewPhone : 'N/A') ?></strong></div>
+                <div><span>Email</span><strong><?= htmlspecialchars(($freezer['store_email'] ?? '') !== '' ? $freezer['store_email'] : 'N/A') ?></strong></div>
+            </div>
+            <div class="sp-location-chips">
+                <span><?= htmlspecialchars($freezer['store_zone'] ?? $freezer['zone'] ?? '—') ?></span>
+                <span><?= htmlspecialchars($freezer['store_state'] ?? '—') ?></span>
+                <span><?= htmlspecialchars($freezer['store_city'] ?? '—') ?></span>
+                <span>PIN <?= htmlspecialchars($freezer['store_pincode'] ?? $freezer['pincode_last3'] ?? '—') ?></span>
+            </div>
+            <p class="sp-address"><?= htmlspecialchars($freezer['store_address'] ?? '') ?></p>
+            <?php if ($hasGps): ?>
+                <div class="sp-current-loc-chip">
+                    <span class="sp-current-loc-label">Current location</span>
+                    <a href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener" class="sp-current-loc-link">
+                        <?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6) . ', ' . number_format((float)$freezer['store_longitude'], 6)) ?>
                     </a>
-                    <?php if ($qrPath): ?>
-                        <a href="<?= htmlspecialchars($qrPath) ?>" download="<?= htmlspecialchars($freezer['unique_freezer_id']) ?>_QR.svg" class="btn btn-sm btn-secondary">
-                            Download QR
-                        </a>
+                    <?php if (!empty($freezer['store_gps_captured_at'])): ?>
+                        <span class="sp-current-loc-meta">Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?></span>
                     <?php endif; ?>
                 </div>
-            </div>
+            <?php else: ?>
+                <div class="sp-current-loc-chip is-empty">Current location not saved yet</div>
+            <?php endif; ?>
         </div>
-
-        <?php if (AppConfig::IOT_ENABLED): ?>
-        <!-- IoT Sensor Telemetry Status Card -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
-                    </svg>
-                    <span>IoT Cold-Chain Telemetry</span>
-                </div>
-                <button type="button" id="btn-simulate-ping" class="btn btn-sm btn-outline" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;">
-                    ⚡ Test Ping
-                </button>
-            </div>
-            <div class="card-body">
-                <div style="text-align: center; padding: 0.75rem 0 1rem; border-bottom: 1px solid var(--border-color); margin-bottom: 1rem;">
-                    <span style="font-size: 0.75rem; text-transform: uppercase; color: #64748b; font-weight: 700;">Live Freezer Temperature</span>
-                    <div id="live-temp-display" style="font-size: 2.2rem; font-weight: 800; font-family: var(--font-mono); color: #0284c7; margin: 0.25rem 0;">
-                        <?= $latestTelemetry ? number_format((float)$latestTelemetry['temperature'], 1) : '-20.5' ?> &deg;C
-                    </div>
-                    <span id="temp-status-badge" class="badge badge-success">COMPLIANT (-24&deg;C to -18&deg;C)</span>
-                </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.8rem; margin-bottom: 1rem;">
-                    <div style="background: #f8fafc; padding: 0.5rem 0.75rem; border-radius: 6px;">
-                        <span style="color: #64748b; display: block; font-size: 0.7rem;">COMPRESSOR</span>
-                        <strong id="live-compressor" style="color: #10b981;">Running (Active)</strong>
-                    </div>
-                    <div style="background: #f8fafc; padding: 0.5rem 0.75rem; border-radius: 6px;">
-                        <span style="color: #64748b; display: block; font-size: 0.7rem;">DOOR STATUS</span>
-                        <strong id="live-door" style="color: #0f172a;">Closed (Secure)</strong>
-                    </div>
-                    <div style="background: #f8fafc; padding: 0.5rem 0.75rem; border-radius: 6px;">
-                        <span style="color: #64748b; display: block; font-size: 0.7rem;">POWER</span>
-                        <strong id="live-power" style="color: #10b981;">Grid ON</strong>
-                    </div>
-                    <div style="background: #f8fafc; padding: 0.5rem 0.75rem; border-radius: 6px;">
-                        <span style="color: #64748b; display: block; font-size: 0.7rem;">BATTERY</span>
-                        <strong id="live-battery" style="color: #0f172a;">98% (Healthy)</strong>
-                    </div>
-                </div>
-
-                <div style="font-size: 0.75rem; color: #94a3b8; text-align: center;">
-                    IoT Serial: <strong><?= htmlspecialchars($freezer['device_serial'] ?? 'RF-IOT-99210') ?></strong>
-                    <?php if (!empty($freezer['sim_number']) || !empty($freezer['sim_company'])): ?>
-                        &bull; SIM: <strong><?= htmlspecialchars($freezer['sim_number'] ?? '—') ?></strong>
-                        (<?= htmlspecialchars($freezer['sim_company'] ?? '—') ?>)
-                    <?php endif; ?>
-                    &bull; ReeferON RaaS Telemetry
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
     </div>
 
-    <!-- RIGHT COLUMN: Detailed Specifications, Photos & GPS Map -->
-    <div class="col-8">
-        <!-- Freezer Specifications Card -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
-                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-                    </svg>
-                    <span>Machine Specifications</span>
-                </div>
-                <span class="badge badge-primary"><?= htmlspecialchars($freezer['freezer_type']) ?></span>
-            </div>
-            <div class="card-body">
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.85rem;">
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Freezer Type</span>
-                        <strong><?= htmlspecialchars($freezer['freezer_type']) ?> - <?= htmlspecialchars($freezer['type_name'] ?? 'Deep Freezer') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Brand / OEM</span>
-                        <strong><?= htmlspecialchars($freezer['company_code']) ?> - <?= htmlspecialchars($freezer['brand_name'] ?? 'Rockwell') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Model Number</span>
-                        <strong><?= htmlspecialchars($freezer['model_number']) ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Capacity</span>
-                        <strong><?= $freezer['capacity_litres'] ? htmlspecialchars($freezer['capacity_litres']) . ' Litres' : '550 Litres' ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Location Code</span>
-                        <strong><?= htmlspecialchars($freezer['location_code']) ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">PIN Code (in Freezer ID)</span>
-                        <strong><?= htmlspecialchars($freezer['pincode_last3']) ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Installation MMYY</span>
-                        <strong><?= htmlspecialchars($freezer['install_month_year']) ?> (Date: <?= htmlspecialchars($freezer['installation_date']) ?>)</strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Unit Sequence</span>
-                        <strong style="color: #0284c7;"><?= htmlspecialchars($freezer['unit_sequence']) ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Freezer Condition</span>
-                        <span class="badge badge-neutral"><?= htmlspecialchars($freezer['freezer_condition']) ?></span>
-                    </div>
-                </div>
-
-                <?php if (!empty($freezer['notes'])): ?>
-                    <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color); font-size: 0.8rem; color: #475569;">
-                        <strong>Remark:</strong> <?= nl2br(htmlspecialchars($freezer['notes'])) ?>
-                    </div>
-                <?php endif; ?>
-            </div>
+    <div class="card sp-qr-card">
+        <div class="card-header">
+            <div class="card-title"><span>Asset QR</span></div>
         </div>
-
-        <!-- Store Profile & GPS Map Card -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                        <circle cx="12" cy="10" r="3"/>
-                    </svg>
-                    <span>Store Profile & GPS Geolocation</span>
-                </div>
-                <?php if (!empty($freezer['store_latitude'])): ?>
-                    <a href="https://maps.google.com/?q=<?= $freezer['store_latitude'] ?>,<?= $freezer['store_longitude'] ?>" target="_blank" class="btn btn-sm btn-outline">
-                        Open in Google Maps &rarr;
-                    </a>
+        <div class="card-body" style="text-align:center;">
+            <div class="sp-qr-frame">
+                <?php if ($qrPath && file_exists(__DIR__ . '/' . $qrPath)): ?>
+                    <img src="<?= htmlspecialchars($qrPath) ?>" alt="QR Code">
+                <?php else: ?>
+                    <div class="sp-qr-missing">QR</div>
                 <?php endif; ?>
             </div>
-            <div class="card-body">
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; font-size: 0.85rem; margin-bottom: 1.25rem;">
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Store Name & Outlet ID</span>
-                        <strong><?= htmlspecialchars($freezer['store_name']) ?></strong> (<?= htmlspecialchars($freezer['outlet_id']) ?>)
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Customer Account</span>
-                        <strong><?= htmlspecialchars($freezer['customer_name'] ?? 'Baskin Robbins') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Address & City</span>
-                        <?= htmlspecialchars($freezer['store_address']) ?>, <?= htmlspecialchars($freezer['store_city']) ?>, <?= htmlspecialchars($freezer['store_state']) ?> - <?= htmlspecialchars($freezer['store_pincode']) ?>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Operator</span>
-                        <strong><?= htmlspecialchars(($freezer['contact_person'] ?? '') !== '' ? $freezer['contact_person'] : 'N/A') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Phone</span>
-                        <?php
-                            $viewPhone = trim((string)($freezer['phone_number'] ?? ''));
-                            if ($viewPhone !== '' && !str_starts_with($viewPhone, '+')) {
-                                $d = preg_replace('/\D/', '', $viewPhone);
-                                if (strlen($d) === 10) $viewPhone = '+91' . $d;
-                            }
-                        ?>
-                        <strong><?= htmlspecialchars($viewPhone !== '' ? $viewPhone : 'N/A') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Operator Email</span>
-                        <strong><?= htmlspecialchars(($freezer['store_email'] ?? '') !== '' ? $freezer['store_email'] : 'N/A') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">Operator Aadhaar</span>
-                        <?php
-                            $aadhar = preg_replace('/\D/', '', (string)($freezer['aadhar_number'] ?? ''));
-                            $aadharDisplay = strlen($aadhar) === 12
-                                ? (substr($aadhar, 0, 4) . '-' . substr($aadhar, 4, 4) . '-' . substr($aadhar, 8, 4))
-                                : 'N/A';
-                        ?>
-                        <strong style="font-family: var(--font-mono);"><?= htmlspecialchars($aadharDisplay) ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">FSSAI Number</span>
-                        <strong style="font-family: var(--font-mono);"><?= htmlspecialchars(($freezer['fssai_number'] ?? '') !== '' ? $freezer['fssai_number'] : 'N/A') ?></strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; text-transform: uppercase;">GST Number</span>
-                        <strong style="font-family: var(--font-mono);"><?= htmlspecialchars(($freezer['gst_number'] ?? '') !== '' ? $freezer['gst_number'] : 'N/A') ?></strong>
-                    </div>
-                </div>
-
-                <!-- GPS Map display -->
-                <?php if (!empty($freezer['store_latitude'])): ?>
-                    <div style="position: relative; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color);">
-                        <div id="store-view-map" style="width: 100%; height: 240px; z-index: 1;"></div>
-                        <div style="position: absolute; bottom: 8px; left: 8px; z-index: 1000; background: rgba(15, 23, 42, 0.85); color: #ffffff; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-family: var(--font-mono);">
-                            <?php
-                            $gpsAcc = (float)($freezer['store_gps_accuracy'] ?? 3.5);
-                            $gpsLabel = $gpsAcc >= 1000
-                                ? 'City approx (Excel import) — capture Store Front GPS for exact pin'
-                                : ('GPS: ' . $freezer['store_latitude'] . ', ' . $freezer['store_longitude'] . ' (±' . $gpsAcc . 'm)');
-                            ?>
-                            <?= htmlspecialchars($gpsLabel) ?>
-                        </div>
-                    </div>
+            <?php if ($profileAssetTag): ?>
+                <div class="sp-qr-label">Tag code</div>
+                <div class="sp-qr-code"><?= htmlspecialchars($profileAssetTag['tag_code']) ?></div>
+            <?php endif; ?>
+            <div class="sp-qr-label">Unique Freezer ID</div>
+            <div class="sp-qr-fid"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></div>
+            <div class="sp-qr-actions">
+                <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" target="_blank" class="btn btn-sm btn-primary">Print QR</a>
+                <?php if ($qrPath): ?>
+                    <a href="<?= htmlspecialchars($qrPath) ?>" download class="btn btn-sm btn-outline">Download QR</a>
                 <?php endif; ?>
-            </div>
-        </div>
-
-        <!-- 3 Uploaded Images Card -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                        <circle cx="8.5" cy="8.5" r="1.5"/>
-                        <polyline points="21 15 16 10 5 21"/>
-                    </svg>
-                    <span>Photo gallery (click to open · arrows to browse)</span>
-                </div>
-            </div>
-            <div class="card-body">
-                <div class="photo-upload-grid photo-upload-grid-4">
-                    <!-- Image 0: Store Front -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">1. STORE FRONT SIDE</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_store_front']) && file_exists(__DIR__ . '/' . $freezer['image_store_front'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_store_front']) ?>" alt="Store Front" class="lightbox-trigger" data-caption="Store Front - <?= htmlspecialchars($freezer['store_name']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Store Front Photo</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Image: Manager Aadhaar front -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">2. AADHAAR FRONT</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_aadhar_card']) && file_exists(__DIR__ . '/' . $freezer['image_aadhar_card'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_aadhar_card']) ?>" alt="Aadhaar Front" class="lightbox-trigger" data-caption="Aadhaar Front - <?= htmlspecialchars($freezer['contact_person'] ?? $freezer['store_name']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Aadhaar Front</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Image: Manager Aadhaar back -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">3. AADHAAR BACK</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_aadhar_back']) && file_exists(__DIR__ . '/' . $freezer['image_aadhar_back'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_aadhar_back']) ?>" alt="Aadhaar Back" class="lightbox-trigger" data-caption="Aadhaar Back - <?= htmlspecialchars($freezer['contact_person'] ?? $freezer['store_name']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Aadhaar Back</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Image 1: Left Side -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">4. FREEZER LEFT SIDE</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_left_side']) && file_exists(__DIR__ . '/' . $freezer['image_left_side'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_left_side']) ?>" alt="Left Side" class="lightbox-trigger" data-caption="Freezer Left Side - <?= htmlspecialchars($freezer['unique_freezer_id']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Left Photo</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Image 2: Right Side -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">5. FREEZER RIGHT SIDE</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_right_side']) && file_exists(__DIR__ . '/' . $freezer['image_right_side'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_right_side']) ?>" alt="Right Side" class="lightbox-trigger" data-caption="Freezer Right Side - <?= htmlspecialchars($freezer['unique_freezer_id']) ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No Right Photo</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <?php if (AppConfig::IOT_ENABLED): ?>
-                    <!-- Image 3: IoT Device -->
-                    <div>
-                        <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 0.35rem;">6. IOT DEVICE ATTACHMENT</div>
-                        <div style="height: 180px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); background: #0f172a;">
-                            <?php if (!empty($freezer['image_iot_device']) && file_exists(__DIR__ . '/' . $freezer['image_iot_device'])): ?>
-                                <img src="<?= htmlspecialchars($freezer['image_iot_device']) ?>" alt="IoT Device" class="lightbox-trigger" data-caption="IoT Device Attachment - Serial: <?= htmlspecialchars($freezer['device_serial'] ?? 'N/A') ?>" style="width: 100%; height: 100%; object-fit: cover;">
-                            <?php else: ?>
-                                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #94a3b8; font-size: 0.8rem;">No IoT Photo</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                    <?php endif; ?>
-                </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- ========== BOTTOM: Store history ========== -->
+<!-- Tabs -->
+<div class="sp-tabs" role="tablist">
+    <?php
+    $tabs = [
+        'overview' => 'Overview',
+        'freezers' => 'Freezers (' . count($storeFreezers) . ')',
+        'location' => 'Location',
+        'history' => 'History',
+    ];
+    $baseUrl = 'profile_view.php?id=' . urlencode($freezer['unique_freezer_id']);
+    foreach ($tabs as $key => $label):
+    ?>
+        <a href="<?= $baseUrl ?>&tab=<?= $key ?><?= $key === 'history' ? '#store-history' : '' ?>"
+           class="sp-tab <?= $activeTab === $key ? 'active' : '' ?>"><?= htmlspecialchars($label) ?></a>
+    <?php endforeach; ?>
+</div>
+
+<?php if ($activeTab === 'overview'): ?>
+<div class="sp-main-grid">
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title"><span>Store details</span></div>
+            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline">Edit</a>
+        </div>
+        <div class="card-body">
+            <div class="profile-kv-grid">
+                <div class="profile-kv"><span class="profile-kv-label">Store name</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_name'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Outlet ID</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['outlet_id'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Customer</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['customer_name'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Distributor</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['distributor_name'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Contact person</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['contact_person'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Phone</span><strong class="profile-kv-value"><?= htmlspecialchars($viewPhone !== '' ? $viewPhone : '—') ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Email</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_email'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Location type</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['location_type'] ?? 'Retail Store')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Zone</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_zone'] ?? $freezer['zone'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">City</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_city'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">State</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_state'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">PIN</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['store_pincode'] ?? '')) ?></strong></div>
+                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Address</span><strong class="profile-kv-value"><?= htmlspecialchars($storeAddressLine !== '' ? $storeAddressLine : '—') ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Aadhaar</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($aadharDisplay) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">FSSAI</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['fssai_number'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">GST</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['gst_number'] ?? '')) ?></strong></div>
+            </div>
+
+            <div class="sp-current-loc-panel">
+                <div class="sp-current-loc-panel-head">
+                    <h4>Current location</h4>
+                    <?php if ($hasGps): ?>
+                        <span class="badge badge-success">Recorded</span>
+                    <?php else: ?>
+                        <span class="badge badge-warning">Not set</span>
+                    <?php endif; ?>
+                </div>
+                <?php if ($hasGps): ?>
+                    <div class="profile-kv-grid">
+                        <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6)) ?></strong></div>
+                        <div class="profile-kv"><span class="profile-kv-label">Longitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_longitude'], 6)) ?></strong></div>
+                        <div class="profile-kv"><span class="profile-kv-label">Accuracy</span><strong class="profile-kv-value"><?= !empty($freezer['store_gps_accuracy']) ? ('± ' . htmlspecialchars((string)round((float)$freezer['store_gps_accuracy'])) . ' m') : '—' ?></strong></div>
+                        <div class="profile-kv"><span class="profile-kv-label">Captured at</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_gps_captured_at'] ?? '')) ?></strong></div>
+                        <div class="profile-kv profile-kv-wide">
+                            <span class="profile-kv-label">Maps link</span>
+                            <strong class="profile-kv-value">
+                                <a href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener" class="sp-maps-link"><?= htmlspecialchars($storeMapsLink) ?></a>
+                            </strong>
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <p class="sp-current-loc-empty">No current location saved. Use <strong>Save my current location</strong> on the map card.</p>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="sp-side-stack">
+        <div class="card">
+            <div class="card-header"><div class="card-title"><span>Store status &amp; KYC</span></div></div>
+            <div class="card-body">
+                <div class="sp-status-row">
+                    <span>Store / unit status</span>
+                    <?php if (($freezer['status'] ?? '') === 'Active'): ?>
+                        <span class="badge badge-success">Active</span>
+                    <?php else: ?>
+                        <span class="badge badge-warning"><?= htmlspecialchars($freezer['status'] ?? '—') ?></span>
+                    <?php endif; ?>
+                </div>
+                <div class="sp-kyc-box">
+                    <?php if (!empty($kycStatus['current'])): ?>
+                        <div><span>Last KYC</span><strong><?= htmlspecialchars($kycStatus['current']['verified_at']) ?> · <?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?></strong></div>
+                    <?php else: ?>
+                        <div><span>Last KYC</span><strong>Not done this cycle</strong></div>
+                    <?php endif; ?>
+                    <div><span>Cycle</span><strong><?= htmlspecialchars($kycStatus['cycle']['label'] ?? '') ?></strong></div>
+                    <div><span>Next / due</span>
+                        <strong class="<?= !empty($kycStatus['due']) ? 'text-warn' : '' ?>">
+                            <?= !empty($kycStatus['due']) ? 'Due now' : htmlspecialchars($kycStatus['cycle']['window'] ?? '—') ?>
+                        </strong>
+                    </div>
+                </div>
+                <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary btn-sm" style="margin-top:0.75rem;"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
+            </div>
+        </div>
+
+        <?php if ($profileAssetTag): ?>
+        <div class="card">
+            <div class="card-header"><div class="card-title"><span>Tag inventory</span></div></div>
+            <div class="card-body">
+                <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;">
+                    <div class="profile-kv"><span class="profile-kv-label">Tag code</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($profileAssetTag['tag_code']) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Status</span>
+                        <?php if (($profileAssetTag['status'] ?? '') === 'assigned'): ?>
+                            <span class="badge badge-success">Assigned</span>
+                        <?php else: ?>
+                            <span class="badge badge-primary">Unused</span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Batch</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['batch_label'] ?: '—') ?></strong></div>
+                    <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Created</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['created_at'] ?? '—') ?></strong></div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="sp-main-grid sp-main-grid-2">
+    <div class="card">
+        <div class="card-header"><div class="card-title"><span>Location on map</span></div>
+            <div class="sp-map-actions-wrap">
+                <div class="sp-map-actions">
+                    <?php if (!empty($freezer['store_latitude'])): ?>
+                        <a href="https://maps.google.com/?q=<?= urlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']) ?>" target="_blank" rel="noopener" class="btn btn-sm btn-outline">Open Maps</a>
+                        <?php
+                        $shareMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
+                        if ($shareMapsLink === '') {
+                            $shareMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+                        }
+                        ?>
+                        <button type="button" class="btn btn-sm btn-primary js-share-location-btn"
+                            data-share-location="saved"
+                            data-wa-lat="<?= htmlspecialchars((string)$freezer['store_latitude']) ?>"
+                            data-wa-lng="<?= htmlspecialchars((string)$freezer['store_longitude']) ?>"
+                            data-wa-url="<?= htmlspecialchars($shareMapsLink) ?>"
+                            data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>"
+                            data-wa-address="<?= htmlspecialchars(trim(($freezer['store_address'] ?? '') . ', ' . ($freezer['store_city'] ?? '') . ' - ' . ($freezer['store_pincode'] ?? ''), ' ,-')) ?>"
+                            data-wa-phone="<?= htmlspecialchars($viewPhone) ?>">
+                            Share location
+                        </button>
+                    <?php endif; ?>
+                    <button type="button" class="btn btn-sm btn-success"
+                        data-save-current-location
+                        data-store-id="<?= (int)$freezer['store_id'] ?>"
+                        data-freezer-id="<?= (int)$freezer['id'] ?>"
+                        data-csrf="<?= htmlspecialchars($csrfToken) ?>"
+                        data-wa-phone="<?= htmlspecialchars($viewPhone) ?>"
+                        data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>">
+                        Save my current location
+                    </button>
+                </div>
+                <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
+                    <span class="gps-process-spinner" aria-hidden="true"></span>
+                    <span class="gps-process-text">Processing…</span>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <?php if (!empty($freezer['store_latitude'])): ?>
+                <?php
+                $storeMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
+                if ($storeMapsLink === '') {
+                    $storeMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+                }
+                ?>
+                <div class="sp-map-wrap">
+                    <div id="store-view-map"></div>
+                </div>
+                <div class="sp-location-link-box">
+                    <div class="sp-location-link-label">Current location link</div>
+                    <a class="sp-location-link" href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener"><?= htmlspecialchars($storeMapsLink) ?></a>
+                    <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="<?= htmlspecialchars($storeMapsLink) ?>">Copy link</button>
+                </div>
+                <div class="sp-latlng">
+                    Lat <?= htmlspecialchars((string)$freezer['store_latitude']) ?>
+                    · Lng <?= htmlspecialchars((string)$freezer['store_longitude']) ?>
+                    <?php if (!empty($freezer['store_gps_captured_at'])): ?>
+                        · Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?>
+                    <?php endif; ?>
+                </div>
+            <?php else: ?>
+                <p style="color:#94a3b8; font-size:0.875rem; margin:0;">No GPS yet — tap <strong>Save my current location</strong> to capture &amp; store your live Maps link.</p>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><div class="card-title"><span>Store photos</span></div></div>
+        <div class="card-body">
+            <div class="sp-photo-row">
+                <?php
+                $photos = [
+                    ['path' => $freezer['image_store_front'] ?? '', 'label' => 'Store front'],
+                    ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer left'],
+                    ['path' => $freezer['image_right_side'] ?? '', 'label' => 'Freezer right'],
+                ];
+                foreach ($photos as $ph):
+                    $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
+                ?>
+                    <div class="sp-photo-tile">
+                        <?php if ($ok): ?>
+                            <img src="<?= htmlspecialchars($ph['path']) ?>" alt="<?= htmlspecialchars($ph['label']) ?>" class="lightbox-trigger" data-caption="<?= htmlspecialchars($ph['label']) ?>">
+                        <?php else: ?>
+                            <div class="sp-photo-empty"><?= htmlspecialchars($ph['label']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <div class="sp-photo-row" style="margin-top:0.75rem;">
+                <?php
+                $docs = [
+                    ['path' => $freezer['image_aadhar_card'] ?? '', 'label' => 'Aadhaar front'],
+                    ['path' => $freezer['image_aadhar_back'] ?? '', 'label' => 'Aadhaar back'],
+                ];
+                foreach ($docs as $ph):
+                    $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
+                ?>
+                    <div class="sp-photo-tile">
+                        <?php if ($ok): ?>
+                            <img src="<?= htmlspecialchars($ph['path']) ?>" alt="<?= htmlspecialchars($ph['label']) ?>" class="lightbox-trigger" data-caption="<?= htmlspecialchars($ph['label']) ?>">
+                        <?php else: ?>
+                            <div class="sp-photo-empty"><?= htmlspecialchars($ph['label']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="sp-main-grid sp-main-grid-2">
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title"><span>Associated freezers (<?= count($storeFreezers) ?>)</span></div>
+        </div>
+        <div class="card-body" style="padding:0;">
+            <ul class="sp-freezer-list">
+                <?php foreach ($storeFreezers as $sf): ?>
+                    <li class="<?= (int)$sf['id'] === (int)$freezer['id'] ? 'is-current' : '' ?>">
+                        <a href="profile_view.php?id=<?= urlencode($sf['unique_freezer_id']) ?>">
+                            <code><?= htmlspecialchars($sf['unique_freezer_id']) ?></code>
+                            <span><?= htmlspecialchars(($sf['company_code'] ?? '') . ' · ' . ($sf['model_number'] ?? '')) ?></span>
+                        </a>
+                        <?php if (($sf['status'] ?? '') === 'Active'): ?>
+                            <span class="badge badge-success">Active</span>
+                        <?php else: ?>
+                            <span class="badge badge-warning"><?= htmlspecialchars($sf['status'] ?? '—') ?></span>
+                        <?php endif; ?>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title"><span>Machine specifications</span></div>
+            <span class="badge badge-primary"><?= htmlspecialchars($freezer['freezer_type']) ?></span>
+        </div>
+        <div class="card-body">
+            <div class="profile-kv-grid">
+                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Unique Freezer ID</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['unique_freezer_id'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Type</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['freezer_type'] ?? '') . (!empty($freezer['type_name']) ? ' — ' . $freezer['type_name'] : '')) ?: '—') ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Brand</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['company_code'] ?? '') . (!empty($freezer['brand_name']) ? ' — ' . $freezer['brand_name'] : '')) ?: '—') ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Model</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['model_number'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Capacity</span><strong class="profile-kv-value"><?= !empty($freezer['capacity_litres']) ? htmlspecialchars((string)$freezer['capacity_litres']) . ' L' : '—' ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Location code</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['location_code'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Install</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['installation_date'] ?? '') . (!empty($freezer['install_month_year']) ? ' (' . $freezer['install_month_year'] . ')' : '')) ?: '—') ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Condition</span><span class="badge badge-neutral"><?= htmlspecialchars($valOrDash($freezer['freezer_condition'] ?? '')) ?></span></div>
+                <div class="profile-kv"><span class="profile-kv-label">Sequence</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['unit_sequence'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['status'] ?? '')) ?></strong></div>
+                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Remark / notes</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['notes'] ?? '')) ?></strong></div>
+            </div>
+            <?php if (AppConfig::IOT_ENABLED): ?>
+            <div class="sp-iot-mini">
+                <h4>IoT device</h4>
+                <div class="profile-kv-grid">
+                    <div class="profile-kv"><span class="profile-kv-label">Serial</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['device_serial'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">IMEI / MAC</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['imei_or_mac'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">SIM</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_company'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Power</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_power_status'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Last ping</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_last_ping'] ?? '')) ?></strong></div>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><div class="card-title"><span>Store activity</span></div></div>
+    <div class="card-body">
+        <?php if (empty($lifecycleTimeline)): ?>
+            <p style="color:#94a3b8; margin:0;">No activity yet.</p>
+        <?php else: ?>
+            <ul class="sp-timeline">
+                <?php foreach (array_slice($lifecycleTimeline, 0, 8) as $ev): ?>
+                    <li>
+                        <div class="sp-timeline-dot"></div>
+                        <div>
+                            <strong><?= htmlspecialchars($ev['title'] ?? $ev['type'] ?? 'Event') ?></strong>
+                            <div class="sp-timeline-meta">
+                                <?= htmlspecialchars($ev['sort_date'] ?? $ev['date'] ?? '') ?>
+                                <?php if (!empty($ev['outlet_id'])): ?>
+                                    · <code><?= htmlspecialchars($ev['outlet_id']) ?></code>
+                                <?php endif; ?>
+                                <?php if (!empty($ev['store_name'])): ?>
+                                    · <?= htmlspecialchars($ev['store_name']) ?>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </div>
+</div>
+
+<?php elseif ($activeTab === 'freezers'): ?>
+<div class="card">
+    <div class="card-header"><div class="card-title"><span>Freezers at this store (<?= count($storeFreezers) ?>)</span></div></div>
+    <div class="card-body" style="padding:0;">
+        <ul class="sp-freezer-list">
+            <?php foreach ($storeFreezers as $sf): ?>
+                <li class="<?= (int)$sf['id'] === (int)$freezer['id'] ? 'is-current' : '' ?>">
+                    <a href="profile_view.php?id=<?= urlencode($sf['unique_freezer_id']) ?>">
+                        <code><?= htmlspecialchars($sf['unique_freezer_id']) ?></code>
+                        <span><?= htmlspecialchars(($sf['company_code'] ?? '') . ' · ' . ($sf['model_number'] ?? '') . ' · ' . ($sf['freezer_type'] ?? '')) ?></span>
+                    </a>
+                    <span class="badge <?= ($sf['status'] ?? '') === 'Active' ? 'badge-success' : 'badge-warning' ?>"><?= htmlspecialchars($sf['status'] ?? '—') ?></span>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+</div>
+
+<?php elseif ($activeTab === 'location'): ?>
+<div class="card">
+    <div class="card-header">
+        <div class="card-title"><span>Location</span></div>
+        <div class="sp-map-actions-wrap">
+            <div class="sp-map-actions">
+                <?php if (!empty($freezer['store_latitude'])): ?>
+                    <a href="https://maps.google.com/?q=<?= urlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']) ?>" target="_blank" rel="noopener" class="btn btn-sm btn-outline">Open Maps</a>
+                    <?php
+                    $shareMapsLinkTab = trim((string)($freezer['store_location_link'] ?? ''));
+                    if ($shareMapsLinkTab === '') {
+                        $shareMapsLinkTab = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+                    }
+                    ?>
+                    <button type="button" class="btn btn-sm btn-primary js-share-location-btn"
+                        data-share-location="saved"
+                        data-wa-lat="<?= htmlspecialchars((string)$freezer['store_latitude']) ?>"
+                        data-wa-lng="<?= htmlspecialchars((string)$freezer['store_longitude']) ?>"
+                        data-wa-url="<?= htmlspecialchars($shareMapsLinkTab) ?>"
+                        data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>"
+                        data-wa-address="<?= htmlspecialchars(trim(($freezer['store_address'] ?? '') . ', ' . ($freezer['store_city'] ?? '') . ' - ' . ($freezer['store_pincode'] ?? ''), ' ,-')) ?>"
+                        data-wa-phone="<?= htmlspecialchars($viewPhone) ?>">
+                        Share location
+                    </button>
+                <?php endif; ?>
+                <button type="button" class="btn btn-sm btn-success"
+                    data-save-current-location
+                    data-store-id="<?= (int)$freezer['store_id'] ?>"
+                    data-freezer-id="<?= (int)$freezer['id'] ?>"
+                    data-csrf="<?= htmlspecialchars($csrfToken) ?>"
+                    data-wa-phone="<?= htmlspecialchars($viewPhone) ?>"
+                    data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>">
+                    Save my current location
+                </button>
+            </div>
+            <div class="gps-process-loading" hidden aria-live="polite">
+                <span class="gps-process-spinner" aria-hidden="true"></span>
+                <span class="gps-process-text">Processing…</span>
+            </div>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="sp-loc-tab-grid">
+            <div class="profile-kv"><span class="profile-kv-label">Zone</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_zone'] ?? $freezer['zone'] ?? '')) ?></strong></div>
+            <div class="profile-kv"><span class="profile-kv-label">City</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_city'] ?? '')) ?></strong></div>
+            <div class="profile-kv"><span class="profile-kv-label">State</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_state'] ?? '')) ?></strong></div>
+            <div class="profile-kv"><span class="profile-kv-label">PIN</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['store_pincode'] ?? '')) ?></strong></div>
+            <div class="profile-kv" style="grid-column:1 / -1;"><span class="profile-kv-label">Address</span><strong class="profile-kv-value"><?= htmlspecialchars($storeAddressLine !== '' ? $storeAddressLine : '—') ?></strong></div>
+        </div>
+
+        <div class="sp-current-loc-panel" style="margin-top:0; margin-bottom:1.15rem;">
+            <div class="sp-current-loc-panel-head">
+                <h4>Current location</h4>
+                <?php if ($hasGps): ?>
+                    <span class="badge badge-success">Recorded</span>
+                <?php else: ?>
+                    <span class="badge badge-warning">Not set</span>
+                <?php endif; ?>
+            </div>
+            <?php if ($hasGps): ?>
+                <div class="profile-kv-grid">
+                    <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6)) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Longitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_longitude'], 6)) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Accuracy</span><strong class="profile-kv-value"><?= !empty($freezer['store_gps_accuracy']) ? ('± ' . htmlspecialchars((string)round((float)$freezer['store_gps_accuracy'])) . ' m') : '—' ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">Captured at</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_gps_captured_at'] ?? '')) ?></strong></div>
+                    <div class="profile-kv profile-kv-wide">
+                        <span class="profile-kv-label">Maps link</span>
+                        <strong class="profile-kv-value">
+                            <a href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener" class="sp-maps-link"><?= htmlspecialchars($storeMapsLink) ?></a>
+                        </strong>
+                    </div>
+                </div>
+            <?php else: ?>
+                <p class="sp-current-loc-empty">No current location saved yet.</p>
+            <?php endif; ?>
+        </div>
+
+        <?php if ($hasGps): ?>
+            <div class="sp-map-wrap sp-map-wrap-lg"><div id="store-view-map"></div></div>
+            <div class="sp-location-link-box">
+                <div class="sp-location-link-label">Current location link</div>
+                <a class="sp-location-link" href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener"><?= htmlspecialchars($storeMapsLink) ?></a>
+                <button type="button" class="btn btn-sm btn-outline" data-copy="<?= htmlspecialchars($storeMapsLink) ?>">Copy link</button>
+            </div>
+            <div class="sp-latlng">
+                Lat <?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6)) ?>
+                · Lng <?= htmlspecialchars(number_format((float)$freezer['store_longitude'], 6)) ?>
+                <?php if (!empty($freezer['store_gps_captured_at'])): ?>
+                    · Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?>
+                <?php endif; ?>
+            </div>
+        <?php else: ?>
+            <p style="color:#94a3b8;">No GPS yet — tap <strong>Save my current location</strong> to store your live Maps link.</p>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if ($activeTab === 'history'): ?>
+<?php
+$exportBase = 'profile_export.php?id=' . urlencode($freezer['unique_freezer_id']);
+$tagCodeHist = $profileAssetTag['tag_code'] ?? '—';
+$kycByYear = [];
+foreach ($kycHistory as $k) {
+    $y = (int)$k['cycle_year'];
+    $h = (int)$k['cycle_half'];
+    if (!isset($kycByYear[$y])) {
+        $kycByYear[$y] = ['h1' => null, 'h2' => null];
+    }
+    if ($h === 1) {
+        $kycByYear[$y]['h1'] = $k;
+    } elseif ($h === 2) {
+        $kycByYear[$y]['h2'] = $k;
+    }
+}
+krsort($kycByYear);
+?>
+<!-- ========== Store history: Implementation + KYC ========== -->
 <div class="card" style="margin-top: 1.5rem; margin-bottom: 1.5rem;" id="store-history">
     <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
         <div class="card-title">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 16 14"/>
+                <rect x="3" y="3" width="18" height="18" rx="1"/>
+                <path d="M3 9h18M9 3v18"/>
             </svg>
             <span>Store history</span>
         </div>
         <div style="display:flex; flex-wrap:wrap; gap:0.5rem;">
-            <a href="freezer_transfer.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Transfer store</a>
             <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary btn-sm">
-                <?= $kycStatus['due'] ? 'Complete KYC now' : 'Add KYC' ?>
+                <?= $kycStatus['due'] ? 'Complete KYC now' : 'KYC verify' ?>
             </a>
-            <a href="profile_export.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm">Export data</a>
+            <a href="<?= $exportBase ?>&sheet=all" class="btn btn-outline btn-sm">Export all CSV</a>
+            <a href="<?= $exportBase ?>&sheet=implementation" class="btn btn-outline btn-sm">Export implementation</a>
+            <a href="<?= $exportBase ?>&sheet=kyc" class="btn btn-outline btn-sm">Export KYC</a>
         </div>
     </div>
     <div class="card-body">
@@ -529,7 +759,7 @@ require_once __DIR__ . '/includes/header.php';
             <div class="alert alert-warning" style="margin-bottom:1rem;">
                 <strong><?= htmlspecialchars($kycStatus['cycle']['label']) ?></strong> KYC due
                 (<?= htmlspecialchars($kycStatus['cycle']['window']) ?>).
-                Current: <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>
+                Current store: <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>
                 — <?= htmlspecialchars($freezer['store_name']) ?>.
             </div>
         <?php else: ?>
@@ -541,168 +771,207 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         <?php endif; ?>
 
-        <h3 style="font-size:0.95rem; font-weight:800; color:#0f172a; margin:0 0 0.75rem;">
-            Where this freezer was (stores over time)
-        </h3>
-        <p style="font-size:0.8rem; color:#64748b; margin-bottom:1rem;">
-            Unique Freezer ID same rehti hai. Har naye outlet pe nayi Store ID milti hai.
+        <div class="excel-legend">
+            <span><i class="excel-swatch" style="background:#dff6dd;"></i> Current store</span>
+            <span><i class="excel-swatch" style="background:#faf9f8;"></i> Past store</span>
+            <span>Freezer ID: <code><?= htmlspecialchars($freezer['unique_freezer_id']) ?></code></span>
+            <span>Tag: <code><?= htmlspecialchars($tagCodeHist) ?></code></span>
+            <span>Install: <code><?= htmlspecialchars($freezer['installation_date'] ?? '—') ?></code></span>
+        </div>
+
+        <h3 class="excel-sheet-title">1 — Implementation (store placements)</h3>
+        <p class="excel-sheet-sub">
+            Where the freezer was implemented / placed. Unique Freezer ID never changes; Store ID can change on move.
         </p>
 
         <?php if ($placementHistory): ?>
-            <div style="overflow-x:auto; margin-bottom:1.25rem;">
-                <table class="data-table" style="font-size:0.82rem;">
+            <div class="excel-wrap">
+                <table class="excel-sheet">
                     <thead>
                         <tr>
+                            <th class="excel-col-index">#</th>
+                            <th>Status</th>
+                            <th>Unique Freezer ID</th>
+                            <th>Tag code</th>
+                            <th>Install date</th>
                             <th>Store ID</th>
                             <th>Store name</th>
-                            <th>City / PIN</th>
+                            <th>Customer</th>
+                            <th>Address</th>
+                            <th>City</th>
+                            <th>State</th>
+                            <th>PIN</th>
+                            <th>Zone</th>
+                            <th>Contact</th>
+                            <th>Phone</th>
                             <th>From</th>
                             <th>To</th>
+                            <th>Days</th>
                             <th>Reason</th>
+                            <th>Notes</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($placementHistory as $p): ?>
-                            <tr style="<?= empty($p['ended_at']) ? 'background:#f0f9ff;' : '' ?>">
-                                <td style="font-family:var(--font-mono); font-weight:700; color:#0284c7;"><?= htmlspecialchars($p['outlet_id']) ?></td>
-                                <td>
-                                    <strong><?= htmlspecialchars($p['store_name']) ?></strong>
-                                    <?php if (!empty($p['contact_person'])): ?>
-                                        <div style="font-size:0.72rem; color:#94a3b8;"><?= htmlspecialchars($p['contact_person']) ?></div>
-                                    <?php endif; ?>
-                                </td>
-                                <td><?= htmlspecialchars(trim(($p['city'] ?? '') . ' ' . ($p['pincode'] ?? ''))) ?></td>
-                                <td><?= htmlspecialchars($p['started_at']) ?></td>
-                                <td><?= $p['ended_at'] ? htmlspecialchars($p['ended_at']) : '<span class="badge badge-success">Current</span>' ?></td>
-                                <td><?= htmlspecialchars($p['transfer_reason'] ?? '—') ?></td>
+                        <?php
+                        $rowNum = 1;
+                        foreach ($placementHistory as $p):
+                            $isCurrent = empty($p['ended_at']);
+                            $fromTs = !empty($p['started_at']) ? strtotime($p['started_at']) : false;
+                            $toTs = $isCurrent ? time() : (!empty($p['ended_at']) ? strtotime($p['ended_at']) : false);
+                            $days = ($fromTs && $toTs) ? max(0, (int)floor(($toTs - $fromTs) / 86400)) : null;
+                        ?>
+                            <tr class="<?= $isCurrent ? 'excel-row-current' : 'excel-row-left' ?>">
+                                <td class="excel-col-index"><?= $rowNum++ ?></td>
+                                <td><?= $isCurrent ? 'CURRENT' : 'LEFT' ?></td>
+                                <td class="excel-mono"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></td>
+                                <td class="excel-mono"><?= htmlspecialchars($tagCodeHist) ?></td>
+                                <td><?= htmlspecialchars($freezer['installation_date'] ?? '—') ?></td>
+                                <td class="excel-mono"><?= htmlspecialchars($p['outlet_id'] ?? '—') ?></td>
+                                <td><?= htmlspecialchars($p['store_name'] ?? '—') ?></td>
+                                <td><?= htmlspecialchars($p['customer_name'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['address'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['city'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['state'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['pincode'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['zone'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['contact_person'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['phone_number'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['started_at'] ?? '—') ?></td>
+                                <td><?= $isCurrent ? 'Still here' : htmlspecialchars($p['ended_at']) ?></td>
+                                <td><?= $days !== null ? $days : '—' ?></td>
+                                <td><?= htmlspecialchars($p['transfer_reason'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($p['notes'] ?: '—') ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
         <?php else: ?>
-            <p style="color:#94a3b8; margin-bottom:1rem;">No store placement history yet.</p>
+            <p style="color:#94a3b8; margin-bottom:1rem;">No implementation / placement rows yet.</p>
         <?php endif; ?>
 
-        <h3 style="font-size:0.95rem; font-weight:800; color:#0f172a; margin:0 0 0.75rem;">
-            Full timeline (store moves + KYC)
-        </h3>
-
-        <?php if (!$lifecycleTimeline): ?>
-            <p style="color:#94a3b8;">No timeline events yet.</p>
-        <?php else: ?>
-            <div class="lifecycle-timeline">
-                <?php foreach ($lifecycleTimeline as $ev): ?>
-                    <?php
-                    $dotColor = match ($ev['type']) {
-                        'kyc' => ($ev['result'] === 'FAIL' ? '#dc2626' : ($ev['result'] === 'PENDING' ? '#d97706' : '#059669')),
-                        'placement_current' => '#0284c7',
-                        'left_store' => '#94a3b8',
-                        default => '#6366f1',
-                    };
-                    $typeLabel = match ($ev['type']) {
-                        'kyc' => 'KYC',
-                        'placement_current' => 'CURRENT',
-                        'left_store' => 'LEFT',
-                        'placement' => 'PLACED',
-                        default => strtoupper($ev['type']),
-                    };
-                    ?>
-                    <div class="lifecycle-item" style="display:flex; gap:0.85rem; padding:0.85rem 0; border-bottom:1px solid #e2e8f0;">
-                        <div style="width:4.5rem; flex-shrink:0; text-align:right;">
-                            <div style="font-size:0.78rem; font-weight:700; color:#0f172a;"><?= htmlspecialchars($ev['date']) ?></div>
-                            <?php if (!empty($ev['end_date'])): ?>
-                                <div style="font-size:0.7rem; color:#94a3b8;">→ <?= htmlspecialchars($ev['end_date']) ?></div>
-                            <?php endif; ?>
-                        </div>
-                        <div style="position:relative; width:14px; flex-shrink:0;">
-                            <div style="width:12px; height:12px; border-radius:50%; background:<?= $dotColor ?>; margin-top:0.3rem; box-shadow:0 0 0 3px <?= $dotColor ?>22;"></div>
-                        </div>
-                        <div style="flex:1; min-width:0;">
-                            <div style="display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem; margin-bottom:0.25rem;">
-                                <span class="badge" style="background:<?= $dotColor ?>18; color:<?= $dotColor ?>; border:1px solid <?= $dotColor ?>44;"><?= $typeLabel ?></span>
-                                <strong style="font-size:0.9rem;"><?= htmlspecialchars($ev['title']) ?></strong>
-                                <?php if (!empty($ev['is_new_outlet'])): ?>
-                                    <span class="badge badge-warning">New outlet</span>
-                                <?php endif; ?>
-                                <?php if (!empty($ev['is_current'])): ?>
-                                    <span class="badge badge-success">Here now</span>
-                                <?php endif; ?>
-                                <?php if (!empty($ev['result'])): ?>
-                                    <span class="badge <?= $ev['result'] === 'PASS' ? 'badge-success' : ($ev['result'] === 'FAIL' ? 'badge-danger' : 'badge-warning') ?>">
-                                        <?= htmlspecialchars($ev['result']) ?>
-                                    </span>
-                                <?php endif; ?>
-                            </div>
-                            <div style="font-size:0.875rem; color:#0f172a;">
-                                <span style="font-family:var(--font-mono); font-weight:700; color:#0284c7;"><?= htmlspecialchars($ev['outlet_id']) ?></span>
-                                · <?= htmlspecialchars($ev['store_name']) ?>
-                                <?php if ($ev['city'] !== ''): ?>
-                                    · <?= htmlspecialchars($ev['city']) ?><?= $ev['pincode'] !== '' ? ' ' . htmlspecialchars($ev['pincode']) : '' ?>
-                                <?php endif; ?>
-                            </div>
-                            <?php if ($ev['reason'] !== ''): ?>
-                                <div style="font-size:0.78rem; color:#475569; margin-top:0.2rem;">
-                                    Reason: <?= htmlspecialchars($ev['reason']) ?>
-                                </div>
-                            <?php endif; ?>
-                            <?php if ($ev['type'] === 'kyc' && (!empty($ev['image_store_front']) || !empty($ev['image_freezer']))): ?>
-                                <div style="display:flex; gap:0.5rem; margin-top:0.45rem; flex-wrap:wrap;">
-                                    <?php if (!empty($ev['image_store_front']) && file_exists(__DIR__ . '/' . $ev['image_store_front'])): ?>
-                                        <img src="<?= htmlspecialchars($ev['image_store_front']) ?>" alt="KYC store" class="lightbox-trigger" data-caption="KYC store <?= htmlspecialchars($ev['cycle'] ?? '') ?>" style="height:52px; width:72px; object-fit:cover; border-radius:6px; border:1px solid #e2e8f0;">
-                                    <?php endif; ?>
-                                    <?php if (!empty($ev['image_freezer']) && file_exists(__DIR__ . '/' . $ev['image_freezer'])): ?>
-                                        <img src="<?= htmlspecialchars($ev['image_freezer']) ?>" alt="KYC freezer" class="lightbox-trigger" data-caption="KYC freezer <?= htmlspecialchars($ev['cycle'] ?? '') ?>" style="height:52px; width:72px; object-fit:cover; border-radius:6px; border:1px solid #e2e8f0;">
-                                    <?php endif; ?>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
+        <h3 class="excel-sheet-title">2 — KYC verifications</h3>
+        <p class="excel-sheet-sub">
+            Bi-annual checks (H1 / H2) with result, store, GPS and photo evidence flags.
+        </p>
 
         <?php if ($kycHistory): ?>
-            <details style="margin-top:1.25rem;">
-                <summary style="cursor:pointer; font-weight:700; font-size:0.85rem; color:#334155;">KYC table (all cycles)</summary>
-                <div style="overflow-x:auto; margin-top:0.75rem;">
-                    <table class="data-table" style="font-size:0.78rem;">
-                        <thead>
+            <div class="excel-wrap">
+                <table class="excel-sheet">
+                    <thead>
+                        <tr>
+                            <th class="excel-col-index">#</th>
+                            <th>Cycle</th>
+                            <th>Verified date</th>
+                            <th>Result</th>
+                            <th>Store ID</th>
+                            <th>Store name</th>
+                            <th>Address</th>
+                            <th>City</th>
+                            <th>State</th>
+                            <th>PIN</th>
+                            <th>Contact</th>
+                            <th>Phone</th>
+                            <th>GPS lat</th>
+                            <th>GPS lng</th>
+                            <th>Store photo</th>
+                            <th>Freezer photo</th>
+                            <th>Notes</th>
+                            <th>Verified by</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php $kNum = 1; foreach ($kycHistory as $k): ?>
                             <tr>
-                                <th>Cycle</th>
-                                <th>Date</th>
-                                <th>Result</th>
-                                <th>Store ID</th>
-                                <th>Store / City</th>
-                                <th>Notes</th>
+                                <td class="excel-col-index"><?= $kNum++ ?></td>
+                                <td><strong><?= (int)$k['cycle_year'] ?>-H<?= (int)$k['cycle_half'] ?></strong></td>
+                                <td><?= htmlspecialchars($k['verified_at'] ?? '—') ?></td>
+                                <td>
+                                    <?php if (($k['result'] ?? '') === 'PASS'): ?>
+                                        <span class="badge badge-success">PASS</span>
+                                    <?php elseif (($k['result'] ?? '') === 'FAIL'): ?>
+                                        <span class="badge badge-danger">FAIL</span>
+                                    <?php else: ?>
+                                        <span class="badge badge-warning"><?= htmlspecialchars($k['result'] ?? '—') ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="excel-mono"><?= htmlspecialchars($k['outlet_id'] ?? '—') ?></td>
+                                <td><?= htmlspecialchars($k['store_name'] ?? '—') ?></td>
+                                <td><?= htmlspecialchars($k['address'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['city'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['state'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['pincode'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['contact_person'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['phone_number'] ?: '—') ?></td>
+                                <td class="excel-mono"><?= htmlspecialchars($k['latitude'] !== null && $k['latitude'] !== '' ? (string)$k['latitude'] : '—') ?></td>
+                                <td class="excel-mono"><?= htmlspecialchars($k['longitude'] !== null && $k['longitude'] !== '' ? (string)$k['longitude'] : '—') ?></td>
+                                <td><?= !empty($k['image_store_front']) ? 'Yes' : 'No' ?></td>
+                                <td><?= !empty($k['image_freezer']) ? 'Yes' : 'No' ?></td>
+                                <td><?= htmlspecialchars($k['notes'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars($k['verified_by_name'] ?: '—') ?></td>
                             </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($kycHistory as $k): ?>
-                                <tr>
-                                    <td><?= (int)$k['cycle_year'] ?>-H<?= (int)$k['cycle_half'] ?></td>
-                                    <td><?= htmlspecialchars($k['verified_at']) ?></td>
-                                    <td><?= htmlspecialchars($k['result']) ?></td>
-                                    <td style="font-family:var(--font-mono);"><?= htmlspecialchars($k['outlet_id']) ?></td>
-                                    <td><?= htmlspecialchars($k['store_name'] . ' · ' . ($k['city'] ?? '')) ?></td>
-                                    <td><?= htmlspecialchars($k['notes'] ?? '—') ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </details>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php else: ?>
+            <p style="color:#94a3b8; margin-bottom:1rem;">No KYC rows yet. Use <strong>KYC verify</strong> to add the first check.</p>
+        <?php endif; ?>
+
+        <?php if ($kycByYear): ?>
+            <h3 class="excel-sheet-title" style="margin-top:1.25rem;">3 — KYC by year</h3>
+            <p class="excel-sheet-sub">
+                H1 (Jan–Jun) / H2 (Jul–Dec). Blank cell = that half not done yet.
+            </p>
+            <div class="excel-wrap">
+                <table class="excel-sheet">
+                    <thead>
+                        <tr>
+                            <th class="excel-col-index">#</th>
+                            <th>Year</th>
+                            <th>H1 result</th>
+                            <th>H1 date</th>
+                            <th>H1 store ID</th>
+                            <th>H1 store name</th>
+                            <th>H2 result</th>
+                            <th>H2 date</th>
+                            <th>H2 store ID</th>
+                            <th>H2 store name</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php $yNum = 1; foreach ($kycByYear as $year => $halves): ?>
+                            <?php $h1 = $halves['h1']; $h2 = $halves['h2']; ?>
+                            <tr>
+                                <td class="excel-col-index"><?= $yNum++ ?></td>
+                                <td><strong><?= (int)$year ?></strong></td>
+                                <td><?= $h1 ? htmlspecialchars($h1['result']) : '' ?></td>
+                                <td><?= $h1 ? htmlspecialchars($h1['verified_at']) : '' ?></td>
+                                <td class="excel-mono"><?= $h1 ? htmlspecialchars($h1['outlet_id']) : '' ?></td>
+                                <td><?= $h1 ? htmlspecialchars($h1['store_name']) : '' ?></td>
+                                <td><?= $h2 ? htmlspecialchars($h2['result']) : '' ?></td>
+                                <td><?= $h2 ? htmlspecialchars($h2['verified_at']) : '' ?></td>
+                                <td class="excel-mono"><?= $h2 ? htmlspecialchars($h2['outlet_id']) : '' ?></td>
+                                <td><?= $h2 ? htmlspecialchars($h2['store_name']) : '' ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php endif; ?>
     </div>
 </div>
+<?php endif; ?>
 
 <!-- Map Script for Store View -->
-<?php if (!empty($freezer['store_latitude'])): ?>
+<?php if (!empty($freezer['store_latitude']) && in_array($activeTab, ['overview', 'location'], true)): ?>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const mapEl = document.getElementById('store-view-map');
+    if (!mapEl) return;
     const lat = <?= (float)$freezer['store_latitude'] ?>;
     const lng = <?= (float)$freezer['store_longitude'] ?>;
-    const storeMap = L.map('store-view-map').setView([lat, lng], 16);
+    const storeMap = L.map(mapEl).setView([lat, lng], 16);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap'

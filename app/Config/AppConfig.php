@@ -26,8 +26,8 @@ class AppConfig {
     /** Only role in the system */
     public const ROLE_SUPER_ADMIN = 'super_admin';
 
-    /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) */
-    public const IOT_ENABLED = true;
+    /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) — next phase */
+    public const IOT_ENABLED = false;
 
     public static function getBaseUrl(): string {
         $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";

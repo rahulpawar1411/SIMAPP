@@ -62,19 +62,23 @@ class Store {
         $fssai = self::normalizeFssai((string)($data['fssai_number'] ?? ''));
         $gst = self::normalizeGst((string)($data['gst_number'] ?? ''));
 
+        $lat = !empty($data['latitude']) ? (float)$data['latitude'] : null;
+        $lng = !empty($data['longitude']) ? (float)$data['longitude'] : null;
+        $locationLink = self::resolveLocationLink($data['location_link'] ?? null, $lat, $lng);
+
         $sql = "INSERT INTO `stores` (
             `outlet_id`, `store_name`, `customer_name`, `distributor_name`,
             `contact_person`, `phone_number`, `email`, `aadhar_number`,
             `fssai_number`, `gst_number`, `address`,
             `city`, `state`, `pincode`, `zone`, `location_type`,
-            `latitude`, `longitude`, `gps_accuracy`, `gps_captured_at`,
+            `latitude`, `longitude`, `gps_accuracy`, `gps_captured_at`, `location_link`,
             `image_store_front`, `image_aadhar_card`, `image_aadhar_back`, `status`, `created_by`
         ) VALUES (
             :outlet_id, :store_name, :customer_name, :distributor_name,
             :contact_person, :phone_number, :email, :aadhar_number,
             :fssai_number, :gst_number, :address,
             :city, :state, :pincode, :zone, :location_type,
-            :latitude, :longitude, :gps_accuracy, :gps_captured_at,
+            :latitude, :longitude, :gps_accuracy, :gps_captured_at, :location_link,
             :image_store_front, :image_aadhar_card, :image_aadhar_back, :status, :created_by
         )";
 
@@ -96,10 +100,11 @@ class Store {
             'pincode' => trim($data['pincode']),
             'zone' => trim($data['zone'] ?? 'WEST'),
             'location_type' => trim($data['location_type'] ?? 'Retail Outlet'),
-            'latitude' => !empty($data['latitude']) ? (float)$data['latitude'] : null,
-            'longitude' => !empty($data['longitude']) ? (float)$data['longitude'] : null,
+            'latitude' => $lat,
+            'longitude' => $lng,
             'gps_accuracy' => !empty($data['gps_accuracy']) ? (float)$data['gps_accuracy'] : null,
-            'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : (!empty($data['latitude']) ? date('Y-m-d H:i:s') : null),
+            'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : ($lat !== null ? date('Y-m-d H:i:s') : null),
+            'location_link' => $locationLink,
             'image_store_front' => $data['image_store_front'] ?? null,
             'image_aadhar_card' => $data['image_aadhar_card'] ?? null,
             'image_aadhar_back' => $data['image_aadhar_back'] ?? null,
@@ -138,11 +143,16 @@ class Store {
             `longitude` = :longitude,
             `gps_accuracy` = :gps_accuracy,
             `gps_captured_at` = :gps_captured_at,
+            `location_link` = :location_link,
             `image_store_front` = COALESCE(:image_store_front, `image_store_front`),
             `image_aadhar_card` = COALESCE(:image_aadhar_card, `image_aadhar_card`),
             `image_aadhar_back` = COALESCE(:image_aadhar_back, `image_aadhar_back`),
             `status` = :status
         WHERE `id` = :id";
+
+        $lat = !empty($data['latitude']) ? (float)$data['latitude'] : null;
+        $lng = !empty($data['longitude']) ? (float)$data['longitude'] : null;
+        $locationLink = self::resolveLocationLink($data['location_link'] ?? null, $lat, $lng);
 
         $stmt = $pdo->prepare($sql);
         return $stmt->execute([
@@ -163,14 +173,55 @@ class Store {
             'pincode' => trim($data['pincode']),
             'zone' => trim($data['zone'] ?? 'WEST'),
             'location_type' => trim($data['location_type'] ?? 'Retail Outlet'),
-            'latitude' => !empty($data['latitude']) ? (float)$data['latitude'] : null,
-            'longitude' => !empty($data['longitude']) ? (float)$data['longitude'] : null,
+            'latitude' => $lat,
+            'longitude' => $lng,
             'gps_accuracy' => !empty($data['gps_accuracy']) ? (float)$data['gps_accuracy'] : null,
-            'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : (!empty($data['latitude']) ? date('Y-m-d H:i:s') : null),
+            'gps_captured_at' => !empty($data['gps_captured_at']) ? $data['gps_captured_at'] : ($lat !== null ? date('Y-m-d H:i:s') : null),
+            'location_link' => $locationLink,
             'image_store_front' => $data['image_store_front'] ?? null,
             'image_aadhar_card' => $data['image_aadhar_card'] ?? null,
             'image_aadhar_back' => $data['image_aadhar_back'] ?? null,
             'status' => $data['status'] ?? 'Active',
+        ]);
+    }
+
+    /** WhatsApp-style Google Maps share URL from coordinates. */
+    public static function buildMapsLink(float $latitude, float $longitude): string {
+        return 'https://maps.google.com/?q=' . rawurlencode(
+            number_format($latitude, 6, '.', '') . ',' . number_format($longitude, 6, '.', '')
+        );
+    }
+
+    public static function resolveLocationLink(?string $provided, ?float $lat, ?float $lng): ?string {
+        $link = trim((string)$provided);
+        if ($link !== '' && preg_match('#^https?://#i', $link)) {
+            return $link;
+        }
+        if ($lat !== null && $lng !== null) {
+            return self::buildMapsLink($lat, $lng);
+        }
+        return null;
+    }
+
+    /** Update only GPS fields + maps location link (current location save). */
+    public static function updateGps(int $id, float $latitude, float $longitude, ?float $accuracy = null, ?string $locationLink = null): bool {
+        $pdo = Database::getConnection();
+        $link = self::resolveLocationLink($locationLink, $latitude, $longitude);
+        $stmt = $pdo->prepare(
+            "UPDATE `stores` SET
+                `latitude` = :lat,
+                `longitude` = :lng,
+                `gps_accuracy` = :acc,
+                `gps_captured_at` = NOW(),
+                `location_link` = :link
+             WHERE `id` = :id"
+        );
+        return $stmt->execute([
+            'id' => $id,
+            'lat' => $latitude,
+            'lng' => $longitude,
+            'acc' => $accuracy,
+            'link' => $link,
         ]);
     }
 

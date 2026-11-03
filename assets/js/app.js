@@ -10,9 +10,41 @@ document.addEventListener('DOMContentLoaded', function () {
     initGpsCapture();
     initImageUploadPreviews();
     initStoreFrontExifAutofill();
+    initImageProcessingSubmitGuard();
     initIndianPhoneInputs();
     initLightbox();
+    initLocationShare();
 });
+
+/** Active image stamp/analysis jobs — blocks form save while > 0 */
+window.__imageProcessingCount = 0;
+
+function beginImageProcessing() {
+    window.__imageProcessingCount = (window.__imageProcessingCount || 0) + 1;
+}
+
+function endImageProcessing() {
+    window.__imageProcessingCount = Math.max(0, (window.__imageProcessingCount || 0) - 1);
+}
+
+function isAnyImageProcessing() {
+    if ((window.__imageProcessingCount || 0) > 0) return true;
+    return !!document.querySelector('.upload-box.is-loading');
+}
+
+function imageFieldLabel(input) {
+    const name = (input && input.name) || '';
+    const map = {
+        image_store_front: 'Store Front',
+        image_left_side: 'Freezer Left Side',
+        image_right_side: 'Freezer Right Side',
+        image_aadhar_card: 'Aadhaar Front',
+        image_aadhar_back: 'Aadhaar Back',
+        image_iot_device: 'IoT Device',
+        image_freezer: 'Freezer (KYC)',
+    };
+    return map[name] || 'Photo';
+}
 
 // -------------------------------------------------------------
 // Camera / Location permission popups
@@ -673,16 +705,153 @@ function initCascadingLocationSelector() {
     }
 
     function populateCitySuggestions(zoneFilter) {
-        if (!cityList) return;
-        cityList.innerHTML = '';
-        getCitiesForZone(zoneFilter || (zoneSelect ? zoneSelect.value : '')).forEach(c => {
+        const zone = zoneFilter || (zoneSelect ? zoneSelect.value : '');
+        const cities = getCitiesForZone(zone);
+
+        // Keep datalist in sync (desktop fallback)
+        if (cityList) {
+            cityList.innerHTML = '';
+            cities.forEach(c => {
+                const prefix = resolveCityPrefix(c.city, c);
+                const opt = document.createElement('option');
+                opt.value = c.city;
+                opt.label = `${c.city} (${prefix}1/2/3) · ${c.state} · PIN ${c.pin}`;
+                cityList.appendChild(opt);
+            });
+        }
+
+        // Custom dropdown pool for type-to-filter UX
+        cityInput.dataset.zoneCities = JSON.stringify(cities.map(c => ({
+            city: c.city,
+            state: c.state,
+            pin: c.pin,
+            zone: c.zone,
+            code: c.code || ''
+        })));
+
+        if (zone) {
+            cityInput.placeholder = 'Type city in ' + zone + ' zone…';
+            cityInput.title = cities.length + ' cities in ' + zone;
+        } else {
+            cityInput.placeholder = 'Select zone first, then type city';
+            cityInput.title = 'Select a zone to see its cities';
+        }
+
+        // Only show dropdown while city field is focused
+        if (document.activeElement === cityInput) {
+            renderCityAutocomplete(cityInput.value || '');
+        }
+    }
+
+    function ensureCityAutocomplete() {
+        const group = cityInput.closest('.form-group') || cityInput.parentElement;
+        if (!group) return null;
+        group.classList.add('city-autocomplete-wrap');
+        if (getComputedStyle(group).position === 'static') {
+            group.style.position = 'relative';
+        }
+        let panel = group.querySelector('.city-autocomplete');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.className = 'city-autocomplete';
+            panel.setAttribute('role', 'listbox');
+            panel.hidden = true;
+            group.appendChild(panel);
+        }
+        return panel;
+    }
+
+    function hideCityAutocomplete() {
+        const panel = ensureCityAutocomplete();
+        if (panel) panel.hidden = true;
+    }
+
+    function renderCityAutocomplete(query) {
+        const panel = ensureCityAutocomplete();
+        if (!panel) return;
+
+        const zone = zoneSelect ? zoneSelect.value : '';
+        if (!zone) {
+            panel.innerHTML = '<div class="city-autocomplete-empty">Select <strong>Zone</strong> first to see cities</div>';
+            panel.hidden = false;
+            return;
+        }
+
+        let cities = [];
+        try {
+            cities = JSON.parse(cityInput.dataset.zoneCities || '[]');
+        } catch (e) {
+            cities = getCitiesForZone(zone);
+        }
+
+        const q = String(query || '').trim().toLowerCase();
+        const filtered = q
+            ? cities.filter(c =>
+                c.city.toLowerCase().includes(q)
+                || String(c.state || '').toLowerCase().includes(q)
+                || String(c.pin || '').includes(q)
+            )
+            : cities;
+
+        if (!filtered.length) {
+            panel.innerHTML = '<div class="city-autocomplete-empty">No city in ' + zone + ' matching “' + (query || '') + '”. You can still type a custom city.</div>';
+            panel.hidden = false;
+            return;
+        }
+
+        panel.innerHTML = filtered.slice(0, 40).map(c => {
             const prefix = resolveCityPrefix(c.city, c);
-            const opt = document.createElement('option');
-            opt.value = c.city;
-            opt.label = `${c.city} (${prefix}1/2/3) - PIN: ${c.pin}`;
-            cityList.appendChild(opt);
+            return `<button type="button" class="city-autocomplete-item" role="option" data-city="${escapeHtmlAttr(c.city)}" data-state="${escapeHtmlAttr(c.state || '')}">
+                <span class="city-ac-name">${escapeHtml(c.city)}</span>
+                <span class="city-ac-meta">${escapeHtml(c.state || '')} · ${escapeHtml(prefix)} · PIN ${escapeHtml(c.pin || '')}</span>
+            </button>`;
+        }).join('');
+        panel.hidden = false;
+
+        panel.querySelectorAll('.city-autocomplete-item').forEach(btn => {
+            btn.addEventListener('mousedown', function (e) {
+                e.preventDefault(); // keep focus, avoid blur-before-click
+                cityInput.value = this.getAttribute('data-city') || '';
+                if (stateInput) stateInput.value = this.getAttribute('data-state') || '';
+                hideCityAutocomplete();
+                onCityChanged();
+                cityInput.dispatchEvent(new Event('change', { bubbles: true }));
+            });
         });
     }
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function escapeHtmlAttr(str) {
+        return escapeHtml(str).replace(/'/g, '&#39;');
+    }
+
+    // Zone-filtered city typeahead (custom dropdown — clearer than native datalist)
+    cityInput.setAttribute('autocomplete', 'off');
+    cityInput.removeAttribute('list'); // avoid fighting browser datalist UI
+    cityInput.addEventListener('focus', function () {
+        populateCitySuggestions(zoneSelect ? zoneSelect.value : '');
+        renderCityAutocomplete(cityInput.value);
+    });
+    cityInput.addEventListener('input', function () {
+        renderCityAutocomplete(cityInput.value);
+    });
+    cityInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') hideCityAutocomplete();
+    });
+    cityInput.addEventListener('blur', function () {
+        setTimeout(hideCityAutocomplete, 150);
+    });
+
+    window.refreshZoneCitySuggestions = function (zone) {
+        populateCitySuggestions(zone || (zoneSelect ? zoneSelect.value : ''));
+    };
 
     /** City → AMD / BPL / MUM / PUN… then codes AMD1, AMD2, AMD3 */
     function resolveCityPrefix(cityName, match) {
@@ -707,54 +876,29 @@ function initCascadingLocationSelector() {
         if (!locInput) return;
         const codes = locationCodesForPrefix(prefix);
         const keep = preferredCode ? String(preferredCode).toUpperCase() : '';
-        const isSelect = locInput.tagName === 'SELECT';
+        const prev = String(locInput.value || '').toUpperCase();
 
-        if (isSelect) {
-            const prev = (locInput.value || keep || '').toUpperCase();
-            locInput.innerHTML = '';
-            codes.forEach((code) => {
-                const opt = document.createElement('option');
-                opt.value = code;
-                opt.textContent = code;
-                locInput.appendChild(opt);
-            });
-            if (keep && codes.includes(keep)) {
-                locInput.value = keep;
-            } else if (prev && codes.includes(prev)) {
-                locInput.value = prev;
-            } else {
-                locInput.value = codes[0];
-            }
-            // Keep a non-standard current code visible (edit edge-case)
-            if (keep && !codes.includes(keep)) {
-                const extra = document.createElement('option');
-                extra.value = keep;
-                extra.textContent = keep + ' (current)';
-                extra.selected = true;
-                locInput.appendChild(extra);
-            }
+        // Display-only: auto from city — no mouse/select interaction
+        locInput.readOnly = true;
+        locInput.tabIndex = -1;
+        locInput.classList.add('form-control-display');
+        locInput.removeAttribute('list');
+        locInput.style.pointerEvents = 'none';
+        locInput.style.cursor = 'default';
+
+        if (keep && /^[A-Z]{2,4}\d+$/.test(keep)) {
+            locInput.value = keep;
+        } else if (prev && codes.includes(prev)) {
+            locInput.value = prev;
         } else {
-            locInput.value = (keep && /^[A-Z]{2,4}\d+$/.test(keep)) ? keep : codes[0];
-            locInput.setAttribute('list', 'location-code-list');
-            let list = document.getElementById('location-code-list');
-            if (!list) {
-                list = document.createElement('datalist');
-                list.id = 'location-code-list';
-                locInput.parentNode.appendChild(list);
-            }
-            list.innerHTML = '';
-            codes.forEach(code => {
-                const opt = document.createElement('option');
-                opt.value = code;
-                list.appendChild(opt);
-            });
+            locInput.value = codes[0] || '';
         }
 
         locInput.dispatchEvent(new Event('change', { bubbles: true }));
         locInput.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    // 1. Zone → city list
+    // 1. Zone → only that zone's cities in typeahead
     if (zoneSelect) {
         zoneSelect.addEventListener('change', function () {
             const chosenZone = this.value;
@@ -764,9 +908,14 @@ function initCascadingLocationSelector() {
                 if (!match || match.zone !== chosenZone) {
                     cityInput.value = '';
                     if (stateInput) stateInput.value = '';
+                    if (document.activeElement === cityInput) {
+                        renderCityAutocomplete('');
+                    }
                 } else {
                     onCityChanged();
                 }
+            } else if (document.activeElement === cityInput) {
+                renderCityAutocomplete('');
             }
         });
     }
@@ -782,7 +931,10 @@ function initCascadingLocationSelector() {
 
         if (match) {
             if (stateInput) stateInput.value = match.state;
-            if (zoneSelect && match.zone) zoneSelect.value = match.zone;
+            if (zoneSelect && match.zone && zoneSelect.value !== match.zone) {
+                zoneSelect.value = match.zone;
+                populateCitySuggestions(match.zone);
+            }
 
             populateLocationCodes(prefix, match.code || (prefix + '1'));
 
@@ -842,7 +994,6 @@ function initCascadingLocationSelector() {
 // Mobile GPS Geolocation Capture
 // -------------------------------------------------------------
 function initGpsCapture() {
-    const captureBtn = document.getElementById('btn-capture-gps');
     const statusPill = document.getElementById('gps-status-pill');
 
     async function resolvePlace(lat, lng, accuracyMeters) {
@@ -867,69 +1018,8 @@ function initGpsCapture() {
         }
     }
 
-    // Used by Store Front photo EXIF (no separate GPS button needed)
+    // Used by Store Front photo / Save current location (no separate Capture GPS button)
     window.resolveGpsPlace = resolvePlace;
-
-    if (!captureBtn) return;
-
-    captureBtn.addEventListener('click', async function () {
-        const allowed = await ensureLocationPermission();
-        if (!allowed) return;
-
-        if (statusPill) {
-            statusPill.innerHTML = 'Getting location…';
-            statusPill.style.color = '#0284c7';
-            statusPill.style.backgroundColor = '#e0f2fe';
-        }
-        setGpsPlaceText('Detecting your place…');
-        captureBtn.disabled = true;
-        const originalHtml = captureBtn.innerHTML;
-        captureBtn.innerHTML = 'Getting place…';
-
-        navigator.geolocation.getCurrentPosition(
-            async function (position) {
-                const lat = position.coords.latitude;
-                const lng = position.coords.longitude;
-                const acc = position.coords.accuracy;
-
-                await resolvePlace(lat, lng, acc);
-
-                captureBtn.disabled = false;
-                captureBtn.innerHTML = 'Update GPS Location';
-            },
-            async function (error) {
-                captureBtn.disabled = false;
-                captureBtn.innerHTML = originalHtml || 'Capture GPS Location Now';
-                const msg = geoErrorMessage(error);
-                setGpsPlaceText(msg);
-                if (statusPill) {
-                    statusPill.innerHTML = '⚠️ Failed';
-                    statusPill.style.color = '#dc2626';
-                    statusPill.style.backgroundColor = '#fee2e2';
-                }
-                await showPermissionPopup({
-                    mode: 'denied',
-                    title: 'Location needed',
-                    body: msg,
-                    steps: error && error.code === 1 ? [
-                        'Tap the lock / info icon in the address bar',
-                        'Set Location to Allow',
-                        'Reload and tap Capture GPS again'
-                    ] : [
-                        'Turn on Location / GPS on your phone',
-                        'Try again outdoors for a stronger signal'
-                    ],
-                    allowLabel: 'Try again',
-                    cancelLabel: 'Close'
-                });
-            },
-            {
-                enableHighAccuracy: true,
-                timeout: 20000,
-                maximumAge: 0
-            }
-        );
-    });
 }
 
 // -------------------------------------------------------------
@@ -1283,39 +1373,131 @@ function roundRectPath(ctx, x, y, w, h, r) {
     ctx.closePath();
 }
 
+function isStoreFrontPhotoInput(input) {
+    return !!(input && input.name === 'image_store_front');
+}
+
 /**
- * Capture GPS → stamp overlay → assign file to input.
+ * Other images (Aadhaar, freezer sides, KYC freezer, IoT): stamp date-time only — no GPS/map.
+ */
+async function stampDateTimeOnlyOnBlob(blob) {
+    if (!blob) return blob;
+    const photo = await loadImageFromBlob(blob);
+    const w = photo.width || photo.naturalWidth;
+    const h = photo.height || photo.naturalHeight;
+    if (!w || !h) return blob;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(photo, 0, 0, w, h);
+
+    const when = formatGpsStampTimestamp(new Date());
+    const ref = Math.min(w, h);
+    const s = Math.max(0.75, Math.min(1.6, ref / 900));
+    const pad = Math.round(16 * s);
+    const fontSize = Math.round(22 * s);
+    const panelH = Math.round(fontSize + pad * 1.8);
+
+    ctx.font = `700 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    const textW = Math.ceil(ctx.measureText(when).width) + pad * 2;
+    const boxW = Math.min(w - pad * 2, Math.max(textW, Math.round(220 * s)));
+    const boxX = pad;
+    const boxY = h - panelH - pad;
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    if (typeof roundRectPath === 'function') {
+        roundRectPath(ctx, boxX, boxY, boxW, panelH, Math.round(10 * s));
+        ctx.fill();
+    } else {
+        ctx.fillRect(boxX, boxY, boxW, panelH);
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(when, boxX + pad, boxY + panelH / 2);
+
+    if (typeof photo.close === 'function') {
+        try { photo.close(); } catch (e) { /* ImageBitmap */ }
+    }
+
+    return await new Promise((resolve) => {
+        canvas.toBlob((b) => resolve(b || blob), 'image/jpeg', 0.92);
+    });
+}
+
+/**
+ * Store Front → GPS map stamp.
+ * All other photos → date-time stamp only (no lat/lng/address/map).
+ * Shows per-field loading while stamp + save run.
  */
 async function finalizeCapturedPhoto(input, rawBlob, gps) {
     let blob = rawBlob;
-    let usedGps = gps;
+    let usedGps = null;
+    const storeFront = isStoreFrontPhotoInput(input);
+    const label = imageFieldLabel(input);
 
-    if (!usedGps || typeof usedGps.lat !== 'number') {
-        try {
-            const pos = await getDevicePosition();
-            usedGps = {
-                lat: pos.coords.latitude,
-                lng: pos.coords.longitude,
-                acc: pos.coords.accuracy
-            };
-            window.__captureGps = usedGps;
-        } catch (e) {
-            console.warn('GPS unavailable for stamp', e);
+    beginImageProcessing();
+    setImageFieldLoading(
+        input,
+        true,
+        storeFront ? 'Saving photo…' : 'Processing photo…',
+        storeFront ? label + ' · GPS stamp' : label + ' · Date-time stamp'
+    );
+
+    try {
+        if (storeFront) {
+            usedGps = gps;
+            if (!usedGps || typeof usedGps.lat !== 'number') {
+                setImageFieldLoading(input, true, 'Getting GPS…', label);
+                try {
+                    const pos = await getDevicePosition();
+                    usedGps = {
+                        lat: pos.coords.latitude,
+                        lng: pos.coords.longitude,
+                        acc: pos.coords.accuracy
+                    };
+                    window.__captureGps = usedGps;
+                } catch (e) {
+                    console.warn('GPS unavailable for stamp', e);
+                }
+            }
+
+            if (usedGps && typeof usedGps.lat === 'number') {
+                setImageFieldLoading(input, true, 'Stamping GPS…', 'Map & location on photo');
+                try {
+                    blob = await stampGpsOverlayOnBlob(rawBlob, usedGps.lat, usedGps.lng);
+                } catch (e) {
+                    console.warn('GPS stamp failed, using raw photo', e);
+                    blob = rawBlob;
+                }
+            }
+        } else {
+            setImageFieldLoading(input, true, 'Stamping date…', label + ' · Saving');
+            try {
+                blob = await stampDateTimeOnlyOnBlob(rawBlob);
+            } catch (e) {
+                console.warn('Date-time stamp failed, using raw photo', e);
+                blob = rawBlob;
+            }
         }
-    }
 
-    if (usedGps && typeof usedGps.lat === 'number') {
-        try {
-            blob = await stampGpsOverlayOnBlob(rawBlob, usedGps.lat, usedGps.lng);
-        } catch (e) {
-            console.warn('GPS stamp failed, using raw photo', e);
-            blob = rawBlob;
+        setImageFieldLoading(input, true, 'Saving photo…', label);
+        const prefix = storeFront ? 'gps_cam_' : 'photo_';
+        const file = new File([blob], prefix + Date.now() + '.jpg', { type: 'image/jpeg' });
+        assignFileToInput(input, file);
+
+        // Store Front keeps loading — EXIF / location analysis continues on change
+        if (!storeFront) {
+            setImageFieldLoading(input, false);
+            endImageProcessing();
         }
+        return { file, gps: usedGps };
+    } catch (err) {
+        setImageFieldLoading(input, false);
+        endImageProcessing();
+        throw err;
     }
-
-    const file = new File([blob], 'gps_cam_' + Date.now() + '.jpg', { type: 'image/jpeg' });
-    assignFileToInput(input, file);
-    return { file, gps: usedGps };
 }
 
 function forceNativeCameraInput(input) {
@@ -1331,18 +1513,30 @@ function forceNativeCameraInput(input) {
         tmp.remove();
         if (!file) return;
         try {
-            let gps = window.__captureGps || null;
-            if (!gps) {
-                try {
-                    const pos = await getDevicePosition();
-                    gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
-                    window.__captureGps = gps;
-                } catch (e) { /* optional */ }
+            let gps = null;
+            if (isStoreFrontPhotoInput(input)) {
+                gps = window.__captureGps || null;
+                if (!gps) {
+                    try {
+                        const pos = await getDevicePosition();
+                        gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+                        window.__captureGps = gps;
+                    } catch (e) { /* optional */ }
+                }
             }
             await finalizeCapturedPhoto(input, file, gps);
         } catch (e) {
             console.warn('Native capture stamp failed', e);
-            assignFileToInput(input, file);
+            setImageFieldLoading(input, true, 'Saving photo…', imageFieldLabel(input));
+            beginImageProcessing();
+            try {
+                assignFileToInput(input, file);
+            } finally {
+                if (!isStoreFrontPhotoInput(input)) {
+                    setImageFieldLoading(input, false);
+                    endImageProcessing();
+                }
+            }
         }
     });
     tmp.addEventListener('cancel', function () { tmp.remove(); });
@@ -1365,7 +1559,7 @@ function ensureCameraModal() {
             </div>
             <video class="camera-capture-video" playsinline autoplay muted></video>
             <canvas class="camera-capture-canvas" hidden></canvas>
-            <p class="camera-capture-hint">Rear camera · GPS Map Camera stamp on capture</p>
+            <p class="camera-capture-hint">Rear camera · Store Front: GPS stamp · Other photos: date-time only</p>
             <div class="camera-capture-actions">
                 <button type="button" class="btn btn-secondary camera-capture-cancel">Cancel</button>
                 <button type="button" class="btn btn-success camera-capture-shutter">Capture</button>
@@ -1444,19 +1638,21 @@ async function openLiveCameraCapture(input) {
         shutterBtn.onclick = async () => {
             shutterBtn.disabled = true;
             const originalLabel = shutterBtn.textContent;
-            shutterBtn.textContent = 'Getting GPS…';
+            const storeFront = isStoreFrontPhotoInput(input);
 
-            // All in-app captures: grab GPS for Map Camera stamp
-            try {
-                const pos = await getDevicePosition();
-                window.__captureGps = {
-                    lat: pos.coords.latitude,
-                    lng: pos.coords.longitude,
-                    acc: pos.coords.accuracy
-                };
-            } catch (gpsErr) {
-                console.warn('Capture-time GPS failed', gpsErr);
-                if (!window.__captureGps) window.__captureGps = null;
+            if (storeFront) {
+                shutterBtn.textContent = 'Getting GPS…';
+                try {
+                    const pos = await getDevicePosition();
+                    window.__captureGps = {
+                        lat: pos.coords.latitude,
+                        lng: pos.coords.longitude,
+                        acc: pos.coords.accuracy
+                    };
+                } catch (gpsErr) {
+                    console.warn('Capture-time GPS failed', gpsErr);
+                    if (!window.__captureGps) window.__captureGps = null;
+                }
             }
 
             const w = video.videoWidth || 1280;
@@ -1466,7 +1662,7 @@ async function openLiveCameraCapture(input) {
             const ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, w, h);
 
-            shutterBtn.textContent = 'Stamping GPS…';
+            shutterBtn.textContent = storeFront ? 'Stamping GPS…' : 'Stamping date…';
             canvas.toBlob(async function (blob) {
                 try {
                     if (!blob) {
@@ -1476,7 +1672,7 @@ async function openLiveCameraCapture(input) {
                         resolve(false);
                         return;
                     }
-                    await finalizeCapturedPhoto(input, blob, window.__captureGps);
+                    await finalizeCapturedPhoto(input, blob, storeFront ? window.__captureGps : null);
                     cleanup();
                     shutterBtn.disabled = false;
                     shutterBtn.textContent = originalLabel;
@@ -1502,11 +1698,40 @@ function openGalleryForInput(input) {
     // No capture attribute → opens gallery / file picker
     tmp.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;width:1px;height:1px;';
     document.body.appendChild(tmp);
-    tmp.addEventListener('change', function () {
+    tmp.addEventListener('change', async function () {
         const file = tmp.files && tmp.files[0];
         setTimeout(function () { try { tmp.remove(); } catch (e) { /* ignore */ } }, 0);
         if (!file) return;
-        assignFileToInput(input, file);
+        if (file.size > 10 * 1024 * 1024) {
+            alert('File size exceeds 10MB limit.');
+            return;
+        }
+        try {
+            let gps = null;
+            if (isStoreFrontPhotoInput(input)) {
+                gps = window.__captureGps || null;
+                if (!gps) {
+                    try {
+                        const pos = await getDevicePosition();
+                        gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+                        window.__captureGps = gps;
+                    } catch (e) { /* optional */ }
+                }
+            }
+            await finalizeCapturedPhoto(input, file, gps);
+        } catch (e) {
+            console.warn('Gallery photo process failed', e);
+            setImageFieldLoading(input, true, 'Saving photo…', imageFieldLabel(input));
+            beginImageProcessing();
+            try {
+                assignFileToInput(input, file);
+            } finally {
+                if (!isStoreFrontPhotoInput(input)) {
+                    setImageFieldLoading(input, false);
+                    endImageProcessing();
+                }
+            }
+        }
     }, { once: true });
     tmp.click();
 }
@@ -1649,6 +1874,7 @@ async function openCameraForInput(input) {
 function clearImagePreview(previewContainer, input) {
     if (!previewContainer || !input) return;
     input.value = '';
+    input.dataset.analyzing = '0';
     const img = previewContainer.querySelector('img');
     if (img) {
         img.removeAttribute('src');
@@ -1659,15 +1885,16 @@ function clearImagePreview(previewContainer, input) {
     if (parentBox) {
         parentBox.classList.remove('has-preview');
         parentBox.classList.remove('is-invalid');
+        parentBox.classList.remove('is-loading');
+    }
+    if (typeof setImageFieldLoading === 'function') {
+        setImageFieldLoading(input, false);
     }
     if (input.name === 'image_store_front') {
         const status = document.getElementById('store-front-exif-status');
         if (status) {
             status.style.display = 'none';
             status.textContent = '';
-        }
-        if (typeof setStoreFrontLoading === 'function') {
-            setStoreFrontLoading(false);
         }
         window.__pincodeSource = null;
         window.__locationSource = null;
@@ -1766,7 +1993,12 @@ function initImageUploadPreviews() {
             const prev = previewContainer || document.getElementById(this.getAttribute('data-preview-target'));
             if (!prev) return;
 
-            const img = prev.querySelector('img');
+            let img = prev.querySelector('img');
+            if (!img) {
+                img = document.createElement('img');
+                img.alt = 'Preview';
+                prev.insertBefore(img, prev.firstChild);
+            }
             const reader = new FileReader();
 
             reader.onload = function (e) {
@@ -1796,9 +2028,25 @@ function setExifStatus(message, type) {
     if (type === 'err') el.classList.add('is-err');
 }
 
-function ensureStoreFrontLoadingOverlay() {
-    const box = document.getElementById('dropzone-store-front')
-        || document.querySelector('input[name="image_store_front"]')?.closest('.upload-box');
+/**
+ * Resolve upload box for any image input (profile, edit, KYC).
+ * @param {HTMLElement|string|null} inputOrBox
+ */
+function resolveUploadBox(inputOrBox) {
+    if (!inputOrBox) {
+        return document.getElementById('dropzone-store-front')
+            || document.querySelector('input[name="image_store_front"]')?.closest('.upload-box');
+    }
+    if (typeof inputOrBox === 'string') {
+        const el = document.getElementById(inputOrBox) || document.querySelector(inputOrBox);
+        return el ? (el.classList?.contains('upload-box') ? el : el.closest('.upload-box')) : null;
+    }
+    if (inputOrBox.classList?.contains('upload-box')) return inputOrBox;
+    return inputOrBox.closest?.('.upload-box') || null;
+}
+
+function ensureImageLoadingOverlay(inputOrBox) {
+    const box = resolveUploadBox(inputOrBox);
     if (!box) return null;
     let overlay = box.querySelector('.upload-loading-overlay');
     if (!overlay) {
@@ -1806,32 +2054,57 @@ function ensureStoreFrontLoadingOverlay() {
         overlay.className = 'upload-loading-overlay';
         overlay.innerHTML = `
             <div class="upload-loading-spinner" aria-hidden="true"></div>
-            <div class="upload-loading-text">Reading photo…</div>
-            <div class="upload-loading-sub">Location, PIN &amp; details</div>
+            <div class="upload-loading-text">Processing photo…</div>
+            <div class="upload-loading-sub">Please wait</div>
         `;
         box.appendChild(overlay);
     }
     return { box, overlay };
 }
 
-function setStoreFrontLoading(on, message, sub) {
-    const refs = ensureStoreFrontLoadingOverlay();
+/** Loading overlay on any image upload field */
+function setImageFieldLoading(inputOrBox, on, message, sub) {
+    const refs = ensureImageLoadingOverlay(inputOrBox);
     if (!refs) return;
     const { box, overlay } = refs;
     const textEl = overlay.querySelector('.upload-loading-text');
     const subEl = overlay.querySelector('.upload-loading-sub');
     if (textEl && message) textEl.textContent = message;
     if (subEl) {
-        subEl.textContent = sub || 'Location, address, city, PIN, zone & date';
-        subEl.style.display = sub === '' ? 'none' : '';
+        if (sub === undefined || sub === null) {
+            subEl.textContent = 'Please wait — do not leave this page';
+            subEl.style.display = '';
+        } else {
+            subEl.textContent = sub;
+            subEl.style.display = sub === '' ? 'none' : '';
+        }
     }
     box.classList.toggle('is-loading', !!on);
     overlay.setAttribute('aria-busy', on ? 'true' : 'false');
     overlay.setAttribute('aria-hidden', on ? 'false' : 'true');
 
-    // Disable retake/remove while fetching
     box.querySelectorAll('.upload-retake-btn, .upload-remove-btn').forEach(btn => {
         btn.disabled = !!on;
+    });
+}
+
+/** @deprecated use setImageFieldLoading — kept for Store Front analysis callers */
+function setStoreFrontLoading(on, message, sub) {
+    const input = document.querySelector('input[name="image_store_front"]');
+    setImageFieldLoading(input || 'dropzone-store-front', on, message, sub || 'Location, address, city, PIN, zone & date');
+}
+
+function initImageProcessingSubmitGuard() {
+    document.querySelectorAll('form').forEach(function (form) {
+        if (!form.querySelector('.upload-input, input[type="file"][accept*="image"]')) return;
+        if (form.dataset.imgProcessGuard === '1') return;
+        form.dataset.imgProcessGuard = '1';
+        form.addEventListener('submit', function (e) {
+            if (!isAnyImageProcessing()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            alert('Please wait — a photo is still being processed and analyzed.');
+        }, true);
     });
 }
 
@@ -1844,6 +2117,7 @@ function applyGpsToForm(lat, lng, accuracyLabel, placeText) {
     const latInput = document.getElementById('latitude');
     const lngInput = document.getElementById('longitude');
     const accInput = document.getElementById('gps_accuracy');
+    const linkInput = document.getElementById('location_link');
     const dispLat = document.getElementById('disp-lat');
     const dispLng = document.getElementById('disp-lng');
     const dispAcc = document.getElementById('disp-acc');
@@ -1856,6 +2130,8 @@ function applyGpsToForm(lat, lng, accuracyLabel, placeText) {
     if (latInput) latInput.value = Number(lat).toFixed(6);
     if (lngInput) lngInput.value = Number(lng).toFixed(6);
     if (accInput) accInput.value = typeof accuracyLabel === 'number' ? accuracyLabel : (accuracyLabel || '');
+    const mapsLink = mapsLinkForCoords(lat, lng);
+    if (linkInput) linkInput.value = mapsLink;
     if (dispLat) dispLat.textContent = Number(lat).toFixed(5);
     if (dispLng) dispLng.textContent = Number(lng).toFixed(5);
     if (dispAcc) {
@@ -1892,21 +2168,55 @@ function findZoneForStateName(stateName) {
     return null;
 }
 
+function isValidIndianPincode(pin) {
+    return /^[1-9]\d{5}$/.test(String(pin || ''));
+}
+
+/**
+ * Extract Indian PIN — prefer structured postcode only.
+ * Avoid scraping random 6-digit numbers from display_name (often wrong).
+ */
 function extractIndianPincode(address, displayName) {
-    // Prefer structured postcode from Nominatim
     let pin = String((address && address.postcode) || '').replace(/\D/g, '');
     if (pin.length > 6) pin = pin.slice(0, 6);
-    if (/^[1-9]\d{5}$/.test(pin)) return pin;
+    if (isValidIndianPincode(pin)) return pin;
 
-    // Fallback: 6-digit Indian PIN inside display_name / address text
-    const blob = [
-        displayName || '',
-        address && address.postcode,
-        address && address.suburb,
-        address && address.neighbourhood
-    ].filter(Boolean).join(' ');
-    const m = String(blob).match(/\b([1-9]\d{5})\b/);
-    return m ? m[1] : '';
+    // Only trust postcode if it appears as its own token near end of display_name
+    const dn = String(displayName || '');
+    const m = dn.match(/(?:^|,\s*)([1-9]\d{5})(?:\s*,|\s*$)/);
+    return m && isValidIndianPincode(m[1]) ? m[1] : '';
+}
+
+/** City-master default PIN (e.g. Ahmedabad→380058) — often wrong for exact store. */
+function getCityMasterPincode(cityName) {
+    if (!cityName) return '';
+    const preferredZone = (document.getElementById('zone') || {}).value || '';
+    if (typeof findCityMatch === 'function') {
+        const match = findCityMatch(String(cityName).trim(), preferredZone);
+        if (match && match.pin && isValidIndianPincode(match.pin)) return match.pin;
+    }
+    return '';
+}
+
+/**
+ * BigDataCloud often returns better Indian postcodes than Nominatim (no API key).
+ */
+async function fetchBigDataCloudPostcode(lat, lng) {
+    const url = 'https://api.bigdatacloud.net/data/reverse-geocode-client'
+        + '?latitude=' + encodeURIComponent(lat)
+        + '&longitude=' + encodeURIComponent(lng)
+        + '&localityLanguage=en';
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('BDC geocode failed');
+    const data = await res.json();
+    let pin = String(data.postcode || data.postalCode || '').replace(/\D/g, '');
+    if (pin.length > 6) pin = pin.slice(0, 6);
+    return {
+        pin: isValidIndianPincode(pin) ? pin : '',
+        city: data.city || data.locality || data.localityInfo?.administrative?.[3]?.name || '',
+        state: data.principalSubdivision || '',
+        raw: data
+    };
 }
 
 function fillLocationFromAddress(address, displayName) {
@@ -1978,6 +2288,9 @@ function fillLocationFromAddress(address, displayName) {
     if (zoneEl && matched) {
         zoneEl.value = matched.zone;
         zoneEl.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof window.refreshZoneCitySuggestions === 'function') {
+            window.refreshZoneCitySuggestions(matched.zone);
+        }
         if (stateEl && matched.state) {
             stateEl.value = matched.state;
             stateEl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2008,7 +2321,7 @@ function formatPlaceLabel(data) {
 }
 
 async function reverseGeocodeAndFill(lat, lng) {
-    // zoom=18 for street-level postcode; fallback zoom=16 if PIN missing
+    // Nominatim for address lines; BigDataCloud preferred for Indian PIN accuracy
     const fetchRev = async (zoom) => {
         const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&addressdetails=1&zoom=${zoom}`;
         const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -2018,12 +2331,35 @@ async function reverseGeocodeAndFill(lat, lng) {
 
     let data = await fetchRev(18);
     let pin = extractIndianPincode(data.address || {}, data.display_name || '');
-    if (!/^[1-9]\d{5}$/.test(pin)) {
+
+    // Prefer BigDataCloud PIN (usually more accurate for India street points)
+    let bdc = null;
+    try {
+        bdc = await fetchBigDataCloudPostcode(lat, lng);
+        if (bdc.pin) {
+            const cityHint = (data.address && (data.address.city || data.address.town || data.address.village)) || bdc.city || '';
+            const cityDefault = getCityMasterPincode(cityHint);
+            // Always prefer BDC when valid; especially if Nominatim equals generic city PIN
+            if (!pin || pin === cityDefault || pin !== bdc.pin) {
+                pin = bdc.pin;
+            }
+        }
+    } catch (e) {
+        console.warn('BigDataCloud PIN lookup failed', e);
+    }
+
+    // If still no PIN, try slightly wider Nominatim — but reject city-default-only guesses
+    if (!isValidIndianPincode(pin)) {
         try {
-            const wider = await fetchRev(16);
+            const wider = await fetchRev(17);
             const pin2 = extractIndianPincode(wider.address || {}, wider.display_name || '');
-            if (/^[1-9]\d{5}$/.test(pin2)) {
+            const cityHint = (wider.address && (wider.address.city || wider.address.town)) || '';
+            const cityDefault = getCityMasterPincode(cityHint);
+            if (isValidIndianPincode(pin2) && pin2 !== cityDefault) {
                 data = wider;
+                pin = pin2;
+            } else if (isValidIndianPincode(pin2) && !pin) {
+                // Keep as weak fallback only if nothing else
                 pin = pin2;
             }
         } catch (e) {
@@ -2031,8 +2367,35 @@ async function reverseGeocodeAndFill(lat, lng) {
         }
     }
 
-    fillLocationFromAddress(data.address || {}, data.display_name || '');
-    const place = formatPlaceLabel(data);
+    // Inject chosen PIN into address object before fill
+    const address = Object.assign({}, data.address || {});
+    if (isValidIndianPincode(pin)) {
+        address.postcode = pin;
+    } else {
+        // Don't invent / force wrong PIN — leave blank for manual entry
+        delete address.postcode;
+    }
+
+    fillLocationFromAddress(address, data.display_name || '');
+
+    // Hard-set final PIN after city handlers (and clear if unknown)
+    const pinEl = document.getElementById('pincode');
+    if (pinEl) {
+        if (isValidIndianPincode(pin)) {
+            pinEl.value = pin;
+            window.__pincodeSource = 'geocode';
+            pinEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } else if (window.__pincodeSource === 'geocode' || window.__pincodeSource === 'gps') {
+            // Clear city-default wrong PIN rather than keep inaccurate value
+            const cityDefault = getCityMasterPincode((document.getElementById('city') || {}).value || '');
+            if (pinEl.value === cityDefault) {
+                pinEl.value = '';
+                window.__pincodeSource = 'geocode';
+            }
+        }
+    }
+
+    const place = formatPlaceLabel(Object.assign({}, data, { address }));
     if (place) setGpsPlaceText(place);
     return data;
 }
@@ -2137,10 +2500,18 @@ function initStoreFrontExifAutofill() {
         const file = this.files && this.files[0];
         if (!file) return;
 
-        const box = document.getElementById('dropzone-store-front');
+        // Skip re-entry while analysis already running for this input
+        if (input.dataset.analyzing === '1') return;
+        input.dataset.analyzing = '1';
+
+        const box = document.getElementById('dropzone-store-front') || input.closest('.upload-box');
         if (box) box.classList.remove('is-invalid');
 
-        setStoreFrontLoading(true, 'Reading photo…', 'GPS, date & location details');
+        // Count may already be open from finalizeCapturedPhoto (camera/gallery stamp)
+        const ownedCount = (window.__imageProcessingCount || 0) < 1;
+        if (ownedCount) beginImageProcessing();
+
+        setStoreFrontLoading(true, 'Analyzing photo…', 'GPS, date & location details');
         setExifStatus('Reading location from photo / phone GPS…', 'warn');
 
         let dateFilled = false;
@@ -2226,6 +2597,8 @@ function initStoreFrontExifAutofill() {
             setExifStatus('Could not auto-fill location. Allow Location & Retake, or fill manually.', 'err');
         } finally {
             setStoreFrontLoading(false);
+            endImageProcessing();
+            input.dataset.analyzing = '0';
         }
     });
 }
@@ -2403,3 +2776,520 @@ function initLightbox() {
         });
     });
 }
+
+// -------------------------------------------------------------
+// WhatsApp-style location share (maps pin link)
+// -------------------------------------------------------------
+function mapsLinkForCoords(lat, lng) {
+    return 'https://maps.google.com/?q=' + encodeURIComponent(Number(lat) + ',' + Number(lng));
+}
+
+/** Show Share only after location is saved — same coords/link, no new GPS fetch. */
+function revealShareLocationButton(lat, lng, url) {
+    const mapsUrl = url || (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))
+        ? mapsLinkForCoords(lat, lng)
+        : '');
+    document.querySelectorAll('.js-share-location-btn, [data-share-location="saved"]').forEach(function (btn) {
+        if (Number.isFinite(Number(lat))) btn.setAttribute('data-wa-lat', String(Number(lat)));
+        if (Number.isFinite(Number(lng))) btn.setAttribute('data-wa-lng', String(Number(lng)));
+        if (mapsUrl) btn.setAttribute('data-wa-url', mapsUrl);
+        btn.hidden = false;
+        btn.style.display = '';
+        btn.removeAttribute('disabled');
+    });
+    const pill = document.getElementById('gps-status-pill');
+    if (pill) {
+        pill.textContent = '✓ Set';
+        pill.style.backgroundColor = '#dcfce7';
+        pill.style.color = '#15803d';
+        delete pill.dataset.prevText;
+    }
+}
+
+function hasSavedLocationOnForm() {
+    const latEl = document.getElementById('latitude');
+    const lngEl = document.getElementById('longitude');
+    const linkEl = document.getElementById('location_link');
+    const lat = parseFloat(latEl && latEl.value);
+    const lng = parseFloat(lngEl && lngEl.value);
+    const url = (linkEl && linkEl.value) || '';
+    return (Number.isFinite(lat) && Number.isFinite(lng)) || !!url;
+}
+
+/** Loading under status / Share+Save actions */
+function resolveGpsProcessLoadingEl(anchorEl) {
+    if (anchorEl && anchorEl.closest) {
+        const wrap = anchorEl.closest('.gps-capture-widget, .sp-map-actions-wrap, .card-header, .card');
+        const local = wrap && wrap.querySelector('.gps-process-loading');
+        if (local) return local;
+    }
+    return document.getElementById('gps-process-loading')
+        || document.querySelector('.gps-process-loading');
+}
+
+function setGpsProcessLoading(on, message, anchorEl) {
+    const el = resolveGpsProcessLoadingEl(anchorEl);
+    if (el) {
+        const textEl = el.querySelector('.gps-process-text');
+        if (textEl) textEl.textContent = message || (on ? 'Processing…' : textEl.textContent);
+        if (on) {
+            el.hidden = false;
+            el.classList.add('is-on');
+            el.classList.remove('is-done');
+        }
+        // When turning off: keep section open if caller already set a done state
+        // (use setGpsProcessDone for success — do not hide here unless forced)
+    }
+    document.querySelectorAll('[data-save-current-location], [data-share-location], [data-wa-share-location]').forEach(function (b) {
+        if (!anchorEl || !b.closest || !anchorEl.closest) {
+            b.disabled = !!on;
+            return;
+        }
+        const sameWrap = b.closest('.gps-capture-widget, .sp-map-actions-wrap, .card')
+            === anchorEl.closest('.gps-capture-widget, .sp-map-actions-wrap, .card');
+        if (sameWrap || !anchorEl.closest('.gps-capture-widget, .sp-map-actions-wrap, .card')) {
+            b.disabled = !!on;
+        }
+    });
+}
+
+/** Keep the Store-location strip open with recorded / success text (do not disappear). */
+function setGpsProcessDone(message, anchorEl) {
+    const el = resolveGpsProcessLoadingEl(anchorEl);
+    if (!el) return;
+    const textEl = el.querySelector('.gps-process-text');
+    if (textEl) textEl.textContent = message || 'Location recorded';
+    el.hidden = false;
+    el.classList.add('is-on', 'is-done');
+    // re-enable buttons
+    document.querySelectorAll('[data-save-current-location], [data-share-location], [data-wa-share-location]').forEach(function (b) {
+        b.disabled = false;
+    });
+}
+
+function whatsAppShareUrl(text, phone) {
+    let digits = String(phone || '').replace(/\D/g, '');
+    if (digits.length === 10) digits = '91' + digits;
+    if (digits.length === 12 && digits.startsWith('91')) {
+        return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(text);
+    }
+    return 'https://wa.me/?text=' + encodeURIComponent(text);
+}
+
+function buildLocationSharePayload(opts) {
+    const lat = Number(opts && opts.lat);
+    const lng = Number(opts && opts.lng);
+    const title = String((opts && opts.title) || 'Current location').trim() || 'Current location';
+    const address = String((opts && opts.address) || '').trim();
+    const maps = (opts && opts.url) || (Number.isFinite(lat) && Number.isFinite(lng) ? mapsLinkForCoords(lat, lng) : '');
+    let text = '📍 ' + title + '\n';
+    if (address) text += address + '\n';
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        text += 'Lat: ' + lat.toFixed(6) + ', Lng: ' + lng.toFixed(6) + '\n';
+    }
+    if (maps) text += maps;
+    return { title: title, text: text, url: maps, lat: lat, lng: lng, phone: (opts && opts.phone) || '' };
+}
+
+async function copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) { /* fallback */ }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+    } catch (e2) {
+        prompt('Copy this link:', text);
+        return false;
+    }
+}
+
+function ensureLocationShareSheet() {
+    let modal = document.getElementById('location-share-sheet');
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = 'location-share-sheet';
+    modal.className = 'loc-share-modal';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+        <div class="loc-share-sheet" role="dialog" aria-modal="true" aria-labelledby="loc-share-title">
+            <div class="loc-share-head">
+                <h3 id="loc-share-title">Share location</h3>
+                <button type="button" class="loc-share-close" aria-label="Close">&times;</button>
+            </div>
+            <p class="loc-share-preview" id="loc-share-preview"></p>
+            <div class="loc-share-url-row">
+                <input type="text" id="loc-share-url" class="form-control" readonly>
+            </div>
+            <div class="loc-share-grid">
+                <button type="button" class="loc-share-opt" data-share-action="copy">
+                    <span class="loc-share-ico">🔗</span>
+                    <span>Copy URL</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="whatsapp">
+                    <span class="loc-share-ico">💬</span>
+                    <span>WhatsApp</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="telegram">
+                    <span class="loc-share-ico">✈️</span>
+                    <span>Telegram</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="sms">
+                    <span class="loc-share-ico">💬</span>
+                    <span>SMS</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="email">
+                    <span class="loc-share-ico">✉️</span>
+                    <span>Email</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="maps">
+                    <span class="loc-share-ico">🗺️</span>
+                    <span>Open Maps</span>
+                </button>
+                <button type="button" class="loc-share-opt loc-share-opt-wide" data-share-action="native">
+                    <span class="loc-share-ico">↗</span>
+                    <span>Share to other apps</span>
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = function () {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+    };
+    modal.querySelector('.loc-share-close').addEventListener('click', close);
+    modal.addEventListener('click', function (e) {
+        if (e.target === modal) close();
+    });
+
+    modal.querySelectorAll('[data-share-action]').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            const action = btn.getAttribute('data-share-action');
+            const payload = modal._payload || {};
+            const url = payload.url || '';
+            const text = payload.text || '';
+            const title = payload.title || 'Location';
+
+            if (action === 'copy') {
+                const ok = await copyTextToClipboard(url || text);
+                const prev = btn.querySelector('span:last-child');
+                if (prev) {
+                    const old = prev.textContent;
+                    prev.textContent = ok ? 'Copied ✓' : 'Failed';
+                    setTimeout(function () { prev.textContent = old; }, 1400);
+                }
+                return;
+            }
+            if (action === 'whatsapp') {
+                window.open(whatsAppShareUrl(text, payload.phone), '_blank', 'noopener');
+                close();
+                return;
+            }
+            if (action === 'telegram') {
+                window.open(
+                    'https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(title + (payload.address ? ('\n' + payload.address) : '')),
+                    '_blank',
+                    'noopener'
+                );
+                close();
+                return;
+            }
+            if (action === 'sms') {
+                window.location.href = 'sms:?body=' + encodeURIComponent(text);
+                close();
+                return;
+            }
+            if (action === 'email') {
+                window.location.href = 'mailto:?subject=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(text);
+                close();
+                return;
+            }
+            if (action === 'maps') {
+                if (url) window.open(url, '_blank', 'noopener');
+                close();
+                return;
+            }
+            if (action === 'native') {
+                if (navigator.share) {
+                    try {
+                        await navigator.share({
+                            title: title,
+                            text: text,
+                            url: url || undefined
+                        });
+                    } catch (err) {
+                        if (err && err.name !== 'AbortError') {
+                            console.warn(err);
+                            alert('Share cancelled or not available.');
+                        }
+                    }
+                } else {
+                    // Desktop fallback: copy + open WhatsApp chooser text
+                    await copyTextToClipboard(url || text);
+                    alert('Link copied. Paste it in any app to share.');
+                }
+                close();
+            }
+        });
+    });
+
+    return modal;
+}
+
+/**
+ * Open share sheet: Copy URL, WhatsApp, Telegram, SMS, Email, Maps, Other apps.
+ * @param {{lat?:number,lng?:number,title?:string,address?:string,phone?:string,url?:string}} opts
+ */
+function openLocationShareSheet(opts) {
+    const lat = Number(opts && opts.lat);
+    const lng = Number(opts && opts.lng);
+    let url = (opts && opts.url) || '';
+    if (!url && Number.isFinite(lat) && Number.isFinite(lng)) {
+        url = mapsLinkForCoords(lat, lng);
+    }
+    if (!url && !(Number.isFinite(lat) && Number.isFinite(lng))) {
+        alert('Location not available yet. Take Store Front photo or Save my current location first.');
+        return false;
+    }
+
+    const payload = buildLocationSharePayload(Object.assign({}, opts || {}, { url: url }));
+    const modal = ensureLocationShareSheet();
+    modal._payload = Object.assign({}, payload, { address: (opts && opts.address) || '' });
+
+    const preview = modal.querySelector('#loc-share-preview');
+    const urlInput = modal.querySelector('#loc-share-url');
+    if (preview) preview.textContent = payload.title + (opts && opts.address ? (' · ' + opts.address) : '');
+    if (urlInput) urlInput.value = payload.url || '';
+
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+    return true;
+}
+
+/** @deprecated alias — opens multi-platform share sheet */
+function shareLocationOnWhatsApp(opts) {
+    return openLocationShareSheet(opts);
+}
+
+/** Capture live GPS then open share sheet. */
+async function shareCurrentLocationOnWhatsApp(extra) {
+    const btn = (extra && extra.anchorEl) || document.activeElement;
+    const anchor = (btn && btn.closest) ? btn : null;
+    setGpsProcessLoading(true, 'Processing…', anchor);
+    try {
+        const allowed = typeof ensureLocationPermission === 'function'
+            ? await ensureLocationPermission()
+            : true;
+        if (!allowed) return false;
+
+        const pos = await getDevicePosition();
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+
+        if (typeof applyGpsToForm === 'function') {
+            applyGpsToForm(lat, lng, acc, 'Current location');
+        }
+        window.__captureGps = { lat: lat, lng: lng, acc: acc };
+
+        const opened = openLocationShareSheet(Object.assign({}, extra || {}, {
+            lat: lat,
+            lng: lng,
+            title: (extra && extra.title) || 'My current location'
+        }));
+        setGpsProcessDone('Location recorded', anchor);
+        return opened;
+    } catch (err) {
+        console.warn(err);
+        alert(typeof geoErrorMessage === 'function' ? geoErrorMessage(err) : 'Could not get current location.');
+        setGpsProcessDone('Location failed — try again', anchor);
+        return false;
+    }
+}
+
+/**
+ * Capture live GPS and persist to stores table (profile view).
+ * On add/edit forms (no store_id), only fills hidden lat/lng for save-on-submit.
+ */
+async function saveCurrentLocationToStore(btn) {
+    const storeId = parseInt(btn.getAttribute('data-store-id') || '0', 10);
+    const freezerId = parseInt(btn.getAttribute('data-freezer-id') || '0', 10);
+    const csrf = btn.getAttribute('data-csrf') || '';
+    const alsoShare = btn.getAttribute('data-also-share') === '1';
+    const phone = btn.getAttribute('data-wa-phone') || '';
+    const title = btn.getAttribute('data-wa-title') || 'Store location';
+
+    setGpsProcessLoading(true, 'Processing…', btn);
+
+    try {
+        const allowed = typeof ensureLocationPermission === 'function'
+            ? await ensureLocationPermission()
+            : true;
+        if (!allowed) return false;
+
+        const pos = await getDevicePosition();
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+
+        if (typeof applyGpsToForm === 'function') {
+            applyGpsToForm(lat, lng, acc, 'Current location saved');
+        }
+        window.__captureGps = { lat: lat, lng: lng, acc: acc };
+
+        const mapsUrl = mapsLinkForCoords(lat, lng);
+
+        // No store yet (add form) — fields filled; saved when profile is submitted
+        if (!storeId && !freezerId) {
+            revealShareLocationButton(lat, lng, mapsUrl);
+            setGpsProcessDone('Location recorded', btn);
+            return true;
+        }
+
+        const res = await fetch('api/save_store_location.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                store_id: storeId || 0,
+                freezer_id: freezerId || 0,
+                latitude: lat,
+                longitude: lng,
+                gps_accuracy: acc,
+                location_link: mapsUrl,
+                csrf_token: csrf
+            })
+        });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok || !data.success) {
+            throw new Error((data && data.error) || 'Save failed');
+        }
+
+        const savedLink = (data && data.location_link) || mapsUrl;
+        revealShareLocationButton(lat, lng, savedLink);
+
+        // Stay on page: show Share using same saved link (no second GPS fetch / no reload)
+        const wrap = btn.closest('.sp-map-actions') || btn.parentElement;
+        if (wrap && !wrap.querySelector('.js-share-location-btn')) {
+            const shareBtn = document.createElement('button');
+            shareBtn.type = 'button';
+            shareBtn.className = 'btn btn-sm btn-primary js-share-location-btn';
+            shareBtn.setAttribute('data-share-location', 'saved');
+            shareBtn.setAttribute('data-wa-lat', String(lat));
+            shareBtn.setAttribute('data-wa-lng', String(lng));
+            shareBtn.setAttribute('data-wa-url', savedLink);
+            shareBtn.setAttribute('data-wa-title', title);
+            shareBtn.setAttribute('data-wa-phone', phone);
+            shareBtn.textContent = 'Share location';
+            wrap.insertBefore(shareBtn, btn);
+            if (typeof window.bindShareLocationButton === 'function') {
+                window.bindShareLocationButton(shareBtn);
+            }
+        }
+
+        setGpsProcessDone('Location recorded', btn);
+        return true;
+    } catch (err) {
+        console.warn(err);
+        alert(err && err.message ? err.message : 'Could not save current location.');
+        setGpsProcessDone('Location failed — try again', btn);
+        return false;
+    }
+}
+
+function bindShareLocationButton(btn) {
+    if (!btn || btn.dataset.waBound === '1') return;
+    btn.dataset.waBound = '1';
+    btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        const phone = btn.getAttribute('data-wa-phone') || '';
+        const title = btn.getAttribute('data-wa-title') || 'Store location';
+        const address = btn.getAttribute('data-wa-address') || '';
+        let url = btn.getAttribute('data-wa-url') || btn.getAttribute('data-location-link') || '';
+        let lat = parseFloat(btn.getAttribute('data-wa-lat') || '');
+        let lng = parseFloat(btn.getAttribute('data-wa-lng') || '');
+
+        // Always prefer already-saved form values (same session — no new GPS fetch)
+        const latEl = document.getElementById('latitude');
+        const lngEl = document.getElementById('longitude');
+        const linkEl = document.getElementById('location_link');
+        const formLat = parseFloat(latEl && latEl.value);
+        const formLng = parseFloat(lngEl && lngEl.value);
+        if (Number.isFinite(formLat) && Number.isFinite(formLng)) {
+            lat = formLat;
+            lng = formLng;
+        }
+        if (linkEl && linkEl.value) url = linkEl.value;
+        if (!url && Number.isFinite(lat) && Number.isFinite(lng)) {
+            url = mapsLinkForCoords(lat, lng);
+        }
+
+        if (!(Number.isFinite(lat) && Number.isFinite(lng)) && !url) {
+            alert('Pehle Save my current location karo — phir Share location use kar sakte ho.');
+            return;
+        }
+
+        openLocationShareSheet({ lat: lat, lng: lng, title: title, address: address, phone: phone, url: url });
+    });
+}
+
+function initLocationShare() {
+    document.querySelectorAll('[data-wa-share-location], [data-share-location]').forEach(bindShareLocationButton);
+    window.bindShareLocationButton = bindShareLocationButton;
+
+    // If form already has saved GPS (edit / after reload), show Share
+    if (hasSavedLocationOnForm()) {
+        const latEl = document.getElementById('latitude');
+        const lngEl = document.getElementById('longitude');
+        const linkEl = document.getElementById('location_link');
+        revealShareLocationButton(
+            parseFloat(latEl && latEl.value),
+            parseFloat(lngEl && lngEl.value),
+            (linkEl && linkEl.value) || ''
+        );
+    }
+
+    document.querySelectorAll('[data-save-current-location]').forEach(function (btn) {
+        if (btn.dataset.saveLocBound === '1') return;
+        btn.dataset.saveLocBound = '1';
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            saveCurrentLocationToStore(btn);
+        });
+    });
+
+    document.querySelectorAll('[data-copy], #btn-copy-location-link').forEach(function (btn) {
+        if (btn.dataset.copyBound === '1') return;
+        btn.dataset.copyBound = '1';
+        btn.addEventListener('click', async function (e) {
+            e.preventDefault();
+            const text = btn.getAttribute('data-copy') || btn.dataset.copy || '';
+            if (!text) return;
+            const ok = await copyTextToClipboard(text);
+            const prev = btn.textContent;
+            btn.textContent = ok ? 'Copied ✓' : 'Copy failed';
+            setTimeout(function () { btn.textContent = prev; }, 1400);
+        });
+    });
+}
+
+window.shareLocationOnWhatsApp = shareLocationOnWhatsApp;
+window.openLocationShareSheet = openLocationShareSheet;
+window.shareCurrentLocationOnWhatsApp = shareCurrentLocationOnWhatsApp;
+window.saveCurrentLocationToStore = saveCurrentLocationToStore;
+window.revealShareLocationButton = revealShareLocationButton;
+window.setGpsProcessDone = setGpsProcessDone;

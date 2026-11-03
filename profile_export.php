@@ -25,5 +25,6 @@ if (!$freezer) {
 }
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
-FreezerLifecycle::streamHistoryExport($freezer);
+$sheet = strtolower(trim((string)($_GET['sheet'] ?? 'all')));
+FreezerLifecycle::streamHistoryExport($freezer, $sheet);
 exit;

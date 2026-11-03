@@ -175,7 +175,8 @@ class FreezerLifecycle {
     public static function placementHistory(int $freezerId): array {
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare("SELECT p.*,
-                s.store_name, s.outlet_id, s.city, s.pincode, s.contact_person, s.phone_number
+                s.store_name, s.outlet_id, s.city, s.state, s.pincode, s.address, s.zone,
+                s.contact_person, s.phone_number, s.email AS store_email, s.customer_name
             FROM `freezer_placements` p
             INNER JOIN `stores` s ON s.id = p.store_id
             WHERE p.freezer_id = :fid
@@ -246,10 +247,12 @@ class FreezerLifecycle {
     public static function kycHistory(int $freezerId, int $limit = 50): array {
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare("SELECT k.*,
-                s.store_name, s.outlet_id, s.city, s.state, s.pincode, s.address,
-                s.contact_person, s.phone_number
+                s.store_name, s.outlet_id, s.city, s.state, s.pincode, s.address, s.zone,
+                s.contact_person, s.phone_number, s.email AS store_email,
+                u.name AS verified_by_name
             FROM `kyc_verifications` k
             INNER JOIN `stores` s ON s.id = k.store_id
+            LEFT JOIN `users` u ON u.id = k.verified_by
             WHERE k.freezer_id = :fid
             ORDER BY k.verified_at DESC, k.cycle_year DESC, k.cycle_half DESC, k.id DESC
             LIMIT :lim");
@@ -343,93 +346,177 @@ class FreezerLifecycle {
         return $events;
     }
 
-    public static function streamHistoryExport(array $freezer): void {
+    /**
+     * CSV export: implementation (placements) + KYC sheets.
+     * @param string $sheet all|implementation|kyc
+     */
+    public static function streamHistoryExport(array $freezer, string $sheet = 'all'): void {
         $fid = (int)$freezer['id'];
-        $timeline = self::buildTimeline($fid);
+        $sheet = in_array($sheet, ['all', 'implementation', 'kyc'], true) ? $sheet : 'all';
         $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $freezer['unique_freezer_id']);
-        $filename = 'freezer_history_' . $safeName . '_' . date('Ymd_His') . '.csv';
+        $filename = 'store_history_' . $sheet . '_' . $safeName . '_' . date('Ymd_His') . '.csv';
+
+        $tagCode = '';
+        try {
+            $tag = AssetTag::findByFreezerId($fid);
+            $tagCode = $tag['tag_code'] ?? '';
+        } catch (\Throwable $e) {
+            $tagCode = '';
+        }
 
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename=' . $filename);
         $out = fopen('php://output', 'w');
         fprintf($out, chr(0xEF) . chr(0xBB) . chr(0xBF));
 
-        fputcsv($out, [
-            'unique_freezer_id',
-            'event_type',
-            'event_date',
-            'end_date',
-            'cycle',
-            'result',
-            'outlet_id',
-            'store_name',
-            'city',
-            'pincode',
-            'contact_person',
-            'is_new_outlet',
-            'is_current_store',
-            'reason',
-            'notes',
-            'latitude',
-            'longitude',
-        ]);
-
-        foreach ($timeline as $e) {
+        if ($sheet === 'all' || $sheet === 'implementation') {
+            fputcsv($out, ['=== IMPLEMENTATION / STORE PLACEMENTS ===']);
             fputcsv($out, [
-                $freezer['unique_freezer_id'],
-                $e['type'],
-                $e['date'],
-                $e['end_date'] ?? '',
-                $e['cycle'] ?? '',
-                $e['result'] ?? '',
-                $e['outlet_id'],
-                $e['store_name'],
-                $e['city'],
-                $e['pincode'],
-                $e['contact_person'],
-                !empty($e['is_new_outlet']) ? 'YES' : 'NO',
-                !empty($e['is_current']) ? 'YES' : 'NO',
-                $e['reason'],
-                $e['notes'],
-                $e['latitude'] ?? '',
-                $e['longitude'] ?? '',
+                'unique_freezer_id',
+                'tag_code',
+                'installation_date',
+                'status',
+                'outlet_id',
+                'store_name',
+                'customer_name',
+                'address',
+                'city',
+                'state',
+                'pincode',
+                'zone',
+                'contact_person',
+                'phone',
+                'email',
+                'implemented_from',
+                'implemented_to',
+                'days_at_store',
+                'reason',
+                'notes',
             ]);
+            foreach (self::placementHistory($fid) as $p) {
+                $isCurrent = empty($p['ended_at']);
+                $fromTs = !empty($p['started_at']) ? strtotime($p['started_at']) : false;
+                $toTs = $isCurrent ? time() : (!empty($p['ended_at']) ? strtotime($p['ended_at']) : false);
+                $days = ($fromTs && $toTs) ? max(0, (int)floor(($toTs - $fromTs) / 86400)) : '';
+                fputcsv($out, [
+                    $freezer['unique_freezer_id'],
+                    $tagCode,
+                    $freezer['installation_date'] ?? '',
+                    $isCurrent ? 'CURRENT' : 'LEFT',
+                    $p['outlet_id'] ?? '',
+                    $p['store_name'] ?? '',
+                    $p['customer_name'] ?? '',
+                    $p['address'] ?? '',
+                    $p['city'] ?? '',
+                    $p['state'] ?? '',
+                    $p['pincode'] ?? '',
+                    $p['zone'] ?? '',
+                    $p['contact_person'] ?? '',
+                    $p['phone_number'] ?? '',
+                    $p['store_email'] ?? '',
+                    $p['started_at'] ?? '',
+                    $isCurrent ? 'CURRENT' : ($p['ended_at'] ?? ''),
+                    $days,
+                    $p['transfer_reason'] ?? '',
+                    $p['notes'] ?? '',
+                ]);
+            }
         }
 
-        // Also append raw placement + KYC detail sheets as blank separator + sections
-        fputcsv($out, []);
-        fputcsv($out, ['--- PLACEMENT DETAIL ---']);
-        fputcsv($out, ['outlet_id', 'store_name', 'city', 'pincode', 'started_at', 'ended_at', 'transfer_reason', 'notes', 'contact_person']);
-        foreach (self::placementHistory($fid) as $p) {
-            fputcsv($out, [
-                $p['outlet_id'],
-                $p['store_name'],
-                $p['city'] ?? '',
-                $p['pincode'] ?? '',
-                $p['started_at'],
-                $p['ended_at'] ?? 'CURRENT',
-                $p['transfer_reason'] ?? '',
-                $p['notes'] ?? '',
-                $p['contact_person'] ?? '',
-            ]);
+        if ($sheet === 'all') {
+            fputcsv($out, []);
         }
 
-        fputcsv($out, []);
-        fputcsv($out, ['--- KYC DETAIL ---']);
-        fputcsv($out, ['cycle', 'verified_at', 'result', 'outlet_id', 'store_name', 'city', 'pincode', 'notes', 'latitude', 'longitude']);
-        foreach (self::kycHistory($fid, 100) as $k) {
+        if ($sheet === 'all' || $sheet === 'kyc') {
+            fputcsv($out, ['=== KYC VERIFICATIONS ===']);
             fputcsv($out, [
-                $k['cycle_year'] . '-H' . $k['cycle_half'],
-                $k['verified_at'],
-                $k['result'],
-                $k['outlet_id'],
-                $k['store_name'],
-                $k['city'] ?? '',
-                $k['pincode'] ?? '',
-                $k['notes'] ?? '',
-                $k['latitude'] ?? '',
-                $k['longitude'] ?? '',
+                'unique_freezer_id',
+                'tag_code',
+                'cycle',
+                'cycle_year',
+                'cycle_half',
+                'verified_at',
+                'result',
+                'outlet_id',
+                'store_name',
+                'address',
+                'city',
+                'state',
+                'pincode',
+                'zone',
+                'contact_person',
+                'phone',
+                'latitude',
+                'longitude',
+                'store_photo',
+                'freezer_photo',
+                'notes',
+                'verified_by',
             ]);
+            foreach (self::kycHistory($fid, 200) as $k) {
+                fputcsv($out, [
+                    $freezer['unique_freezer_id'],
+                    $tagCode,
+                    $k['cycle_year'] . '-H' . $k['cycle_half'],
+                    $k['cycle_year'],
+                    $k['cycle_half'] == 1 ? 'H1' : 'H2',
+                    $k['verified_at'],
+                    $k['result'],
+                    $k['outlet_id'] ?? '',
+                    $k['store_name'] ?? '',
+                    $k['address'] ?? '',
+                    $k['city'] ?? '',
+                    $k['state'] ?? '',
+                    $k['pincode'] ?? '',
+                    $k['zone'] ?? '',
+                    $k['contact_person'] ?? '',
+                    $k['phone_number'] ?? '',
+                    $k['latitude'] ?? '',
+                    $k['longitude'] ?? '',
+                    !empty($k['image_store_front']) ? 'YES' : 'NO',
+                    !empty($k['image_freezer']) ? 'YES' : 'NO',
+                    $k['notes'] ?? '',
+                    $k['verified_by_name'] ?? '',
+                ]);
+            }
+
+            // Year grid appendix
+            fputcsv($out, []);
+            fputcsv($out, ['=== KYC BY YEAR (H1 / H2) ===']);
+            fputcsv($out, [
+                'year',
+                'h1_result', 'h1_date', 'h1_outlet', 'h1_store',
+                'h2_result', 'h2_date', 'h2_outlet', 'h2_store',
+            ]);
+            $byYear = [];
+            foreach (self::kycHistory($fid, 200) as $k) {
+                $y = (int)$k['cycle_year'];
+                $h = (int)$k['cycle_half'];
+                if (!isset($byYear[$y])) {
+                    $byYear[$y] = ['h1' => null, 'h2' => null];
+                }
+                if ($h === 1) {
+                    $byYear[$y]['h1'] = $k;
+                } elseif ($h === 2) {
+                    $byYear[$y]['h2'] = $k;
+                }
+            }
+            krsort($byYear);
+            foreach ($byYear as $year => $halves) {
+                $h1 = $halves['h1'];
+                $h2 = $halves['h2'];
+                fputcsv($out, [
+                    $year,
+                    $h1['result'] ?? '',
+                    $h1['verified_at'] ?? '',
+                    $h1['outlet_id'] ?? '',
+                    $h1['store_name'] ?? '',
+                    $h2['result'] ?? '',
+                    $h2['verified_at'] ?? '',
+                    $h2['outlet_id'] ?? '',
+                    $h2['store_name'] ?? '',
+                ]);
+            }
         }
 
         fclose($out);
