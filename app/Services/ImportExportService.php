@@ -281,7 +281,9 @@ class ImportExportService {
             'installation_date', 'install_month_year', 'pincode_last3', 'unit_sequence',
             'unique_freezer_id', 'capacity_litres', 'freezer_condition', 'status',
             'image_left_side', 'image_right_side', 'qr_code_path', 'qr_code_data',
+            'sim_number', 'sim_company', 'image_sim',
             'freezer_created_at', 'freezer_updated_at',
+            'last_kyc_at', 'next_kyc_due', 'kyc_status',
         ];
         if (in_array($col, $iot, true)) {
             return 'iot';
@@ -316,6 +318,7 @@ class ImportExportService {
             'longitude',
             'gps_accuracy',
             'gps_captured_at',
+            'location_link',
             'contact_person',
             'phone_number',
             'email',
@@ -346,8 +349,15 @@ class ImportExportService {
             'image_right_side',
             'qr_code_path',
             'qr_code_data',
+            'sim_number',
+            'sim_company',
+            'image_sim',
             'freezer_created_at',
             'freezer_updated_at',
+            // KYC (6-month from install / last KYC)
+            'last_kyc_at',
+            'next_kyc_due',
+            'kyc_status',
             // IOT (next phase)
             'iot_serial',
             'iot_imei',
@@ -552,9 +562,44 @@ class ImportExportService {
         );
     }
 
-    /** @return list<array<string, scalar|null>> */
-    private static function buildExportRows(): array {
+    /** Full CSV export for Profiles Directory (respects current filters). */
+    public static function streamProfilesExportCsv(array $filters = []): void {
+        $mappedRows = self::buildExportRows($filters, 10000);
+        self::streamCsv(
+            'freezer_profiles_full_' . date('Ymd_His') . '.csv',
+            self::exportColumns(),
+            $mappedRows
+        );
+    }
+
+    /** Full Excel export for Profiles Directory (respects current filters). */
+    public static function streamProfilesExportXlsx(array $filters = []): void {
+        $mappedRows = self::buildExportRows($filters, 10000);
+        self::streamXlsx(
+            'freezer_profiles_full_' . date('Ymd_His') . '.xlsx',
+            self::exportColumns(),
+            $mappedRows,
+            [self::class, 'hubColumnSection'],
+            'Profiles Export'
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $filters Optional Profiles Directory filters
+     * @return list<array<string, scalar|null>>
+     */
+    public static function buildExportRows(array $filters = [], int $limit = 5000): array {
         $pdo = \App\Config\Database::getConnection();
+        $gap = (int)\App\Models\FreezerLifecycle::KYC_GAP_MONTHS;
+        if ($gap < 1) {
+            $gap = 6;
+        }
+        $dueExpr = \App\Models\FreezerLifecycle::kycDueSqlExpr('f', $gap);
+
+        [$where, $params] = \App\Models\Freezer::exportFilterParts($filters);
+        $whereClause = implode(' AND ', $where);
+        $limit = max(1, min(20000, $limit));
+
         $sql = "SELECT f.*,
                        s.store_name, s.outlet_id, s.customer_name, s.distributor_name,
                        s.contact_person, s.phone_number, s.email AS store_email, s.aadhar_number,
@@ -562,7 +607,7 @@ class ImportExportService {
                        s.address AS store_address, s.city AS store_city, s.state AS store_state,
                        s.pincode AS store_pincode, s.zone AS store_zone, s.location_type,
                        s.latitude AS store_latitude, s.longitude AS store_longitude,
-                       s.gps_accuracy, s.gps_captured_at,
+                       s.gps_accuracy, s.gps_captured_at, s.location_link AS store_location_link,
                        s.image_store_front, s.image_aadhar_card, s.image_aadhar_back,
                        s.status AS store_status,
                        s.created_at AS store_created_at, s.updated_at AS store_updated_at,
@@ -570,14 +615,27 @@ class ImportExportService {
                        i.sim_number AS iot_sim_number, i.sim_company AS iot_sim_company,
                        i.device_type AS iot_type, i.device_owner AS iot_owner, i.oem_model AS iot_model,
                        i.battery_percentage AS iot_battery_percentage,
-                       i.power_status AS iot_power_status, i.last_ping_at AS iot_last_ping_at
+                       i.power_status AS iot_power_status, i.last_ping_at AS iot_last_ping_at,
+                       (
+                           SELECT MAX(k.verified_at) FROM `kyc_verifications` k
+                           WHERE k.freezer_id = f.id AND k.store_id = f.store_id
+                       ) AS last_kyc_at,
+                       {$dueExpr} AS next_kyc_due
                 FROM `freezers` f
                 INNER JOIN `stores` s ON f.store_id = s.id
                 LEFT JOIN `iot_devices` i ON i.freezer_id = f.id
+                WHERE {$whereClause}
                 ORDER BY f.unit_sequence ASC, f.unique_freezer_id ASC, f.id ASC
-                LIMIT 5000";
-        $rows = $pdo->query($sql)->fetchAll();
+                LIMIT {$limit}";
 
+        $stmt = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(':' . $k, $v);
+        }
+        $stmt->execute();
+        $rows = $stmt->fetchAll();
+
+        $today = date('Y-m-d');
         $out = [];
         foreach ($rows as $r) {
             $phone = preg_replace('/\D/', '', (string)($r['phone_number'] ?? ''));
@@ -588,6 +646,13 @@ class ImportExportService {
 
             $typeCode = strtoupper(trim((string)($r['freezer_type'] ?? '')));
             $brandCode = strtoupper(trim((string)($r['company_code'] ?? '')));
+            $nextDue = (string)($r['next_kyc_due'] ?? '');
+            $kycStatus = ($nextDue !== '' && $nextDue <= $today) ? 'Pending' : 'OK';
+
+            $mapsLink = trim((string)($r['store_location_link'] ?? ''));
+            if ($mapsLink === '' && !empty($r['store_latitude']) && !empty($r['store_longitude'])) {
+                $mapsLink = 'https://maps.google.com/?q=' . rawurlencode($r['store_latitude'] . ',' . $r['store_longitude']);
+            }
 
             $out[] = [
                 'zone' => $r['store_zone'] ?? 'WEST',
@@ -605,6 +670,7 @@ class ImportExportService {
                 'longitude' => $r['store_longitude'] ?? '',
                 'gps_accuracy' => $r['gps_accuracy'] ?? '',
                 'gps_captured_at' => $r['gps_captured_at'] ?? '',
+                'location_link' => $mapsLink,
                 'contact_person' => $r['contact_person'] ?? '',
                 'phone_number' => $phone,
                 'email' => $r['store_email'] ?? '',
@@ -634,8 +700,14 @@ class ImportExportService {
                 'image_right_side' => $r['image_right_side'] ?? '',
                 'qr_code_path' => $r['qr_code_path'] ?? '',
                 'qr_code_data' => $r['qr_code_data'] ?? '',
+                'sim_number' => $r['sim_number'] ?? '',
+                'sim_company' => $r['sim_company'] ?? '',
+                'image_sim' => $r['image_sim'] ?? '',
                 'freezer_created_at' => $r['created_at'] ?? '',
                 'freezer_updated_at' => $r['updated_at'] ?? '',
+                'last_kyc_at' => $r['last_kyc_at'] ?? '',
+                'next_kyc_due' => $nextDue,
+                'kyc_status' => $kycStatus,
                 'iot_serial' => $r['iot_serial'] ?? '',
                 'iot_imei' => $r['iot_imei'] ?? '',
                 'iot_sim_number' => $r['iot_sim_number'] ?? '',

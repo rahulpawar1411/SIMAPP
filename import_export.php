@@ -84,14 +84,14 @@ require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div class="users-page">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-        <div>
-            <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Import / Export Hub</h2>
-            <p style="color: #64748b; font-size: 0.875rem; margin-top: 0.25rem;">
-                Admin tools to bulk import Store + Freezer from one CSV, or export existing hub data.
-            </p>
+    <div class="cfg-toolbar">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title">Import / Export Hub</h1>
         </div>
     </div>
+    <p style="color:var(--text-secondary); font-size:0.875rem; margin:-0.35rem 0 1rem;">
+        Admin tools to bulk import Store + Freezer from one CSV, or export existing hub data.
+    </p>
 
     <?php if ($error): ?>
         <div class="alert alert-danger" style="margin-bottom: 1rem;"><?= htmlspecialchars($error) ?></div>

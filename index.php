@@ -6,7 +6,6 @@ use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 use App\Models\FreezerLifecycle;
-use App\Config\Database;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
@@ -20,15 +19,16 @@ try {
     // table may not exist yet
 }
 
+$cycle = FreezerLifecycle::currentCycle();
 $kycDone = 0;
 $kycPending = 0;
+$kycPendingList = [];
+$kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
 try {
-    $cycle = FreezerLifecycle::currentCycle();
-    $pdo = Database::getConnection();
-    $stmt = $pdo->prepare("SELECT COUNT(DISTINCT freezer_id) FROM kyc_verifications WHERE cycle_year = ? AND cycle_half = ?");
-    $stmt->execute([(int)$cycle['year'], (int)$cycle['half']]);
-    $kycDone = (int)$stmt->fetchColumn();
-    $kycPending = max(0, (int)$stats['total_freezers'] - $kycDone);
+    $kycDash = FreezerLifecycle::dashboardKycStats(5);
+    $kycDone = (int)$kycDash['done'];
+    $kycPending = (int)$kycDash['pending'];
+    $kycPendingList = $kycDash['pending_list'] ?? [];
 } catch (Throwable $e) {
     $kycPending = (int)$stats['total_freezers'];
 }
@@ -55,7 +55,7 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <div class="stat-grid dash-kpi-grid">
-    <div class="stat-card dash-kpi" style="--stat-accent:#2563eb; --stat-bg:#eff6ff; --stat-color:#2563eb;">
+    <div class="stat-card dash-kpi" style="--stat-accent:#16a34a; --stat-bg:#f0fdf4; --stat-color:#16a34a;">
         <div class="stat-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="2" y="7" width="20" height="14" rx="2"/>
@@ -68,7 +68,7 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
-    <div class="stat-card dash-kpi" style="--stat-accent:#0ea5e9; --stat-bg:#e0f2fe; --stat-color:#0284c7;">
+    <div class="stat-card dash-kpi" style="--stat-accent:#22c55e; --stat-bg:#dcfce7; --stat-color:#15803d;">
         <div class="stat-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
@@ -109,7 +109,7 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <div class="dash-grid">
-    <div class="card dash-panel">
+    <div class="card dash-panel dash-panel-recent">
         <div class="card-header">
             <div class="card-title"><span>Recent activity</span></div>
             <a href="profiles.php" class="btn btn-sm btn-outline">All assets</a>
@@ -173,6 +173,55 @@ require_once __DIR__ . '/includes/header.php';
             <?php if (AppConfig::IOT_ENABLED): ?>
                 <p style="font-size:0.8rem; color:#64748b; margin-top:0.85rem;">IoT sensors: <?= number_format($stats['total_iot']) ?> connected</p>
             <?php endif; ?>
+        </div>
+    </div>
+
+    <div class="card dash-panel dash-kyc-panel <?= $kycPending > 0 ? 'is-due' : 'is-ok' ?>">
+        <div class="card-header">
+            <div class="card-title"><span>KYC status</span></div>
+            <?php if ($kycPending > 0): ?>
+                <span class="badge badge-warning"><?= number_format($kycPending) ?> due</span>
+            <?php else: ?>
+                <span class="badge badge-success">All OK</span>
+            <?php endif; ?>
+        </div>
+        <div class="card-body">
+            <p class="dash-kyc-panel-text">
+                Every <strong><?= (int)$kycGapMonths ?> months</strong> from installation / last KYC.
+            </p>
+            <div class="dash-qr-stats dash-kyc-stats">
+                <div>
+                    <span>Within window</span>
+                    <strong><?= number_format($kycDone) ?></strong>
+                </div>
+                <div>
+                    <span>Pending</span>
+                    <strong><?= number_format($kycPending) ?></strong>
+                </div>
+            </div>
+            <?php if ($kycPending > 0 && !empty($kycPendingList)): ?>
+                <ul class="dash-kyc-panel-list">
+                    <?php foreach ($kycPendingList as $row): ?>
+                        <li>
+                            <a href="freezer_kyc.php?id=<?= (int)$row['id'] ?>">
+                                <?= htmlspecialchars($row['store_name'] ?? 'Store') ?>
+                            </a>
+                            <code><?= htmlspecialchars($row['unique_freezer_id']) ?></code>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <?php if ($kycPending > count($kycPendingList)): ?>
+                    <p class="dash-kyc-panel-more">+<?= number_format($kycPending - count($kycPendingList)) ?> more</p>
+                <?php endif; ?>
+            <?php elseif ((int)$stats['total_freezers'] > 0 && $kycPending === 0): ?>
+                <p class="dash-kyc-panel-ok">All units are within the KYC window.</p>
+            <?php else: ?>
+                <p class="dash-kyc-panel-ok">No freezers registered yet.</p>
+            <?php endif; ?>
+            <div class="dash-quick-actions" style="margin-top:0.85rem;">
+                <a href="profiles.php?kyc=pending" class="btn btn-sm <?= $kycPending > 0 ? 'btn-primary' : 'btn-outline' ?>">View pending</a>
+                <a href="qr_scanner.php" class="btn btn-sm btn-secondary">Scan &amp; verify</a>
+            </div>
         </div>
     </div>
 </div>

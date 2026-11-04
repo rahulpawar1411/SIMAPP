@@ -273,8 +273,15 @@ class MasterData {
             'BRAND NEW INSTALLATION',
             'NEEDS ROUTINE MAINTENANCE',
             'UNDER REPAIR',
-            'TEMPERATURE ALERT'
+            'TEMPERATURE ALERT',
+            'ABDUCTOR DAMAGE',
+            'SENSOR DAMAGE',
         ];
+    }
+
+    /** Freezer capacity options (litres) */
+    public static function getCapacities(): array {
+        return [550, 350];
     }
 
     /**

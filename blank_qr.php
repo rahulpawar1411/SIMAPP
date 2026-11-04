@@ -57,16 +57,16 @@ $pageTitle = 'Blank QR Tags';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:1rem; margin-bottom:1.25rem;">
-    <div>
-        <h2 style="font-size:1.4rem; font-weight:800; color:#0f172a;">Blank QR Tags</h2>
-        <p style="color:#64748b; font-size:0.875rem; margin-top:0.25rem; max-width:36rem;">
-            Print empty stickers first (<strong>Logo + QR only</strong>). Field team scans → fills store/freezer data → submit.
-            Later scans show full details.
-        </p>
+<div class="cfg-toolbar">
+    <div class="cfg-toolbar-left">
+        <h1 class="cfg-toolbar-title">Blank QR Tags</h1>
     </div>
-    <a href="qr_scanner.php" class="btn btn-secondary">Scan QR Tag</a>
+    <a href="qr_scanner.php" class="btn btn-primary cfg-done-btn">Scan QR Tag</a>
 </div>
+<p style="color:var(--text-secondary); font-size:0.875rem; margin:-0.35rem 0 1rem; max-width:36rem;">
+    Print empty stickers first (<strong>Logo + QR only</strong>). Field team scans → fills store/freezer data → submit.
+    Later scans show full details.
+</p>
 
 <?php if ($error): ?>
     <div class="alert alert-danger" style="margin-bottom:1rem;"><?= htmlspecialchars($error) ?></div>
@@ -175,17 +175,19 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+<div class="card tag-inventory">
+    <div class="card-header tag-inventory-head">
         <div class="card-title"><span>Tag inventory</span></div>
-        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+        <div class="tag-inventory-filters">
             <a href="blank_qr.php?status=unused" class="btn btn-sm <?= $statusFilter === 'unused' ? 'btn-primary' : 'btn-secondary' ?>">Unused</a>
             <a href="blank_qr.php?status=assigned" class="btn btn-sm <?= $statusFilter === 'assigned' ? 'btn-primary' : 'btn-secondary' ?>">Assigned</a>
             <a href="blank_qr.php?status=all" class="btn btn-sm <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-secondary' ?>">All</a>
         </div>
     </div>
-    <div class="card-body" style="padding:0; overflow-x:auto;">
-        <table class="data-table" style="font-size:0.85rem;">
+
+    <!-- Desktop table -->
+    <div class="card-body tag-inventory-desktop" style="padding:0; overflow-x:auto;">
+        <table class="data-table tag-inventory-table">
             <thead>
                 <tr>
                     <th>Tag code</th>
@@ -204,7 +206,7 @@ require_once __DIR__ . '/includes/header.php';
                 <?php else: ?>
                     <?php foreach ($tags as $t): ?>
                         <tr>
-                            <td><code style="font-weight:700;"><?= htmlspecialchars($t['tag_code']) ?></code></td>
+                            <td><code class="tag-code"><?= htmlspecialchars($t['tag_code']) ?></code></td>
                             <td>
                                 <?php if ($t['status'] === 'unused'): ?>
                                     <span class="badge badge-primary">Unused</span>
@@ -236,6 +238,36 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+    </div>
+
+    <!-- Mobile cards -->
+    <div class="card-body tag-inventory-mobile">
+        <?php if (!$tags): ?>
+            <p class="tag-inv-empty">No tags yet. Generate a batch above.</p>
+        <?php else: ?>
+            <ul class="tag-inv-list">
+                <?php foreach ($tags as $t): ?>
+                    <li class="tag-inv-card">
+                        <div class="tag-inv-card-top">
+                            <code class="tag-code"><?= htmlspecialchars($t['tag_code']) ?></code>
+                            <?php if ($t['status'] === 'unused'): ?>
+                                <span class="badge badge-primary">Unused</span>
+                            <?php else: ?>
+                                <span class="badge badge-success">Assigned</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="tag-inv-card-actions">
+                            <a class="btn btn-sm btn-secondary" target="_blank"
+                               href="blank_qr_print.php?ids=<?= (int)$t['id'] ?>">Print</a>
+                            <?php if ($t['status'] === 'unused'): ?>
+                                <a class="btn btn-sm btn-primary"
+                                   href="profile_add.php?tag=<?= urlencode($t['tag_code']) ?>">Fill data</a>
+                            <?php endif; ?>
+                        </div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
     </div>
     <?php if ($totalTags > 0): ?>
     <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">

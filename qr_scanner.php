@@ -28,17 +28,18 @@ require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div class="field-scan-wrap" style="max-width: 600px; margin: 0 auto;">
-    <div style="text-align: center; margin-bottom: 1rem;">
-        <h2 style="font-size: clamp(1.15rem, 4.5vw, 1.4rem); font-weight: 800; color: #0f172a;">Scan QR → Register / View</h2>
-        <p style="color: #64748b; font-size: 0.9rem; max-width: 28rem; margin: 0.35rem auto 0; line-height: 1.45;">
-            <strong>Unused</strong> sticker → fill form.<br>
-            <strong>Registered</strong> sticker → show details.
-        </p>
-        <div class="field-scan-steps" style="display:flex; justify-content:center; gap:0.5rem; flex-wrap:wrap; margin-top:0.85rem; font-size:0.75rem; font-weight:700; color:#475569;">
-            <span style="background:#e0f2fe; color:#0369a1; padding:0.25rem 0.55rem; border-radius:999px;">1. Scan</span>
-            <span style="background:#fef3c7; color:#92400e; padding:0.25rem 0.55rem; border-radius:999px;">2. Fill info</span>
-            <span style="background:#d1fae5; color:#065f46; padding:0.25rem 0.55rem; border-radius:999px;">3. Done</span>
+    <div class="cfg-toolbar" style="margin-bottom:0.75rem;">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title">Scan QR → Register / View</h1>
         </div>
+    </div>
+    <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
+        <strong>Unused</strong> sticker → fill form. <strong>Registered</strong> sticker → show details.
+    </p>
+    <div class="field-scan-steps" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; font-size:0.75rem; font-weight:600; color:#475569;">
+        <span style="background:#f0fdf4; color:#166534; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bbf7d0;">1. Scan</span>
+        <span style="background:#fefce8; color:#854d0e; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #fde68a;">2. Fill info</span>
+        <span style="background:#dcfce7; color:#14532d; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #86efac;">3. Done</span>
     </div>
 
     <?php if (!empty($error)): ?>
@@ -96,8 +97,15 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
         <div class="card-body">
-            <form method="POST" action="" style="display: flex; gap: 0.75rem;">
-                <input type="text" name="manual_freezer_id" class="form-control" inputmode="text" autocomplete="off" placeholder="RO-XXXXXX or DF Unique ID" required>
+            <form method="POST" action="" id="manual-qr-form" style="display: flex; gap: 0.75rem; align-items: flex-start;">
+                <div class="qr-suggest-wrap" style="flex:1; min-width:0;">
+                    <input type="text" name="manual_freezer_id" id="manual-freezer-id" class="form-control"
+                           inputmode="text" autocomplete="off" autocapitalize="characters"
+                           placeholder="Start typing RO-… or Unique ID" required
+                           aria-autocomplete="list" aria-controls="qr-suggest-panel" aria-expanded="false">
+                    <div id="qr-suggest-panel" class="qr-suggest-panel" hidden role="listbox"></div>
+                    <p class="qr-suggest-hint">Suggestions by QR type — <strong>Unused</strong> blank tags &amp; <strong>Assigned</strong> (with freezer type)</p>
+                </div>
                 <button type="submit" class="btn btn-primary" style="white-space: nowrap;">
                     Open
                 </button>
@@ -240,7 +248,153 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     startCamera();
+    initManualQrSuggest();
 });
+
+function initManualQrSuggest() {
+    const input = document.getElementById('manual-freezer-id');
+    const panel = document.getElementById('qr-suggest-panel');
+    if (!input || !panel) return;
+
+    let timer = null;
+    let activeIdx = -1;
+    let items = [];
+    let abortCtrl = null;
+
+    function hide() {
+        panel.hidden = true;
+        panel.innerHTML = '';
+        input.setAttribute('aria-expanded', 'false');
+        activeIdx = -1;
+        items = [];
+    }
+
+    function setActive(idx) {
+        const buttons = panel.querySelectorAll('.qr-suggest-item');
+        buttons.forEach(function (btn, i) {
+            btn.classList.toggle('is-active', i === idx);
+            if (i === idx) btn.setAttribute('aria-selected', 'true');
+            else btn.removeAttribute('aria-selected');
+        });
+        activeIdx = idx;
+        if (idx >= 0 && buttons[idx]) {
+            buttons[idx].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function pick(item) {
+        if (!item || !item.code) return;
+        input.value = item.code;
+        hide();
+        input.form && input.form.submit();
+    }
+
+    function render(list) {
+        items = list || [];
+        if (!items.length) {
+            panel.innerHTML = '<div class="qr-suggest-empty">No matching QR / freezer ID</div>';
+            panel.hidden = false;
+            input.setAttribute('aria-expanded', 'true');
+            return;
+        }
+        panel.innerHTML = items.map(function (it, i) {
+            const status = it.status === 'assigned' ? 'assigned' : 'unused';
+            const badge = status === 'assigned' ? 'Assigned' : 'Unused';
+            const metaParts = [];
+            if (it.freezer_type) metaParts.push(it.freezer_type);
+            if (it.unique_freezer_id && it.unique_freezer_id !== it.code) metaParts.push(it.unique_freezer_id);
+            if (it.store_name) metaParts.push(it.store_name);
+            if (it.kind === 'freezer') metaParts.unshift('Freezer ID');
+            const meta = metaParts.join(' · ');
+            return '<button type="button" class="qr-suggest-item" role="option" data-idx="' + i + '">' +
+                '<span class="qr-suggest-code">' + escapeHtml(it.code) + '</span>' +
+                '<span class="qr-suggest-meta">' +
+                    '<span class="qr-suggest-badge is-' + status + '">' + badge + '</span>' +
+                    (meta ? '<span class="qr-suggest-type">' + escapeHtml(meta) + '</span>' : '') +
+                '</span>' +
+            '</button>';
+        }).join('');
+        panel.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        activeIdx = -1;
+        panel.querySelectorAll('.qr-suggest-item').forEach(function (btn) {
+            var onPick = function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                pick(items[parseInt(btn.getAttribute('data-idx'), 10)]);
+            };
+            btn.addEventListener('pointerdown', onPick);
+            btn.addEventListener('mousedown', onPick);
+        });
+    }
+
+    function escapeHtml(s) {
+        return String(s || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function fetchSuggest(q) {
+        if (abortCtrl) abortCtrl.abort();
+        abortCtrl = new AbortController();
+        fetch('api/qr_suggest.php?q=' + encodeURIComponent(q), {
+            credentials: 'same-origin',
+            signal: abortCtrl.signal,
+            headers: { 'Accept': 'application/json' }
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || !data.success) {
+                    hide();
+                    return;
+                }
+                render(data.items || []);
+            })
+            .catch(function (err) {
+                if (err && err.name === 'AbortError') return;
+            });
+    }
+
+    input.addEventListener('input', function () {
+        const q = (input.value || '').trim();
+        if (timer) clearTimeout(timer);
+        if (q.length < 1) {
+            hide();
+            return;
+        }
+        timer = setTimeout(function () { fetchSuggest(q); }, 180);
+    });
+
+    input.addEventListener('keydown', function (e) {
+        if (panel.hidden || !items.length) {
+            if (e.key === 'Escape') hide();
+            return;
+        }
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setActive(Math.min(activeIdx + 1, items.length - 1));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActive(Math.max(activeIdx - 1, 0));
+        } else if (e.key === 'Enter' && activeIdx >= 0) {
+            e.preventDefault();
+            pick(items[activeIdx]);
+        } else if (e.key === 'Escape') {
+            hide();
+        }
+    });
+
+    input.addEventListener('blur', function () {
+        setTimeout(hide, 280);
+    });
+
+    input.addEventListener('focus', function () {
+        const q = (input.value || '').trim();
+        if (q.length >= 1) fetchSuggest(q);
+    });
+}
 </script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

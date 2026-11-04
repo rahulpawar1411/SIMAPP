@@ -24,9 +24,12 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     
     <!-- Application CSS -->
-    <link rel="stylesheet" href="assets/css/app.css?v=<?= @filemtime(__DIR__ . '/../assets/css/app.css') ?: time() ?>">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (@filemtime(__DIR__ . '/../assets/css/app.css') ?: time()) ?>-theme-green">
+    <?php if ($currentUser): ?>
+    <meta name="csrf-token" content="<?= htmlspecialchars(AuthService::generateCsrfToken()) ?>">
+    <?php endif; ?>
 </head>
-<body>
+<body class="theme-cfg">
 <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 <div class="app-layout">
     <!-- Sidebar -->

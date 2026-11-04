@@ -8,7 +8,7 @@ use App\Models\AssetTag;
 use App\Models\FreezerLifecycle;
 use App\Models\MasterData;
 
-AuthService::requireRole('super_admin');
+AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
 
 $id = (int)($_GET['id'] ?? $_POST['freezer_id'] ?? 0);
@@ -28,8 +28,11 @@ $assetTag = AssetTag::findByFreezerId((int)$freezer['id']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security token.';
-    } elseif ($kycStatus['current']) {
-        $error = 'KYC for ' . $cycle['label'] . ' is already done.';
+    } elseif (!$kycStatus['due'] && $kycStatus['current']) {
+        $nextDue = $kycStatus['next_due_at'] ?? '';
+        $error = 'KYC for this store already done. Next due after '
+            . (int)($kycStatus['gap_months'] ?? 6) . ' months'
+            . ($nextDue !== '' ? ' (from ' . $nextDue . ')' : '') . '.';
     } else {
         try {
             $locationMode = $_POST['location_mode'] ?? 'same';
@@ -63,10 +66,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $imgNameMeta['store_name'] = trim((string)$_POST['store_name']);
 
                 $imgNewStore = null;
-                if (!empty($_FILES['image_store_front']['name'])) {
-                    $up = FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'kyc_store', $imgNameMeta);
+                $newStoreFile = !empty($_FILES['image_new_store_front']['name'])
+                    ? $_FILES['image_new_store_front']
+                    : (!empty($_FILES['image_store_front']['name']) ? $_FILES['image_store_front'] : null);
+                if ($newStoreFile) {
+                    $up = FileUploadService::handleImageUpload($newStoreFile, 'stores', 'store_front', $imgNameMeta);
                     if (!$up['success']) {
-                        throw new Exception('Store photo: ' . $up['error']);
+                        throw new Exception('New store photo: ' . $up['error']);
                     }
                     $imgNewStore = $up['path'];
                 }
@@ -84,6 +90,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'customer_name' => $freezer['customer_name'] ?? 'Baskin Robbins',
                     'latitude' => $_POST['latitude'] ?? null,
                     'longitude' => $_POST['longitude'] ?? null,
+                    'gps_accuracy' => $_POST['gps_accuracy'] ?? null,
+                    'gps_captured_at' => $_POST['gps_captured_at'] ?? null,
+                    'location_link' => $_POST['location_link'] ?? null,
                     'image_store_front' => $imgNewStore,
                 ], (int)$currentUser['id']);
 
@@ -163,10 +172,12 @@ $locMode = ($_POST['location_mode'] ?? 'same') === 'new' ? 'new' : 'same';
 $resultVal = $_POST['result'] ?? 'PASS';
 ?>
 
-<div style="max-width: 820px; margin: 0 auto;">
-    <div style="margin-bottom: 1.25rem; display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:space-between; align-items:center;">
-        <a href="profile_view.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-secondary btn-sm">&larr; Back to profile</a>
-        <span style="font-size:0.8rem; color:#64748b;">One place for verify + store move</span>
+<div style="max-width: 920px; margin: 0 auto;">
+    <div class="cfg-toolbar">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title">KYC Verification</h1>
+        </div>
+        <a href="profile_view.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-secondary btn-sm">Back to profile</a>
     </div>
 
     <div class="card">
@@ -179,45 +190,22 @@ $resultVal = $_POST['result'] ?? 'PASS';
             <?php endif; ?>
         </div>
         <div class="card-body">
-            <p style="font-size: 0.875rem; color: #475569; margin-bottom: 1rem;">
-                Bi-annual check (H1 / H2). Confirm the physical freezer, capture photos + GPS,
-                and if it moved — update store here. <strong>Unique Freezer ID never changes.</strong>
-            </p>
+            <?php
+            $kycLastDate = $kycStatus['last_at_store']['verified_at']
+                ?? $kycStatus['current']['verified_at']
+                ?? $kycStatus['last']['verified_at']
+                ?? null;
+            ?>
 
-            <!-- Identity summary -->
-            <div class="profile-kv-grid" style="margin-bottom:1.25rem; padding:1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:var(--radius-md);">
-                <div class="profile-kv">
-                    <span class="profile-kv-label">Cycle</span>
-                    <strong class="profile-kv-value"><?= htmlspecialchars($cycle['label']) ?></strong>
-                    <div style="font-size:0.75rem; color:#64748b;"><?= htmlspecialchars($cycle['window']) ?></div>
-                </div>
-                <div class="profile-kv">
-                    <span class="profile-kv-label">Tag code</span>
-                    <strong class="profile-kv-value profile-kv-mono profile-kv-lg">
-                        <?= htmlspecialchars($assetTag['tag_code'] ?? '—') ?>
-                    </strong>
-                </div>
-                <div class="profile-kv">
-                    <span class="profile-kv-label">Unique Freezer ID</span>
-                    <strong class="profile-kv-value profile-kv-mono" style="color:#0284c7; font-size:0.8rem; word-break:break-all;">
-                        <?= htmlspecialchars($freezer['unique_freezer_id']) ?>
-                    </strong>
-                </div>
-                <div class="profile-kv profile-kv-wide">
-                    <span class="profile-kv-label">Currently linked store</span>
-                    <strong class="profile-kv-value"><?= htmlspecialchars($freezer['store_name']) ?></strong>
-                    <div style="font-size:0.8rem; color:#64748b; font-family:var(--font-mono);">
-                        <?= htmlspecialchars($freezer['outlet_id']) ?>
-                        · <?= htmlspecialchars($freezer['store_city'] ?? '') ?>, <?= htmlspecialchars($freezer['store_state'] ?? '') ?>
-                    </div>
-                </div>
-            </div>
-
-            <?php if ($kycStatus['current']): ?>
+            <?php if (!$kycStatus['due'] && $kycStatus['current']): ?>
                 <div class="alert alert-success">
-                    KYC for <?= htmlspecialchars($cycle['label']) ?> already completed on
+                    KYC for this store completed on
                     <?= htmlspecialchars($kycStatus['current']['verified_at']) ?>
                     (<?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?>).
+                    Next due after <?= (int)($kycStatus['gap_months'] ?? 6) ?> months
+                    <?php if (!empty($kycStatus['next_due_at'])): ?>
+                        (<?= htmlspecialchars((string)$kycStatus['next_due_at']) ?>)
+                    <?php endif; ?>.
                     Next cycle window: after this half ends.
                 </div>
             <?php else: ?>
@@ -225,16 +213,93 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     <div class="alert alert-danger" style="margin-bottom:1rem;"><?= htmlspecialchars($error) ?></div>
                 <?php endif; ?>
 
-                <form method="post" enctype="multipart/form-data" id="kyc-form">
+                <form method="post" enctype="multipart/form-data" id="kyc-form" class="cfg-form">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                     <input type="hidden" name="freezer_id" value="<?= (int)$freezer['id'] ?>">
                     <input type="hidden" name="cycle_year" value="<?= (int)$cycle['year'] ?>">
                     <input type="hidden" name="cycle_half" value="<?= (int)$cycle['half'] ?>">
-                    <input type="hidden" name="latitude" id="kyc_latitude" value="<?= htmlspecialchars($_POST['latitude'] ?? '') ?>">
-                    <input type="hidden" name="longitude" id="kyc_longitude" value="<?= htmlspecialchars($_POST['longitude'] ?? '') ?>">
+                    <input type="hidden" name="latitude" id="latitude" value="<?= htmlspecialchars($_POST['latitude'] ?? '') ?>">
+                    <input type="hidden" name="longitude" id="longitude" value="<?= htmlspecialchars($_POST['longitude'] ?? '') ?>">
+                    <input type="hidden" name="gps_accuracy" id="gps_accuracy" value="<?= htmlspecialchars($_POST['gps_accuracy'] ?? '') ?>">
+                    <input type="hidden" name="gps_captured_at" id="gps_captured_at" value="<?= htmlspecialchars($_POST['gps_captured_at'] ?? '') ?>">
+                    <input type="hidden" name="location_link" id="location_link" value="<?= htmlspecialchars($_POST['location_link'] ?? '') ?>">
+
+                    <!-- Options at top -->
+                    <fieldset class="form-subsection kyc-options-top">
+                        <legend>Verification options</legend>
+                        <div class="form-grid" style="margin-bottom:0;">
+                            <div class="col-6 form-group">
+                                <label class="form-label required" for="result">Result</label>
+                                <select name="result" id="result" class="form-select" required onchange="togglePhotoReq()">
+                                    <option value="PASS" <?= $resultVal === 'PASS' ? 'selected' : '' ?>>PASS — unit found &amp; verified</option>
+                                    <option value="FAIL" <?= $resultVal === 'FAIL' ? 'selected' : '' ?>>FAIL — not found / mismatch</option>
+                                    <option value="PENDING" <?= $resultVal === 'PENDING' ? 'selected' : '' ?>>PENDING — follow-up needed</option>
+                                </select>
+                            </div>
+                            <div class="col-6 form-group">
+                                <label class="form-label required" for="verified_at">Verification date</label>
+                                <input type="date" name="verified_at" id="verified_at" class="form-control"
+                                       value="<?= htmlspecialchars($_POST['verified_at'] ?? date('Y-m-d')) ?>" required>
+                            </div>
+                            <div class="col-12 form-group" style="margin-bottom:0;">
+                                <label class="form-label required">Where is the freezer today?</label>
+                                <div class="kyc-loc-options">
+                                    <label class="kyc-loc-option">
+                                        <input type="radio" name="location_mode" value="same" <?= $locMode !== 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
+                                        <span><strong>Same store</strong> — still at <?= htmlspecialchars($freezer['outlet_id']) ?></span>
+                                    </label>
+                                    <label class="kyc-loc-option">
+                                        <input type="radio" name="location_mode" value="new" <?= $locMode === 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
+                                        <span><strong>Moved to new outlet</strong> — create store + auto Store ID</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <!-- Identity summary -->
+                    <div class="profile-kv-grid" style="margin:1.15rem 0; padding:1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:var(--radius-md);">
+                        <div class="profile-kv">
+                            <span class="profile-kv-label">KYC window</span>
+                            <strong class="profile-kv-value profile-kv-mono">
+                                <?= $kycLastDate
+                                    ? 'Last KYC: ' . htmlspecialchars((string)$kycLastDate)
+                                    : 'Last KYC: —' ?>
+                            </strong>
+                            <div style="font-size:0.75rem; color:#64748b;">
+                                Every <?= (int)($kycStatus['gap_months'] ?? 6) ?> months
+                                <?php if (!$kycLastDate && ($kycStatus['anchor_source'] ?? '') === 'installation' && !empty($kycStatus['anchor_date'])): ?>
+                                    · from install <?= htmlspecialchars((string)$kycStatus['anchor_date']) ?>
+                                <?php endif; ?>
+                                <?php if (!empty($kycStatus['next_due_at'])): ?>
+                                    · Window ends <?= htmlspecialchars((string)$kycStatus['next_due_at']) ?>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <div class="profile-kv">
+                            <span class="profile-kv-label">Tag code</span>
+                            <strong class="profile-kv-value profile-kv-mono profile-kv-lg">
+                                <?= htmlspecialchars($assetTag['tag_code'] ?? '—') ?>
+                            </strong>
+                        </div>
+                        <div class="profile-kv">
+                            <span class="profile-kv-label">Unique Freezer ID</span>
+                            <strong class="profile-kv-value profile-kv-mono" style="color:#0284c7; font-size:0.8rem; word-break:break-all;">
+                                <?= htmlspecialchars($freezer['unique_freezer_id']) ?>
+                            </strong>
+                        </div>
+                        <div class="profile-kv profile-kv-wide">
+                            <span class="profile-kv-label">Currently linked store</span>
+                            <strong class="profile-kv-value"><?= htmlspecialchars($freezer['store_name']) ?></strong>
+                            <div style="font-size:0.8rem; color:#64748b; font-family:var(--font-mono);">
+                                <?= htmlspecialchars($freezer['outlet_id']) ?>
+                                · <?= htmlspecialchars($freezer['store_city'] ?? '') ?>, <?= htmlspecialchars($freezer['store_state'] ?? '') ?>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- 1. Asset confirm -->
-                    <div class="form-group" style="padding:0.85rem 1rem; border:1px solid #bfdbfe; background:#eff6ff; border-radius:8px;">
+                    <div class="form-group" style="padding:0.85rem 1rem; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
                         <label style="display:flex; gap:0.6rem; align-items:flex-start; font-size:0.875rem; margin:0; cursor:pointer;">
                             <input type="checkbox" name="confirm_asset" value="1" style="margin-top:0.2rem;"
                                 <?= !empty($_POST['confirm_asset']) ? 'checked' : '' ?> required>
@@ -245,29 +310,72 @@ $resultVal = $_POST['result'] ?? 'PASS';
                         </label>
                     </div>
 
-                    <!-- 2. Location -->
-                    <div class="form-group" style="margin-top:1.25rem;">
-                        <label class="form-label required">2. Where is the freezer today?</label>
-                        <p style="font-size:0.8rem; color:#64748b; margin:-0.25rem 0 0.65rem;">
-                            Same outlet, or create a new outlet if the unit moved.
-                        </p>
-                        <div style="display:flex; flex-direction:column; gap:0.5rem; font-size:0.875rem;">
-                            <label style="padding:0.65rem 0.85rem; border:1px solid #e2e8f0; border-radius:8px; cursor:pointer;">
-                                <input type="radio" name="location_mode" value="same" <?= $locMode !== 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
-                                <strong>Same store</strong> — still at <?= htmlspecialchars($freezer['outlet_id']) ?>
-                            </label>
-                            <label style="padding:0.65rem 0.85rem; border:1px solid #e2e8f0; border-radius:8px; cursor:pointer;">
-                                <input type="radio" name="location_mode" value="new" <?= $locMode === 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
-                                <strong>Moved to new outlet</strong> — create store + auto Store ID
-                            </label>
-                        </div>
-                    </div>
-
-                    <div id="loc-new" style="<?= $locMode === 'new' ? '' : 'display:none;' ?>">
+                    <div id="loc-new" style="<?= $locMode === 'new' ? '' : 'display:none; margin-top:1.15rem;' ?>">
                         <div class="alert alert-info" style="font-size:0.8rem; margin-bottom:0.85rem;">
                             Naya outlet save hote hi auto Store ID milegi.
                             Freezer us pe link hoga; Unique Freezer ID same rahegi.
+                            Capture <strong>Store Front</strong> with Location ON — same as onboarding.
                         </div>
+
+                        <div class="form-group" style="margin-bottom:1rem;">
+                            <label class="form-label required" for="image_new_store_front">New outlet — Store Front photo</label>
+                            <div class="upload-box upload-box-featured" id="dropzone-new-store-front">
+                                <input type="file" name="image_new_store_front" id="image_new_store_front" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-new-store-front">
+                                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M3 21h18"/>
+                                    <path d="M5 21V7l7-4 7 4v14"/>
+                                    <path d="M9 21v-6h6v6"/>
+                                </svg>
+                                <div class="upload-title">Store Front photo *</div>
+                                <div class="upload-hint">Required · Camera · GPS + location auto-fill</div>
+                                <div class="upload-preview-container" id="preview-new-store-front">
+                                    <img src="" alt="New Store Front Preview">
+                                    <span class="preview-badge">Store Front</span>
+                                </div>
+                            </div>
+                            <div class="gps-capture-widget gps-capture-widget-compact" style="margin: 1rem 0 0;">
+                                <div class="gps-header">
+                                    <strong style="font-size: 0.9rem; color: #14532d;">New store location</strong>
+                                    <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                                </div>
+                                <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
+                                    <span class="gps-process-spinner" aria-hidden="true"></span>
+                                    <span class="gps-process-text">Processing…</span>
+                                </div>
+                                <span id="disp-place" hidden></span>
+                                <span id="disp-lat" hidden></span>
+                                <span id="disp-lng" hidden></span>
+                                <span id="disp-acc" hidden></span>
+                                <div class="gps-action-row" style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+                                    <button type="button" class="btn btn-success" data-save-current-location
+                                        data-wa-title="New outlet location (KYC)">
+                                        Save my current location
+                                    </button>
+                                    <button type="button" class="btn btn-primary js-share-location-btn" data-share-location="saved"
+                                        data-wa-title="New outlet location" hidden>
+                                        Share location
+                                    </button>
+                                </div>
+                                <?php
+                                $kycLocLink = trim((string)($_POST['location_link'] ?? ''));
+                                ?>
+                                <div class="sp-location-link-box" id="current-location-link-box" <?= $kycLocLink === '' ? 'hidden' : '' ?>>
+                                    <div class="sp-location-link-label">Current location link</div>
+                                    <a class="sp-location-link" id="current-location-link"
+                                       href="<?= $kycLocLink !== '' ? htmlspecialchars($kycLocLink) : '#' ?>"
+                                       target="_blank" rel="noopener"><?= $kycLocLink !== '' ? htmlspecialchars($kycLocLink) : '' ?></a>
+                                    <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link"
+                                        data-copy="<?= htmlspecialchars($kycLocLink) ?>">Copy link</button>
+                                </div>
+                                <div class="sp-latlng" id="current-location-latlng" <?= empty($_POST['latitude']) ? 'hidden' : '' ?>>
+                                    <?php if (!empty($_POST['latitude']) && !empty($_POST['longitude'])): ?>
+                                        Lat <?= htmlspecialchars((string)$_POST['latitude']) ?>
+                                        · Lng <?= htmlspecialchars((string)$_POST['longitude']) ?>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="form-grid">
                             <div class="col-6 form-group">
                                 <label class="form-label required" for="store_name">New store name</label>
@@ -319,19 +427,24 @@ $resultVal = $_POST['result'] ?? 'PASS';
                         <p style="font-size:0.8rem; color:#64748b; margin:0.25rem 0 0.75rem;">Required for <strong>PASS</strong>. Use phone camera on site.</p>
                     </div>
                     <div class="form-grid">
-                        <div class="col-6 form-group">
+                        <div class="col-6 form-group" id="kyc-same-store-photo-wrap">
                             <label class="form-label required" for="image_store_front">Store front photo</label>
-                            <div class="upload-box" id="dropzone-store-front">
+                            <div class="upload-box upload-box-featured" id="dropzone-store-front">
                                 <input type="file" name="image_store_front" id="image_store_front" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-kyc-store-front">
-                                <div class="upload-icon">📷</div>
+                                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M3 21h18"/>
+                                    <path d="M5 21V7l7-4 7 4v14"/>
+                                    <path d="M9 21v-6h6v6"/>
+                                </svg>
                                 <div class="upload-title">Store Front</div>
                                 <div class="upload-hint">Camera · GPS stamp</div>
                                 <div class="upload-preview-container" id="preview-kyc-store-front">
                                     <img src="" alt="Store Front Preview">
+                                    <span class="preview-badge">Store Front</span>
                                 </div>
                             </div>
                         </div>
-                        <div class="col-6 form-group">
+                        <div class="col-6 form-group" id="kyc-freezer-photo-wrap">
                             <label class="form-label required" for="image_freezer">Freezer photo (with QR / Tag)</label>
                             <div class="upload-box" id="dropzone-kyc-freezer">
                                 <input type="file" name="image_freezer" id="image_freezer" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-kyc-freezer">
@@ -345,25 +458,9 @@ $resultVal = $_POST['result'] ?? 'PASS';
                         </div>
                     </div>
 
-                    <!-- 4. Result -->
-                    <div class="form-grid" style="margin-top:0.5rem;">
-                        <div class="col-6 form-group">
-                            <label class="form-label required" for="verified_at">4. Verification date</label>
-                            <input type="date" name="verified_at" id="verified_at" class="form-control"
-                                   value="<?= htmlspecialchars($_POST['verified_at'] ?? date('Y-m-d')) ?>" required>
-                        </div>
-                        <div class="col-6 form-group">
-                            <label class="form-label required" for="result">Result</label>
-                            <select name="result" id="result" class="form-control" required onchange="togglePhotoReq()">
-                                <option value="PASS" <?= $resultVal === 'PASS' ? 'selected' : '' ?>>PASS — unit found &amp; verified</option>
-                                <option value="FAIL" <?= $resultVal === 'FAIL' ? 'selected' : '' ?>>FAIL — not found / mismatch</option>
-                                <option value="PENDING" <?= $resultVal === 'PENDING' ? 'selected' : '' ?>>PENDING — follow-up needed</option>
-                            </select>
-                        </div>
-                        <div class="col-12 form-group">
-                            <label class="form-label" for="notes">Notes / remarks</label>
-                            <textarea name="notes" id="notes" class="form-control" rows="2" placeholder="Condition, access issues, operator remarks…"><?= htmlspecialchars($_POST['notes'] ?? '') ?></textarea>
-                        </div>
+                    <div class="form-group" style="margin-top:1rem;">
+                        <label class="form-label" for="notes">Notes / remarks</label>
+                        <textarea name="notes" id="notes" class="form-control" rows="2" placeholder="Condition, access issues, operator remarks…"><?= htmlspecialchars($_POST['notes'] ?? '') ?></textarea>
                     </div>
 
                     <p id="kyc-gps-status" style="font-size:0.8rem; color:#64748b; margin-bottom:0.85rem;">Capturing GPS…</p>
@@ -375,19 +472,47 @@ $resultVal = $_POST['result'] ?? 'PASS';
                 <script>
                 function toggleLoc() {
                     const m = document.querySelector('input[name="location_mode"]:checked').value;
-                    document.getElementById('loc-new').style.display = m === 'new' ? '' : 'none';
+                    const isNew = m === 'new';
+                    document.getElementById('loc-new').style.display = isNew ? '' : 'none';
+                    const sameWrap = document.getElementById('kyc-same-store-photo-wrap');
+                    const frzWrap = document.getElementById('kyc-freezer-photo-wrap');
+                    if (sameWrap) sameWrap.style.display = isNew ? 'none' : '';
+                    if (frzWrap) {
+                        frzWrap.classList.toggle('col-6', !isNew);
+                        frzWrap.classList.toggle('col-12', isNew);
+                    }
+                    const sameInput = document.getElementById('image_store_front');
+                    const newInput = document.getElementById('image_new_store_front');
+                    if (sameInput) {
+                        sameInput.disabled = isNew;
+                        if (isNew) sameInput.required = false;
+                    }
+                    if (newInput) {
+                        newInput.disabled = !isNew;
+                        if (!isNew) newInput.required = false;
+                    }
+                    togglePhotoReq();
                 }
                 function togglePhotoReq() {
                     const pass = document.getElementById('result').value === 'PASS';
-                    document.getElementById('image_store_front').required = pass;
-                    document.getElementById('image_freezer').required = pass;
+                    const isNew = document.querySelector('input[name="location_mode"]:checked').value === 'new';
+                    const sameInput = document.getElementById('image_store_front');
+                    const newInput = document.getElementById('image_new_store_front');
+                    const frz = document.getElementById('image_freezer');
+                    if (sameInput) sameInput.required = pass && !isNew;
+                    if (newInput) newInput.required = pass && isNew;
+                    if (frz) frz.required = pass;
                 }
                 toggleLoc();
                 togglePhotoReq();
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(function (pos) {
-                        document.getElementById('kyc_latitude').value = pos.coords.latitude.toFixed(6);
-                        document.getElementById('kyc_longitude').value = pos.coords.longitude.toFixed(6);
+                        const latEl = document.getElementById('latitude');
+                        const lngEl = document.getElementById('longitude');
+                        if (latEl) latEl.value = pos.coords.latitude.toFixed(6);
+                        if (lngEl) lngEl.value = pos.coords.longitude.toFixed(6);
+                        const accEl = document.getElementById('gps_accuracy');
+                        if (accEl && pos.coords.accuracy != null) accEl.value = Math.round(pos.coords.accuracy);
                         document.getElementById('kyc-gps-status').textContent = 'GPS captured for this verification.';
                         document.getElementById('kyc-gps-status').style.color = '#059669';
                     }, function () {

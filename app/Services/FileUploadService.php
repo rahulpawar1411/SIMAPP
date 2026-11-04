@@ -25,6 +25,8 @@ class FileUploadService {
             'image_aadhar_back' => 'Aadhaar-Back',
             'image_iot_device' => 'IoT-Device',
             'iot_dev' => 'IoT-Device',
+            'image_sim' => 'SIM-Number',
+            'sim_img' => 'SIM-Number',
             'kyc_store' => 'KYC-Store-Front',
             'kyc_frz' => 'KYC-Freezer',
             'image_freezer' => 'KYC-Freezer',

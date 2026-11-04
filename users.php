@@ -7,6 +7,7 @@ use App\Config\AppConfig;
 
 // User create / edit / status — Super Admin only
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
+User::ensureRoleColumn();
 $currentUser = AuthService::currentUser();
 $csrfToken = AuthService::generateCsrfToken();
 
@@ -25,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'name' => $_POST['name'] ?? '',
                 'email' => $_POST['email'] ?? '',
                 'password' => $_POST['password'] ?? '',
-                'role' => AppConfig::ROLE_SUPER_ADMIN,
+                'role' => $_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN,
                 'phone' => $_POST['phone'] ?? '',
                 'status' => 'active',
             ]);
@@ -46,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'name' => $_POST['name'] ?? '',
                     'email' => $_POST['email'] ?? '',
                     'password' => $_POST['password'] ?? '',
-                    'role' => AppConfig::ROLE_SUPER_ADMIN,
+                    'role' => $_POST['role'] ?? $editUser['role'],
                     'phone' => $_POST['phone'] ?? '',
                     'status' => $_POST['status'] ?? $editUser['status'],
                 ]);
@@ -102,7 +103,12 @@ $formEmail = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['email'] ?? $editUser['email']) : $editUser['email'])
     : ($keepCreate ? ($_POST['email'] ?? '') : '');
 $formPassword = $isEdit ? '' : ($keepCreate ? ($_POST['password'] ?? 'Admin@123') : 'Admin@123');
-$formRole = AppConfig::ROLE_SUPER_ADMIN;
+$formRole = $isEdit
+    ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['role'] ?? $editUser['role']) : $editUser['role'])
+    : ($keepCreate ? ($_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN) : AppConfig::ROLE_SUPER_ADMIN);
+if (!in_array($formRole, AppConfig::allowedRoles(), true)) {
+    $formRole = AppConfig::ROLE_SUPER_ADMIN;
+}
 $formStatus = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['status'] ?? $editUser['status']) : $editUser['status'])
     : 'active';
@@ -119,16 +125,11 @@ require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div class="users-page">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-        <div>
-            <h2 style="font-size: 1.5rem; font-weight: 800; color: #0f172a; letter-spacing: -0.02em;">
-                Manage Users
-            </h2>
-            <p style="color: #64748b; font-size: 0.9rem; margin-top: 0.2rem;">
-                Create &amp; edit users — Super Admin only. Access is enforced by role on every page.
-            </p>
+    <div class="cfg-toolbar">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title">Manage Users</h1>
         </div>
-        <div style="display: flex; gap: 0.75rem;">
+        <div style="display: flex; gap: 0.5rem;">
             <a href="#users-directory" class="btn btn-secondary">View Users</a>
             <a href="index.php" class="btn btn-outline">Dashboard</a>
         </div>
@@ -146,7 +147,7 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
-<form method="POST" action="" id="user-create-form" novalidate>
+<form method="POST" action="" id="user-create-form" class="cfg-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" name="action" value="<?= $isEdit ? 'update' : 'create' ?>">
     <?php if ($isEdit): ?>
@@ -178,12 +179,14 @@ require_once __DIR__ . '/includes/header.php';
                     : 'Super Admin only · bcrypt password · role-based access' ?>
             </p>
 
-            <!-- Account details -->
+            <!-- Account + Access & Contact (one section) -->
             <div class="form-subsection">
                 <div class="form-subsection-head">
                     <h3 class="form-subsection-title">
-                        Account Details
-                        <span><?= $isEdit ? 'Name, email &amp; optional password reset' : 'Name, email &amp; first-login password' ?></span>
+                        Account Details &amp; Access
+                        <span><?= $isEdit
+                            ? 'Name, email, password, role, status &amp; phone'
+                            : 'Name, email, password, role &amp; phone' ?></span>
                     </h3>
                 </div>
 
@@ -204,7 +207,7 @@ require_once __DIR__ . '/includes/header.php';
                             title="Letters only (spaces, ., ', - allowed)"
                             value="<?= htmlspecialchars($formName) ?>"
                         >
-<div class="form-error">Enter a valid full name.</div>
+                        <div class="form-error">Enter a valid full name.</div>
                     </div>
 
                     <div class="col-4 form-group">
@@ -223,45 +226,50 @@ require_once __DIR__ . '/includes/header.php';
                             title="Valid email format: name@domain.com"
                             value="<?= htmlspecialchars($formEmail) ?>"
                         >
-<div class="form-error">Enter a valid email address.</div>
+                        <div class="form-error">Enter a valid email address.</div>
                     </div>
 
                     <div class="col-4 form-group">
                         <label class="form-label<?= $isEdit ? '' : ' required' ?>" for="password">Password</label>
-                        <input
-                            type="text"
-                            id="password"
-                            name="password"
-                            class="form-control"
-                            <?= $isEdit ? '' : 'required' ?>
-                            minlength="6"
-                            maxlength="64"
-                            autocomplete="new-password"
-                            placeholder="<?= $isEdit ? 'Leave blank to keep current' : 'Min 6 characters' ?>"
-                            value="<?= htmlspecialchars($formPassword) ?>"
-                        >
-<div class="form-error">Password must be at least 6 characters.</div>
+                        <div class="password-field">
+                            <input
+                                type="password"
+                                id="password"
+                                name="password"
+                                class="form-control"
+                                <?= $isEdit ? '' : 'required' ?>
+                                minlength="6"
+                                maxlength="64"
+                                autocomplete="new-password"
+                                placeholder="<?= $isEdit ? 'Leave blank to keep current' : 'Min 6 characters' ?>"
+                                value="<?= htmlspecialchars($formPassword) ?>"
+                            >
+                            <button type="button" class="password-toggle" aria-label="Show password" aria-pressed="false" title="Show password">
+                                <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                    <circle cx="12" cy="12" r="3"/>
+                                </svg>
+                                <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                                    <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                                    <line x1="1" y1="1" x2="23" y2="23"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="form-error">Password must be at least 6 characters.</div>
                     </div>
-                </div>
-            </div>
 
-            <!-- Role & phone -->
-            <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Access &amp; Contact
-                        <span>Role permissions + optional mobile</span>
-                    </h3>
-                </div>
-
-                <div class="form-grid">
                     <div class="col-4 form-group">
                         <label class="form-label required" for="role">User role</label>
-                        <input type="hidden" name="role" value="super_admin">
-                        <select id="role" class="form-select" disabled>
-                            <option value="super_admin" selected>Super Admin — Full access</option>
+                        <select id="role" name="role" class="form-select" required>
+                            <?php foreach (AppConfig::getUserRoles() as $roleOpt): ?>
+                                <option value="<?= htmlspecialchars($roleOpt['value']) ?>" <?= $formRole === $roleOpt['value'] ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($roleOpt['label']) ?>
+                                </option>
+                            <?php endforeach; ?>
                         </select>
-</div>
+                    </div>
 
                     <?php if ($isEdit): ?>
                     <div class="col-4 form-group">
@@ -277,7 +285,7 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                     <?php endif; ?>
 
-                    <div class="col-<?= $isEdit ? '4' : '6' ?> form-group">
+                    <div class="col-4 form-group">
                         <label class="form-label" for="phone">Phone / mobile</label>
                         <div class="phone-input-group">
                             <span class="phone-prefix" aria-hidden="true">+91</span>
@@ -308,8 +316,8 @@ require_once __DIR__ . '/includes/header.php';
                 <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
                     <?php if ($isEdit): ?>
                         <a href="users.php" class="btn btn-outline">Cancel Edit</a>
-                        <button type="submit" class="btn btn-primary" id="user-submit-btn">
-                            Save User Changes
+                        <button type="submit" class="btn btn-warning" id="user-submit-btn">
+                            Update User Account
                         </button>
                     <?php else: ?>
                         <a href="index.php" class="btn btn-outline">Cancel</a>
@@ -421,19 +429,34 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
                 <ul class="role-access-list">
                     <li>Full system access</li>
-                    <li>Dashboard, all freezer profiles</li>
                     <li>Add / edit / delete profiles</li>
-                    <li>QR scan &amp; print</li>
-                    <li>Manage Users (this page only)</li>
-                    <li>Create / edit users</li>
-                    <li>Activate / deactivate accounts</li>
+                    <li>QR scan, KYC, blank tags</li>
+                    <li>Manage Users + Import / Export</li>
                 </ul>
             </div>
-
+            <div class="role-access-card">
+                <div class="role-access-title">
+                    <span class="badge badge-success">Technician</span>
+                </div>
+                <ul class="role-access-list">
+                    <li>Field: Scan QR → fill store / freezer / photos / GPS → Save</li>
+                    <li>Edit existing profiles (update data &amp; photos)</li>
+                    <li>KYC verify on site</li>
+                    <li>View / print QR · no Users, Import, Delete, Blank tags</li>
+                </ul>
+            </div>
+            <div class="role-access-card">
+                <div class="role-access-title">
+                    <span class="badge badge-neutral">Viewer</span>
+                </div>
+                <ul class="role-access-list">
+                    <li>Dashboard &amp; profiles view</li>
+                    <li>QR print / view only</li>
+                    <li>No add / edit / KYC</li>
+                    <li>No user management</li>
+                </ul>
+            </div>
         </div>
-        <p style="margin-top:1rem; font-size:0.8rem; color:#94a3b8;">
-            Only <strong>Super Admin</strong> accounts can sign in. Create additional Super Admins from this page.
-        </p>
     </div>
 </div>
 

@@ -25,8 +25,9 @@ class AuthService {
             return ['success' => false, 'error' => 'Invalid email address or password.'];
         }
 
-        if (($user['role'] ?? '') !== AppConfig::ROLE_SUPER_ADMIN) {
-            return ['success' => false, 'error' => 'Access denied. Only Super Admin accounts can sign in.'];
+        $role = (string)($user['role'] ?? '');
+        if (!in_array($role, AppConfig::allowedRoles(), true)) {
+            return ['success' => false, 'error' => 'Access denied. This account role is not allowed to sign in.'];
         }
 
         // Update last login
@@ -94,6 +95,22 @@ class AuthService {
             header('Location: login.php?redirect=' . urlencode($currentUrl));
             exit;
         }
+    }
+
+    /** Verify password for the currently logged-in user (required for sensitive actions). */
+    public static function verifyCurrentUserPassword(string $password): bool {
+        $user = self::currentUser();
+        if (!$user || $password === '') {
+            return false;
+        }
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT `password` FROM `users` WHERE `id` = :id AND `status` = 'active' LIMIT 1");
+        $stmt->execute(['id' => (int)$user['id']]);
+        $row = $stmt->fetch();
+        if (!$row || empty($row['password'])) {
+            return false;
+        }
+        return password_verify($password, $row['password']);
     }
 
     public static function requireRole(array|string $roles): void {

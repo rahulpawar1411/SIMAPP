@@ -14,7 +14,175 @@ document.addEventListener('DOMContentLoaded', function () {
     initIndianPhoneInputs();
     initLightbox();
     initLocationShare();
+    initFlashToastsFromQuery();
+    initPasswordToggles();
 });
+
+function initPasswordToggles() {
+    document.querySelectorAll('.password-field').forEach(function (wrap) {
+        const input = wrap.querySelector('input');
+        const btn = wrap.querySelector('.password-toggle');
+        if (!input || !btn || btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', function () {
+            const show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.classList.toggle('is-visible', show);
+            btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+            btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            btn.title = show ? 'Hide password' : 'Show password';
+        });
+    });
+}
+
+// -------------------------------------------------------------
+// Toast notifications + Undo (edit / delete)
+// -------------------------------------------------------------
+function getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
+function ensureToastStack() {
+    let stack = document.getElementById('app-toast-stack');
+    if (stack) return stack;
+    stack = document.createElement('div');
+    stack.id = 'app-toast-stack';
+    stack.className = 'app-toast-stack';
+    stack.setAttribute('aria-live', 'polite');
+    document.body.appendChild(stack);
+    return stack;
+}
+
+/**
+ * @param {string} message
+ * @param {{ undoToken?: string, variant?: 'success'|'danger', duration?: number, onUndo?: Function }} [opts]
+ */
+function showAppToast(message, opts) {
+    opts = opts || {};
+    const duration = typeof opts.duration === 'number' ? opts.duration : 10000;
+    const stack = ensureToastStack();
+    const toast = document.createElement('div');
+    toast.className = 'app-toast' + (opts.variant === 'danger' ? ' is-danger' : '');
+    toast.setAttribute('role', 'status');
+
+    const msg = document.createElement('div');
+    msg.className = 'app-toast-msg';
+    msg.textContent = message;
+    toast.appendChild(msg);
+
+    let dismissed = false;
+    let timer = null;
+
+    const dismiss = function () {
+        if (dismissed) return;
+        dismissed = true;
+        if (timer) clearTimeout(timer);
+        toast.classList.remove('is-visible');
+        toast.classList.add('is-leaving');
+        setTimeout(function () {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 240);
+    };
+
+    if (opts.undoToken) {
+        const undoBtn = document.createElement('button');
+        undoBtn.type = 'button';
+        undoBtn.className = 'app-toast-undo';
+        undoBtn.textContent = 'Undo';
+        undoBtn.addEventListener('click', function () {
+            if (dismissed) return;
+            undoBtn.disabled = true;
+            undoBtn.textContent = '…';
+            fetch('api/undo_action.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    token: opts.undoToken,
+                    csrf_token: getCsrfToken()
+                })
+            })
+                .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+                .then(function (res) {
+                    if (!res.j || !res.j.success) {
+                        undoBtn.disabled = false;
+                        undoBtn.textContent = 'Undo';
+                        showAppToast((res.j && res.j.error) || 'Undo failed', { variant: 'danger', duration: 4000 });
+                        return;
+                    }
+                    dismiss();
+                    showAppToast(res.j.message || 'Undone', { duration: 2500 });
+                    const redirect = res.j.redirect;
+                    setTimeout(function () {
+                        if (redirect) {
+                            window.location.href = redirect;
+                        } else {
+                            window.location.reload();
+                        }
+                    }, 450);
+                })
+                .catch(function () {
+                    undoBtn.disabled = false;
+                    undoBtn.textContent = 'Undo';
+                    showAppToast('Undo failed. Try again.', { variant: 'danger', duration: 4000 });
+                });
+        });
+        toast.appendChild(undoBtn);
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'app-toast-close';
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', dismiss);
+    toast.appendChild(closeBtn);
+
+    if (duration > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'app-toast-bar';
+        bar.style.animationDuration = duration + 'ms';
+        toast.appendChild(bar);
+        timer = setTimeout(dismiss, duration);
+    }
+
+    stack.appendChild(toast);
+    requestAnimationFrame(function () {
+        toast.classList.add('is-visible');
+    });
+
+    return { dismiss: dismiss };
+}
+
+function initFlashToastsFromQuery() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const undo = params.get('undo') || '';
+        let shown = false;
+
+        if (params.get('updated') === '1') {
+            showAppToast('Profile updated', { undoToken: undo || undefined, variant: 'success' });
+            shown = true;
+        } else if (params.get('deleted') === '1') {
+            showAppToast('Profile deleted', { undoToken: undo || undefined, variant: 'danger' });
+            shown = true;
+        }
+
+        if (!shown) return;
+
+        params.delete('updated');
+        params.delete('deleted');
+        params.delete('undo');
+        const qs = params.toString();
+        const clean = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+        window.history.replaceState({}, '', clean);
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+window.showAppToast = showAppToast;
 
 /** Active image stamp/analysis jobs — blocks form save while > 0 */
 window.__imageProcessingCount = 0;
@@ -36,11 +204,13 @@ function imageFieldLabel(input) {
     const name = (input && input.name) || '';
     const map = {
         image_store_front: 'Store Front',
+        image_new_store_front: 'Store Front (new outlet)',
         image_left_side: 'Freezer Left Side',
         image_right_side: 'Freezer Right Side',
         image_aadhar_card: 'Aadhaar Front',
         image_aadhar_back: 'Aadhaar Back',
         image_iot_device: 'IoT Device',
+        image_sim: 'SIM Number',
         image_freezer: 'Freezer (KYC)',
     };
     return map[name] || 'Photo';
@@ -809,14 +979,18 @@ function initCascadingLocationSelector() {
         panel.hidden = false;
 
         panel.querySelectorAll('.city-autocomplete-item').forEach(btn => {
-            btn.addEventListener('mousedown', function (e) {
-                e.preventDefault(); // keep focus, avoid blur-before-click
+            const pick = function (e) {
+                e.preventDefault();
+                e.stopPropagation();
                 cityInput.value = this.getAttribute('data-city') || '';
                 if (stateInput) stateInput.value = this.getAttribute('data-state') || '';
                 hideCityAutocomplete();
                 onCityChanged();
                 cityInput.dispatchEvent(new Event('change', { bubbles: true }));
-            });
+            };
+            // pointerdown works on mobile + desktop (mousedown alone can lose to blur)
+            btn.addEventListener('pointerdown', pick);
+            btn.addEventListener('mousedown', pick);
         });
     }
 
@@ -846,7 +1020,8 @@ function initCascadingLocationSelector() {
         if (e.key === 'Escape') hideCityAutocomplete();
     });
     cityInput.addEventListener('blur', function () {
-        setTimeout(hideCityAutocomplete, 150);
+        // Longer delay so mobile tap on option registers before hide
+        setTimeout(hideCityAutocomplete, 280);
     });
 
     window.refreshZoneCitySuggestions = function (zone) {
@@ -1374,7 +1549,75 @@ function roundRectPath(ctx, x, y, w, h, r) {
 }
 
 function isStoreFrontPhotoInput(input) {
-    return !!(input && input.name === 'image_store_front');
+    return !!(input && (input.name === 'image_store_front' || input.name === 'image_new_store_front'));
+}
+
+/**
+ * Compress non–Store Front photos (resize + JPEG) to cut upload size.
+ * Store Front is excluded — kept higher quality for GPS stamp / EXIF.
+ *
+ * @param {Blob} blob
+ * @param {{ maxEdge?: number, quality?: number, minBytes?: number }} [opts]
+ * @returns {Promise<Blob>}
+ */
+async function compressImageBlob(blob, opts) {
+    if (!blob) return blob;
+    opts = opts || {};
+    const maxEdge = opts.maxEdge || 1600;
+    const quality = typeof opts.quality === 'number' ? opts.quality : 0.72;
+    const minBytes = opts.minBytes || 380 * 1024; // skip if already small enough
+
+    if (blob.size > 0 && blob.size <= minBytes) {
+        // Still normalize to JPEG if PNG/WebP is huge in pixels
+        try {
+            const probe = await loadImageFromBlob(blob);
+            const pw = probe.width || probe.naturalWidth || 0;
+            const ph = probe.height || probe.naturalHeight || 0;
+            if (typeof probe.close === 'function') {
+                try { probe.close(); } catch (e) { /* ImageBitmap */ }
+            }
+            if (Math.max(pw, ph) <= maxEdge && blob.type === 'image/jpeg') {
+                return blob;
+            }
+        } catch (e) {
+            return blob;
+        }
+    }
+
+    const photo = await loadImageFromBlob(blob);
+    let w = photo.width || photo.naturalWidth || 0;
+    let h = photo.height || photo.naturalHeight || 0;
+    if (!w || !h) {
+        if (typeof photo.close === 'function') {
+            try { photo.close(); } catch (e) { /* ImageBitmap */ }
+        }
+        return blob;
+    }
+
+    const scale = Math.min(1, maxEdge / Math.max(w, h));
+    const tw = Math.max(1, Math.round(w * scale));
+    const th = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = tw;
+    canvas.height = th;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(photo, 0, 0, tw, th);
+
+    if (typeof photo.close === 'function') {
+        try { photo.close(); } catch (e) { /* ImageBitmap */ }
+    }
+
+    const out = await new Promise(function (resolve) {
+        canvas.toBlob(function (b) { resolve(b || null); }, 'image/jpeg', quality);
+    });
+
+    // Prefer compressed if smaller; otherwise keep original
+    if (!out) return blob;
+    if (out.size < blob.size || blob.type !== 'image/jpeg') return out;
+    return blob;
 }
 
 /**
@@ -1473,16 +1716,37 @@ async function finalizeCapturedPhoto(input, rawBlob, gps) {
                 }
             }
         } else {
-            setImageFieldLoading(input, true, 'Stamping date…', label + ' · Saving');
+            setImageFieldLoading(input, true, 'Stamping date…', label + ' · Please wait');
             try {
                 blob = await stampDateTimeOnlyOnBlob(rawBlob);
             } catch (e) {
                 console.warn('Date-time stamp failed, using raw photo', e);
                 blob = rawBlob;
             }
+
+            // Compress all non–Store Front images (size down) while spinner shows
+            setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
+            try {
+                const before = blob.size || 0;
+                blob = await compressImageBlob(blob, { maxEdge: 1600, quality: 0.72 });
+                const after = blob.size || 0;
+                const kb = Math.max(1, Math.round(after / 1024));
+                const saved = before > after ? Math.round((1 - after / before) * 100) : 0;
+                setImageFieldLoading(
+                    input,
+                    true,
+                    'Saving photo…',
+                    saved > 0 ? (label + ' · ' + kb + ' KB (−' + saved + '%)') : (label + ' · ' + kb + ' KB')
+                );
+            } catch (e) {
+                console.warn('Compress failed, using stamped photo', e);
+                setImageFieldLoading(input, true, 'Saving photo…', label);
+            }
         }
 
-        setImageFieldLoading(input, true, 'Saving photo…', label);
+        if (storeFront) {
+            setImageFieldLoading(input, true, 'Saving photo…', label);
+        }
         const prefix = storeFront ? 'gps_cam_' : 'photo_';
         const file = new File([blob], prefix + Date.now() + '.jpg', { type: 'image/jpeg' });
         assignFileToInput(input, file);
@@ -1527,10 +1791,9 @@ function forceNativeCameraInput(input) {
             await finalizeCapturedPhoto(input, file, gps);
         } catch (e) {
             console.warn('Native capture stamp failed', e);
-            setImageFieldLoading(input, true, 'Saving photo…', imageFieldLabel(input));
             beginImageProcessing();
             try {
-                assignFileToInput(input, file);
+                await assignProcessedPhotoFallback(input, file);
             } finally {
                 if (!isStoreFrontPhotoInput(input)) {
                     setImageFieldLoading(input, false);
@@ -1541,6 +1804,23 @@ function forceNativeCameraInput(input) {
     });
     tmp.addEventListener('cancel', function () { tmp.remove(); });
     tmp.click();
+}
+
+/** Fallback when stamp pipeline fails — still compress non–Store Front images. */
+async function assignProcessedPhotoFallback(input, file) {
+    const label = imageFieldLabel(input);
+    let outFile = file;
+    if (!isStoreFrontPhotoInput(input)) {
+        setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
+        try {
+            const compressed = await compressImageBlob(file, { maxEdge: 1600, quality: 0.72 });
+            outFile = new File([compressed], 'photo_' + Date.now() + '.jpg', { type: 'image/jpeg' });
+        } catch (err) {
+            console.warn('Fallback compress failed', err);
+        }
+    }
+    setImageFieldLoading(input, true, 'Saving photo…', label);
+    assignFileToInput(input, outFile);
 }
 
 function ensureCameraModal() {
@@ -1721,10 +2001,9 @@ function openGalleryForInput(input) {
             await finalizeCapturedPhoto(input, file, gps);
         } catch (e) {
             console.warn('Gallery photo process failed', e);
-            setImageFieldLoading(input, true, 'Saving photo…', imageFieldLabel(input));
             beginImageProcessing();
             try {
-                assignFileToInput(input, file);
+                await assignProcessedPhotoFallback(input, file);
             } finally {
                 if (!isStoreFrontPhotoInput(input)) {
                     setImageFieldLoading(input, false);
@@ -1890,7 +2169,7 @@ function clearImagePreview(previewContainer, input) {
     if (typeof setImageFieldLoading === 'function') {
         setImageFieldLoading(input, false);
     }
-    if (input.name === 'image_store_front') {
+    if (isStoreFrontPhotoInput(input)) {
         const status = document.getElementById('store-front-exif-status');
         if (status) {
             status.style.display = 'none';
@@ -2034,7 +2313,9 @@ function setExifStatus(message, type) {
  */
 function resolveUploadBox(inputOrBox) {
     if (!inputOrBox) {
-        return document.getElementById('dropzone-store-front')
+        return document.getElementById('dropzone-new-store-front')
+            || document.getElementById('dropzone-store-front')
+            || document.querySelector('input[name="image_new_store_front"]')?.closest('.upload-box')
             || document.querySelector('input[name="image_store_front"]')?.closest('.upload-box');
     }
     if (typeof inputOrBox === 'string') {
@@ -2090,7 +2371,10 @@ function setImageFieldLoading(inputOrBox, on, message, sub) {
 
 /** @deprecated use setImageFieldLoading — kept for Store Front analysis callers */
 function setStoreFrontLoading(on, message, sub) {
-    const input = document.querySelector('input[name="image_store_front"]');
+    const input = document.querySelector('input[name="image_store_front"][data-analyzing="1"], input[name="image_new_store_front"][data-analyzing="1"]')
+        || document.querySelector('#loc-new:not([style*="display: none"]) input[name="image_new_store_front"]')
+        || document.querySelector('input[name="image_new_store_front"]')
+        || document.querySelector('input[name="image_store_front"]');
     setImageFieldLoading(input || 'dropzone-store-front', on, message, sub || 'Location, address, city, PIN, zone & date');
 }
 
@@ -2140,6 +2424,9 @@ function applyGpsToForm(lat, lng, accuracyLabel, placeText) {
             : (accuracyLabel || '—');
     }
     if (placeText) setGpsPlaceText(placeText);
+    if (typeof updateCurrentLocationLinkDisplay === 'function') {
+        updateCurrentLocationLinkDisplay(lat, lng, mapsLink);
+    }
 
     if (pill) {
         pill.innerHTML = placeText ? '✓ Location found' : '✓ GPS Captured';
@@ -2482,8 +2769,8 @@ async function fillLocationFromDeviceGps() {
 }
 
 function initStoreFrontExifAutofill() {
-    const input = document.querySelector('input[name="image_store_front"]');
-    if (!input) return;
+    const inputs = document.querySelectorAll('input[name="image_store_front"], input[name="image_new_store_front"]');
+    if (!inputs.length) return;
 
     const pinEl = document.getElementById('pincode');
     if (pinEl && !pinEl.dataset.pinSourceBound) {
@@ -2496,6 +2783,10 @@ function initStoreFrontExifAutofill() {
         });
     }
 
+    inputs.forEach(function (input) {
+    if (input.dataset.storeFrontExifBound === '1') return;
+    input.dataset.storeFrontExifBound = '1';
+
     input.addEventListener('change', async function () {
         const file = this.files && this.files[0];
         if (!file) return;
@@ -2504,7 +2795,8 @@ function initStoreFrontExifAutofill() {
         if (input.dataset.analyzing === '1') return;
         input.dataset.analyzing = '1';
 
-        const box = document.getElementById('dropzone-store-front') || input.closest('.upload-box');
+        const box = input.closest('.upload-box')
+            || document.getElementById(input.name === 'image_new_store_front' ? 'dropzone-new-store-front' : 'dropzone-store-front');
         if (box) box.classList.remove('is-invalid');
 
         // Count may already be open from finalizeCapturedPhoto (camera/gallery stamp)
@@ -2600,6 +2892,7 @@ function initStoreFrontExifAutofill() {
             endImageProcessing();
             input.dataset.analyzing = '0';
         }
+    });
     });
 }
 
@@ -2784,6 +3077,41 @@ function mapsLinkForCoords(lat, lng) {
     return 'https://maps.google.com/?q=' + encodeURIComponent(Number(lat) + ',' + Number(lng));
 }
 
+/** Show / update Current location link strip (Maps URL + copy). */
+function updateCurrentLocationLinkDisplay(lat, lng, url) {
+    const mapsUrl = url || (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))
+        ? mapsLinkForCoords(lat, lng)
+        : '');
+    const box = document.getElementById('current-location-link-box');
+    const linkEl = document.getElementById('current-location-link');
+    const copyBtn = document.getElementById('btn-copy-location-link');
+    const latlngEl = document.getElementById('current-location-latlng');
+    const linkInput = document.getElementById('location_link');
+    const capturedAt = document.getElementById('gps_captured_at');
+
+    if (mapsUrl && linkInput) linkInput.value = mapsUrl;
+    if (capturedAt && !capturedAt.value) {
+        const d = new Date();
+        const pad = function (n) { return String(n).padStart(2, '0'); };
+        capturedAt.value = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+            + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    if (box && linkEl && mapsUrl) {
+        linkEl.href = mapsUrl;
+        linkEl.textContent = mapsUrl;
+        box.hidden = false;
+        if (copyBtn) {
+            copyBtn.setAttribute('data-copy', mapsUrl);
+            copyBtn.dataset.copy = mapsUrl;
+        }
+    }
+    if (latlngEl && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
+        latlngEl.hidden = false;
+        latlngEl.textContent = 'Lat ' + Number(lat).toFixed(6) + ' · Lng ' + Number(lng).toFixed(6);
+    }
+}
+
 /** Show Share only after location is saved — same coords/link, no new GPS fetch. */
 function revealShareLocationButton(lat, lng, url) {
     const mapsUrl = url || (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))
@@ -2804,6 +3132,7 @@ function revealShareLocationButton(lat, lng, url) {
         pill.style.color = '#15803d';
         delete pill.dataset.prevText;
     }
+    updateCurrentLocationLinkDisplay(lat, lng, mapsUrl);
 }
 
 function hasSavedLocationOnForm() {

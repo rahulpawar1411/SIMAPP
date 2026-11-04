@@ -7,9 +7,12 @@ use PDO;
 
 /**
  * Freezer can move between stores (same owner / other outlet).
- * Unique Freezer ID stays fixed. KYC runs twice per year (H1 / H2).
+ * Unique Freezer ID stays fixed. KYC required every 6 months per store.
  */
 class FreezerLifecycle {
+
+    /** Months between KYC visits for the same store. */
+    public const KYC_GAP_MONTHS = 6;
 
     public static function currentCycle(?string $date = null): array {
         $ts = $date ? strtotime($date) : time();
@@ -20,8 +23,49 @@ class FreezerLifecycle {
             'year' => $year,
             'half' => $half,
             'label' => $year . '-H' . $half,
-            'window' => $half === 1 ? 'Jan–Jun' : 'Jul–Dec',
+            'window' => 'Every ' . self::KYC_GAP_MONTHS . ' months',
+            'gap_months' => self::KYC_GAP_MONTHS,
         ];
+    }
+
+    /**
+     * Anchor for the 6-month clock:
+     * last KYC at store if any, otherwise installation date.
+     */
+    public static function kycAnchorDate(?string $lastVerifiedAt, ?string $installationDate = null): ?string {
+        if ($lastVerifiedAt !== null && trim($lastVerifiedAt) !== '') {
+            return trim($lastVerifiedAt);
+        }
+        if ($installationDate !== null && trim($installationDate) !== '') {
+            return trim($installationDate);
+        }
+        return null;
+    }
+
+    /** Next due date = anchor + 6 months (Y-m-d). */
+    public static function nextKycDueDate(?string $anchorDate): ?string {
+        if ($anchorDate === null || trim($anchorDate) === '') {
+            return null;
+        }
+        $ts = strtotime(trim($anchorDate) . ' +' . self::KYC_GAP_MONTHS . ' months');
+        return $ts ? date('Y-m-d', $ts) : null;
+    }
+
+    /**
+     * Due when last KYC (or installation if never KYC'd) + 6 months has passed.
+     * First KYC window starts from installation date.
+     */
+    public static function isKycDue(?string $lastVerifiedAt, ?string $asOf = null, ?string $installationDate = null): bool {
+        $anchor = self::kycAnchorDate($lastVerifiedAt, $installationDate);
+        if ($anchor === null) {
+            return true;
+        }
+        $nextDue = self::nextKycDueDate($anchor);
+        if ($nextDue === null) {
+            return true;
+        }
+        $asOfDay = $asOf ? date('Y-m-d', strtotime($asOf)) : date('Y-m-d');
+        return $asOfDay >= $nextDue;
     }
 
     public static function openPlacement(int $freezerId, int $storeId, string $startedAt, ?int $createdBy, string $reason = 'Initial placement', ?string $notes = null): int {
@@ -100,6 +144,9 @@ class FreezerLifecycle {
             'location_type' => $data['location_type'] ?? 'Retail Store',
             'latitude' => ($data['latitude'] ?? '') !== '' ? (float)$data['latitude'] : null,
             'longitude' => ($data['longitude'] ?? '') !== '' ? (float)$data['longitude'] : null,
+            'gps_accuracy' => ($data['gps_accuracy'] ?? '') !== '' ? (float)$data['gps_accuracy'] : null,
+            'gps_captured_at' => $data['gps_captured_at'] ?? null,
+            'location_link' => $data['location_link'] ?? null,
             'image_store_front' => $data['image_store_front'] ?? null,
             'image_aadhar_card' => $data['image_aadhar_card'] ?? null,
             'status' => 'Active',
@@ -206,11 +253,29 @@ class FreezerLifecycle {
         }
 
         $pdo = Database::getConnection();
+        $storeId = (int)$freezer['store_id'];
+
+        // One KYC per store every 6 months (same freezer at this outlet)
+        $lastAtStore = $pdo->prepare("SELECT `id`, `verified_at` FROM `kyc_verifications`
+            WHERE `freezer_id` = :fid AND `store_id` = :sid
+            ORDER BY `verified_at` DESC, `id` DESC LIMIT 1");
+        $lastAtStore->execute(['fid' => $freezerId, 'sid' => $storeId]);
+        $prev = $lastAtStore->fetch() ?: null;
+        if ($prev && !self::isKycDue((string)$prev['verified_at'], $verifiedAt)) {
+            $nextDue = self::nextKycDueDate((string)$prev['verified_at']);
+            throw new Exception(
+                'KYC already done for this store on ' . $prev['verified_at']
+                . '. Next due after ' . self::KYC_GAP_MONTHS . ' months'
+                . ($nextDue ? " (from {$nextDue})" : '') . '.'
+            );
+        }
+
+        // Same calendar half still unique (keeps history tidy)
         $existing = $pdo->prepare("SELECT `id` FROM `kyc_verifications`
             WHERE `freezer_id` = :fid AND `cycle_year` = :y AND `cycle_half` = :h LIMIT 1");
         $existing->execute(['fid' => $freezerId, 'y' => $year, 'h' => $half]);
         if ($existing->fetch()) {
-            throw new Exception("KYC for {$year}-H{$half} already recorded. One verification per half-year.");
+            throw new Exception("KYC for {$year}-H{$half} already recorded. Next visit after " . self::KYC_GAP_MONTHS . " months.");
         }
 
         $stmt = $pdo->prepare("INSERT INTO `kyc_verifications`
@@ -221,7 +286,7 @@ class FreezerLifecycle {
              :img_s, :img_f, :lat, :lng, :by)");
         $stmt->execute([
             'fid' => $freezerId,
-            'sid' => (int)$freezer['store_id'],
+            'sid' => $storeId,
             'y' => $year,
             'h' => $half,
             'vdate' => $verifiedAt,
@@ -525,26 +590,114 @@ class FreezerLifecycle {
     public static function kycStatusForFreezer(int $freezerId): array {
         $cycle = self::currentCycle();
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("SELECT * FROM `kyc_verifications`
-            WHERE `freezer_id` = :fid AND `cycle_year` = :y AND `cycle_half` = :h
-            LIMIT 1");
-        $stmt->execute([
-            'fid' => $freezerId,
-            'y' => $cycle['year'],
-            'h' => $cycle['half'],
-        ]);
-        $row = $stmt->fetch() ?: null;
+        $freezer = Freezer::findById($freezerId);
+        $storeId = $freezer ? (int)$freezer['store_id'] : 0;
+
+        // Last KYC for this freezer at the current store (6-month gap is per store)
+        $atStore = null;
+        if ($storeId > 0) {
+            $stmt = $pdo->prepare("SELECT * FROM `kyc_verifications`
+                WHERE `freezer_id` = :fid AND `store_id` = :sid
+                ORDER BY `verified_at` DESC, `id` DESC LIMIT 1");
+            $stmt->execute(['fid' => $freezerId, 'sid' => $storeId]);
+            $atStore = $stmt->fetch() ?: null;
+        }
 
         $last = $pdo->prepare("SELECT * FROM `kyc_verifications`
             WHERE `freezer_id` = :fid ORDER BY `verified_at` DESC, `id` DESC LIMIT 1");
         $last->execute(['fid' => $freezerId]);
         $lastRow = $last->fetch() ?: null;
 
+        $lastAtStoreDate = $atStore['verified_at'] ?? null;
+        $installDate = $freezer['installation_date'] ?? null;
+        $anchor = self::kycAnchorDate(
+            $lastAtStoreDate !== null ? (string)$lastAtStoreDate : null,
+            $installDate !== null ? (string)$installDate : null
+        );
+        $due = self::isKycDue(
+            $lastAtStoreDate !== null ? (string)$lastAtStoreDate : null,
+            null,
+            $installDate !== null ? (string)$installDate : null
+        );
+        $nextDue = self::nextKycDueDate($anchor) ?? date('Y-m-d');
+        $withinGap = !$due;
+
         return [
             'cycle' => $cycle,
-            'current' => $row,
-            'due' => $row === null,
+            'current' => ($withinGap && $atStore) ? $atStore : null,
+            'due' => $due,
             'last' => $lastRow,
+            'last_at_store' => $atStore,
+            'anchor_date' => $anchor,
+            'anchor_source' => $lastAtStoreDate ? 'kyc' : ($installDate ? 'installation' : null),
+            'next_due_at' => $nextDue,
+            'gap_months' => self::KYC_GAP_MONTHS,
+        ];
+    }
+
+    /** SQL expression: DATE_ADD(COALESCE(last KYC at store, installation_date), INTERVAL N MONTH) */
+    public static function kycDueSqlExpr(string $freezerAlias = 'f', int $gapMonths = 0): string {
+        $gap = $gapMonths > 0 ? $gapMonths : self::KYC_GAP_MONTHS;
+        $anchor = "COALESCE(
+            (
+                SELECT MAX(k.verified_at) FROM `kyc_verifications` k
+                WHERE k.freezer_id = {$freezerAlias}.id
+                  AND k.store_id = {$freezerAlias}.store_id
+            ),
+            {$freezerAlias}.installation_date,
+            '1970-01-01'
+        )";
+        return "DATE_ADD({$anchor}, INTERVAL {$gap} MONTH)";
+    }
+
+    /**
+     * Dashboard KYC counts — pending when install/last KYC + 6 months has passed.
+     * @return array{done:int,pending:int,pending_list:array}
+     */
+    public static function dashboardKycStats(int $pendingLimit = 5): array {
+        $pdo = Database::getConnection();
+        $gap = self::KYC_GAP_MONTHS;
+        $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $today = $pdo->quote(date('Y-m-d'));
+
+        Freezer::ensureSimColumns();
+        $alive = '(f.deleted_at IS NULL)';
+
+        $doneStmt = $pdo->query(
+            "SELECT COUNT(*) FROM `freezers` f WHERE {$alive} AND {$dueExpr} > {$today}"
+        );
+        $done = (int)$doneStmt->fetchColumn();
+
+        $pendingStmt = $pdo->query(
+            "SELECT COUNT(*) FROM `freezers` f WHERE {$alive} AND {$dueExpr} <= {$today}"
+        );
+        $pending = (int)$pendingStmt->fetchColumn();
+
+        $list = [];
+        if ($pending > 0 && $pendingLimit > 0) {
+            $lim = (int)$pendingLimit;
+            $listStmt = $pdo->query(
+                "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city,
+                        (
+                            SELECT MAX(k.verified_at) FROM `kyc_verifications` k
+                            WHERE k.freezer_id = f.id AND k.store_id = f.store_id
+                        ) AS last_kyc_at,
+                        {$dueExpr} AS next_kyc_due
+                 FROM `freezers` f
+                 INNER JOIN `stores` s ON s.id = f.store_id
+                 WHERE {$alive} AND {$dueExpr} <= {$today}
+                 ORDER BY next_kyc_due ASC, f.id DESC
+                 LIMIT {$lim}"
+            );
+            $list = $listStmt->fetchAll() ?: [];
+        }
+
+        return [
+            'done' => $done,
+            'pending' => $pending,
+            'pending_list' => $list,
+            'cutoff' => date('Y-m-d', strtotime("-{$gap} months")),
+            'gap_months' => $gap,
         ];
     }
 }

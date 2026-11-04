@@ -234,6 +234,64 @@ class AssetTag {
     }
 
     /**
+     * Typeahead search for scan fallback — unused + assigned tags matching code.
+     *
+     * @return list<array{code:string,status:string,unique_freezer_id:?string,freezer_type:?string,store_name:?string,label:string}>
+     */
+    public static function searchForSuggest(string $query, int $limit = 12): array {
+        self::ensureTable();
+        $q = strtoupper(trim($query));
+        if ($q === '' || strlen($q) < 1) {
+            return [];
+        }
+        $pdo = Database::getConnection();
+        Freezer::ensureSimColumns();
+        $limit = max(1, min(25, $limit));
+        $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $q) . '%';
+
+        // Prefer prefix matches; unused first then assigned (with freezer type)
+        $sql = "SELECT t.tag_code, t.status, f.unique_freezer_id, f.freezer_type, s.store_name
+                FROM `asset_tags` t
+                LEFT JOIN `freezers` f ON f.id = t.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE t.tag_code LIKE :q
+                ORDER BY
+                    CASE WHEN t.tag_code LIKE :prefix THEN 0 ELSE 1 END,
+                    CASE t.status WHEN 'unused' THEN 0 ELSE 1 END,
+                    t.tag_code ASC
+                LIMIT {$limit}";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            'q' => $like,
+            'prefix' => $q . '%',
+        ]);
+
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $code = (string)($row['tag_code'] ?? '');
+            $status = (string)($row['status'] ?? 'unused');
+            $fid = $row['unique_freezer_id'] ?? null;
+            $ftype = $row['freezer_type'] ?? null;
+            $store = $row['store_name'] ?? null;
+            if ($status === 'assigned') {
+                $bits = array_filter([$ftype, $fid, $store]);
+                $label = $code . ' · Assigned' . ($bits ? ' · ' . implode(' · ', $bits) : '');
+            } else {
+                $label = $code . ' · Unused blank tag';
+            }
+            $out[] = [
+                'code' => $code,
+                'status' => $status,
+                'unique_freezer_id' => $fid,
+                'freezer_type' => $ftype,
+                'store_name' => $store,
+                'label' => $label,
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * @param list<int> $ids
      * @return list<array>
      */

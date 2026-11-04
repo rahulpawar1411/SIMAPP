@@ -23,11 +23,30 @@ class AppConfig {
     ];
 
     // User Roles
-    /** Only role in the system */
     public const ROLE_SUPER_ADMIN = 'super_admin';
+    public const ROLE_TECHNICIAN = 'technician';
+    public const ROLE_VIEWER = 'viewer';
+
+    /** @return list<array{value:string,label:string}> */
+    public static function getUserRoles(): array {
+        return [
+            ['value' => self::ROLE_SUPER_ADMIN, 'label' => 'Super Admin — Full access'],
+            ['value' => self::ROLE_TECHNICIAN, 'label' => 'Technician — Field scan / register / KYC'],
+            ['value' => self::ROLE_VIEWER, 'label' => 'Viewer — View only'],
+        ];
+    }
+
+    /** @return list<string> */
+    public static function allowedRoles(): array {
+        return array_column(self::getUserRoles(), 'value');
+    }
 
     /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) — next phase */
     public const IOT_ENABLED = false;
+
+    /** Default SIM / ICCID prefill (user can edit) */
+    public const DEFAULT_SIM_NUMBER = '89919225034008649';
+    public const DEFAULT_SIM_COMPANY = 'Airtel';
 
     public static function getBaseUrl(): string {
         $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";

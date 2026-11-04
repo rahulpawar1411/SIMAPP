@@ -4,13 +4,15 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Services\FreezerIdGenerator;
 use App\Services\FileUploadService;
+use App\Services\UndoService;
 use App\Config\AppConfig;
 use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 
-AuthService::requireRole('super_admin');
+AuthService::requireRole(['super_admin', 'technician']);
+Freezer::ensureSimColumns();
 $currentUser = AuthService::currentUser();
 
 $id = !empty($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -28,12 +30,14 @@ $freezerTypes = MasterData::getFreezerTypes();
 $brands = MasterData::getBrands();
 $customers = MasterData::getCustomerList();
 $conditions = MasterData::getConditions();
+$capacities = MasterData::getCapacities();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security CSRF token.';
     } else {
         try {
+            $undoSnapshot = UndoService::captureProfileSnapshot($freezer);
             $editTag = AssetTag::findByFreezerId((int)$freezer['id']);
             $imgNameMeta = [
                 'tag_code' => $editTag['tag_code'] ?? preg_replace('/[^A-Z0-9\-]/', '', strtoupper((string)$freezer['unique_freezer_id'])),
@@ -82,6 +86,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $imgIotResult = FileUploadService::handleImageUpload($_FILES['image_iot_device'], 'iot', 'iot_dev', $imgNameMeta);
                 if ($imgIotResult && !$imgIotResult['success']) {
                     throw new Exception("IoT Device Image Error: " . $imgIotResult['error']);
+                }
+            }
+
+            $imgSimResult = null;
+            if (!empty($_FILES['image_sim']['name'])) {
+                $imgSimResult = FileUploadService::handleImageUpload($_FILES['image_sim'], 'freezers', 'sim_img', $imgNameMeta);
+                if (!$imgSimResult['success']) {
+                    throw new Exception('SIM photo error: ' . $imgSimResult['error']);
                 }
             }
 
@@ -137,6 +149,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'installation_date' => $installDate,
                 'image_left_side' => $imgLeftResult ? $imgLeftResult['path'] : null,
                 'image_right_side' => $imgRightResult ? $imgRightResult['path'] : null,
+                'image_sim' => $imgSimResult ? $imgSimResult['path'] : null,
+                'sim_number' => trim((string)($_POST['sim_number'] ?? '')),
+                'sim_company' => trim((string)($_POST['sim_company'] ?? '')),
                 'status' => $_POST['freezer_status'] ?? $freezer['status'],
                 'notes' => $_POST['notes'] ?? '',
             ];
@@ -145,15 +160,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updatePayload['image_iot_device'] = $imgIotResult ? $imgIotResult['path'] : null;
                 $updatePayload['iot_serial'] = $_POST['iot_serial'] ?? $freezer['device_serial'];
                 $updatePayload['iot_imei'] = $_POST['iot_imei'] ?? $freezer['imei_or_mac'];
-                $updatePayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '') ?: ($freezer['sim_number'] ?? null);
-                $updatePayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '') ?: ($freezer['sim_company'] ?? null);
+                $updatePayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '')
+                    ?: ($updatePayload['sim_number'] ?: ($freezer['sim_number'] ?? null));
+                $updatePayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '')
+                    ?: ($updatePayload['sim_company'] ?: ($freezer['sim_company'] ?? null));
                 $updatePayload['iot_type'] = $_POST['iot_type'] ?? $freezer['device_type'];
                 $updatePayload['iot_owner'] = $_POST['iot_owner'] ?? $freezer['device_owner'];
             }
 
             Freezer::update($id, $updatePayload);
 
-            header("Location: profile_view.php?id={$id}&updated=1");
+            $undoToken = UndoService::remember('edit', $undoSnapshot);
+            header('Location: profile_view.php?id=' . $id . '&updated=1&undo=' . urlencode($undoToken));
             exit;
 
         } catch (Exception $e) {
@@ -167,12 +185,14 @@ $pageTitle = 'Edit Freezer: ' . $freezer['unique_freezer_id'];
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<div style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
-    <div>
-        <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Edit Freezer Profile</h2>
-        <p style="color: #64748b; font-size: 0.875rem;">Modify specifications or replace photos. New Store Front photo updates location.</p>
+<div class="cfg-toolbar">
+    <div class="cfg-toolbar-left">
+        <h1 class="cfg-toolbar-title">Edit Freezer Configuration</h1>
     </div>
-    <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary">&larr; Cancel & Return</a>
+    <div style="display:flex; gap:0.5rem; flex-shrink:0;">
+        <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary">Cancel</a>
+        <button type="submit" form="edit-freezer-form" class="btn btn-primary cfg-done-btn">Done</button>
+    </div>
 </div>
 
 <?php if ($error): ?>
@@ -184,7 +204,7 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
-<form method="POST" action="" enctype="multipart/form-data" novalidate>
+<form method="POST" action="" enctype="multipart/form-data" class="cfg-form" id="edit-freezer-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" id="exclude_freezer_id" value="<?= (int)$freezer['id'] ?>">
 
@@ -355,6 +375,19 @@ require_once __DIR__ . '/includes/header.php';
                         <option value="Under Inspection" <?= $freezer['status'] === 'Under Inspection' ? 'selected' : '' ?>>Under Inspection</option>
                     </select>
                 </div>
+                <div class="col-3 form-group">
+                    <label class="form-label" for="capacity_litres">Capacity (litres)</label>
+                    <?php $capEdit = (string)($freezer['capacity_litres'] ?? '550'); ?>
+                    <select id="capacity_litres" name="capacity_litres" class="form-select">
+                        <option value="">Select capacity</option>
+                        <?php foreach ($capacities as $cap): ?>
+                            <option value="<?= (int)$cap ?>" <?= $capEdit === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
+                        <?php endforeach; ?>
+                        <?php if ($capEdit !== '' && !in_array((int)$capEdit, $capacities, true)): ?>
+                            <option value="<?= (int)$capEdit ?>" selected><?= (int)$capEdit ?> litres</option>
+                        <?php endif; ?>
+                    </select>
+                </div>
                 <div class="col-6 form-group">
                     <label class="form-label" for="freezer_condition">Condition</label>
                     <select id="freezer_condition" name="freezer_condition" class="form-select">
@@ -362,10 +395,6 @@ require_once __DIR__ . '/includes/header.php';
                             <option value="<?= htmlspecialchars($c) ?>" <?= ($freezer['freezer_condition'] === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
                         <?php endforeach; ?>
                     </select>
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="notes">Remark</label>
-                    <input type="text" id="notes" name="notes" class="form-control" value="<?= htmlspecialchars($freezer['notes'] ?? '') ?>">
                 </div>
             </div>
         </div>
@@ -450,6 +479,49 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title"><span>SIM installation</span></div>
+        </div>
+        <div class="card-body">
+            <div class="form-grid">
+                <div class="col-6 form-group">
+                    <label class="form-label" for="sim_number">SIM number</label>
+                    <input type="text" id="sim_number" name="sim_number" class="form-control"
+                           placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
+                           value="<?= htmlspecialchars(($freezer['sim_number'] ?? '') !== '' ? $freezer['sim_number'] : AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
+                </div>
+                <div class="col-6 form-group">
+                    <label class="form-label" for="sim_company">SIM company</label>
+                    <?php $simCoEdit = trim((string)($freezer['sim_company'] ?? '')) ?: AppConfig::DEFAULT_SIM_COMPANY; ?>
+                    <select id="sim_company" name="sim_company" class="form-select">
+                        <option value="">Select operator</option>
+                        <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
+                            <option value="<?= $op ?>" <?= $simCoEdit === $op ? 'selected' : '' ?>><?= $op ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-12 form-group">
+                    <label class="form-label" for="image_sim">SIM number photo</label>
+                    <div class="upload-box" id="dropzone-sim">
+                        <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-sim">
+                        <div class="upload-icon">📷</div>
+                        <div class="upload-title"><?= !empty($freezer['image_sim']) ? 'Change SIM photo' : 'SIM / ICCID photo' ?></div>
+                        <div class="upload-hint">Camera · Clear SIM number</div>
+                        <div class="upload-preview-container" id="edit-preview-sim" style="<?= !empty($freezer['image_sim']) ? 'display:block;' : '' ?>">
+                            <img src="<?= htmlspecialchars($freezer['image_sim'] ?? '') ?>" alt="SIM">
+                            <span class="preview-badge">SIM</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12 form-group">
+                    <label class="form-label" for="notes">Remark</label>
+                    <input type="text" id="notes" name="notes" class="form-control" value="<?= htmlspecialchars($freezer['notes'] ?? '') ?>" placeholder="Installation observations, plug location, target temp…">
+                </div>
+            </div>
+        </div>
+    </div>
+
     <?php if (AppConfig::IOT_ENABLED): ?>
     <!-- IoT Hardware -->
     <div class="card">
@@ -469,11 +541,11 @@ require_once __DIR__ . '/includes/header.php';
                     <input type="text" id="iot_imei" name="iot_imei" class="form-control" value="<?= htmlspecialchars($freezer['imei_or_mac'] ?? '') ?>">
                 </div>
                 <div class="col-6 form-group">
-                    <label class="form-label" for="iot_sim_number">SIM Number</label>
+                    <label class="form-label" for="iot_sim_number">SIM Number (IoT)</label>
                     <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="<?= htmlspecialchars($freezer['sim_number'] ?? '') ?>">
                 </div>
                 <div class="col-6 form-group">
-                    <label class="form-label" for="iot_sim_company">SIM Company</label>
+                    <label class="form-label" for="iot_sim_company">SIM Company (IoT)</label>
                     <?php $simCo = $freezer['sim_company'] ?? ''; ?>
                     <select id="iot_sim_company" name="iot_sim_company" class="form-select">
                         <option value="">Select operator</option>

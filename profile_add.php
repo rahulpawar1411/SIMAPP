@@ -9,8 +9,9 @@ use App\Models\Store;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 
-AuthService::requireRole('super_admin');
+AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
+Freezer::ensureSimColumns();
 
 $error = null;
 $success = null;
@@ -20,6 +21,7 @@ $freezerTypes = MasterData::getFreezerTypes();
 $brands = MasterData::getBrands();
 $customers = MasterData::getCustomerList();
 $conditions = MasterData::getConditions();
+$capacities = MasterData::getCapacities();
 
 // Scan-first workflow: blank QR must be scanned (or opened) before filling data
 $boundTagCode = strtoupper(trim((string)($_GET['tag'] ?? $_POST['asset_tag_code'] ?? '')));
@@ -138,7 +140,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            // 2. Create Store Profile (KYS master details) — Outlet ID always auto
+            $imgSimResult = null;
+            if (!empty($_FILES['image_sim']['name'])) {
+                $imgSimResult = FileUploadService::handleImageUpload($_FILES['image_sim'], 'freezers', 'sim_img', $imgNameMeta);
+                if (!$imgSimResult['success']) {
+                    throw new Exception('SIM photo error: ' . $imgSimResult['error']);
+                }
+            }
+
+            // 2. Create Store
             $outletId = Store::generateOutletId([
                 'city' => $_POST['city'] ?? 'AMD',
                 'pincode' => $_POST['pincode'] ?? '',
@@ -182,11 +192,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $freezerType = $_POST['freezer_type'] ?? 'DF';
             $companyCode = $_POST['company_code'] ?? 'RW';
             $modelNumber = $_POST['model_number'] ?? '';
+            $pincode = $_POST['pincode'] ?? '';
             $locationCode = MasterData::resolveLocationCodeForCity(
                 (string)($_POST['city'] ?? ''),
                 $_POST['location_code'] ?? ''
             );
-            $pincode = $_POST['pincode'] ?? '';
             $installDate = $_POST['installation_date'] ?? date('Y-m-d');
             $installMmYy = date('my', strtotime($installDate));
             // Unique ID + random unit sequence assigned on save
@@ -209,6 +219,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'image_left_side' => $imgLeftResult['path'],
                 'image_right_side' => $imgRightResult['path'],
                 'image_iot_device' => $imgIotResult ? $imgIotResult['path'] : null,
+                'image_sim' => $imgSimResult ? $imgSimResult['path'] : null,
+                'sim_number' => trim((string)($_POST['sim_number'] ?? '')) ?: null,
+                'sim_company' => trim((string)($_POST['sim_company'] ?? '')) ?: null,
                 'status' => $_POST['freezer_status'] ?? 'Active',
                 'notes' => $_POST['notes'] ?? '',
                 'created_by' => $currentUser['id'],
@@ -218,8 +231,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (AppConfig::IOT_ENABLED) {
                 $freezerPayload['iot_serial'] = $_POST['iot_serial'] ?? ('RF-IOT-' . rand(10000, 99999));
                 $freezerPayload['iot_imei'] = $_POST['iot_imei'] ?? null;
-                $freezerPayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '') ?: null;
-                $freezerPayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '') ?: null;
+                $freezerPayload['iot_sim_number'] = trim($_POST['iot_sim_number'] ?? '')
+                    ?: ($freezerPayload['sim_number'] ?? null);
+                $freezerPayload['iot_sim_company'] = trim($_POST['iot_sim_company'] ?? '')
+                    ?: ($freezerPayload['sim_company'] ?? null);
                 $freezerPayload['iot_type'] = $_POST['iot_type'] ?? 'Temperature & GPS';
                 $freezerPayload['iot_owner'] = $_POST['iot_owner'] ?? 'ReeferON Own Device';
                 $freezerPayload['iot_model'] = $_POST['iot_model'] ?? 'RF-T100';
@@ -277,27 +292,27 @@ require_once __DIR__ . '/includes/header.php';
 </div><!-- /checkout-page -->
 <?php else: ?>
 
-    <header class="onboard-hero">
-        <p class="onboard-kicker">Step 2 of 2</p>
-        <h1 class="onboard-title">Fill store &amp; freezer details</h1>
-        <div class="onboard-tag-chip" title="Scanned QR tag">
-            <span class="onboard-tag-dot" aria-hidden="true"></span>
-            <span>QR</span>
-            <code><?= htmlspecialchars($boundTag['tag_code']) ?></code>
+    <div class="cfg-toolbar">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title">
+                New Freezer Configuration
+                <span class="cfg-tag-plain"><?= htmlspecialchars($boundTag['tag_code']) ?></span>
+            </h1>
         </div>
-        <p class="onboard-lead">Photo pehle, details baad mein. Save hone pe yeh sticker pe profile link ho jayegi.</p>
-    </header>
+    </div>
 
-<div class="checkout-card onboard-card">
-    <nav class="onboard-steps" id="checkout-methods" aria-label="Form steps">
+<div class="checkout-card onboard-card cfg-panel">
+    <nav class="onboard-steps cfg-steps" id="checkout-methods" aria-label="Form steps">
         <button type="button" class="onboard-step checkout-method active" data-goto="1">
             <span class="onboard-step-num">1</span>
             <span class="onboard-step-label">Store</span>
         </button>
+        <span class="onboard-step-divider" aria-hidden="true"></span>
         <button type="button" class="onboard-step checkout-method" data-goto="2">
             <span class="onboard-step-num">2</span>
             <span class="onboard-step-label">Freezer</span>
         </button>
+        <span class="onboard-step-divider" aria-hidden="true"></span>
         <button type="button" class="onboard-step checkout-method" data-goto="3">
             <span class="onboard-step-num">3</span>
             <span class="onboard-step-label">Review</span>
@@ -316,22 +331,20 @@ require_once __DIR__ . '/includes/header.php';
     <div class="checkout-step active" data-step="1">
     <div class="card">
         <div class="card-body">
-            <input type="hidden" id="latitude" name="latitude" value="">
-            <input type="hidden" id="longitude" name="longitude" value="">
-            <input type="hidden" id="location_link" name="location_link" value="">
-            <input type="hidden" id="gps_accuracy" name="gps_accuracy" value="">
-            <input type="hidden" id="state" name="state" value="">
+            <input type="hidden" id="latitude" name="latitude" value="<?= htmlspecialchars($_POST['latitude'] ?? '') ?>">
+            <input type="hidden" id="longitude" name="longitude" value="<?= htmlspecialchars($_POST['longitude'] ?? '') ?>">
+            <input type="hidden" id="location_link" name="location_link" value="<?= htmlspecialchars($_POST['location_link'] ?? '') ?>">
+            <input type="hidden" id="gps_accuracy" name="gps_accuracy" value="<?= htmlspecialchars($_POST['gps_accuracy'] ?? '') ?>">
+            <input type="hidden" id="state" name="state" value="<?= htmlspecialchars($_POST['state'] ?? '') ?>">
 
             <div id="store-front-exif-status" class="store-front-exif-status" style="display:none;" role="status"></div>
 
             <!-- Sub: Store Front & GPS -->
-            <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Store Front &amp; GPS
-                        <span>Photo + location for KYS verification</span>
-                    </h3>
-                </div>
+            <fieldset class="form-subsection">
+                <legend>
+                    Store Front &amp; GPS
+                    <span>Photo + location for KYS verification</span>
+                </legend>
 
                 <div class="photo-step-lead">
                     Capture the <strong>Store Front photo</strong> with Location ON.
@@ -377,19 +390,23 @@ require_once __DIR__ . '/includes/header.php';
                             Share location
                         </button>
                     </div>
+                    <div class="sp-location-link-box" id="current-location-link-box" hidden>
+                        <div class="sp-location-link-label">Current location link</div>
+                        <a class="sp-location-link" id="current-location-link" href="#" target="_blank" rel="noopener"></a>
+                        <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="">Copy link</button>
+                    </div>
+                    <div class="sp-latlng" id="current-location-latlng" hidden></div>
                 </div>
-            </div>
+            </fieldset>
 
             <!-- Sub: Store details -->
-            <div class="form-subsection" id="store-details-anchor">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Store Details
-                        <span>Master store record · PIN used in Freezer ID / QR</span>
-                    </h3>
-                </div>
+            <fieldset class="form-subsection" id="store-details-anchor">
+                <legend>
+                    Store Details
+                    <span>Outlet identity · address · zone</span>
+                </legend>
 
-                <div class="form-grid">
+                <div class="form-grid" id="store-fields-grid">
                     <div class="col-6 form-group">
                         <label class="form-label required" for="store_name">Store / Outlet name</label>
                         <input type="text" id="store_name" name="store_name" class="form-control" placeholder="e.g. Baskin Robbins - CG Road Hub" value="<?= htmlspecialchars($_POST['store_name'] ?? '') ?>" required>
@@ -398,21 +415,24 @@ require_once __DIR__ . '/includes/header.php';
 
                     <div class="col-3 form-group">
                         <label class="form-label" for="outlet_id_preview">Outlet ID / Code</label>
-                        <input type="text" id="outlet_id_preview" class="form-control" value="Auto on save" readonly
+                        <input type="text" id="outlet_id_preview" class="form-control"
+                               value="Auto on save" readonly
                                style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
                     </div>
 
                     <div class="col-3 form-group">
                         <label class="form-label" for="customer_name">Customer account</label>
                         <select id="customer_name" name="customer_name" class="form-select">
-                            <?php foreach ($customers as $c): ?>
-                                <option value="<?= htmlspecialchars($c) ?>" <?= (($_POST['customer_name'] ?? '') === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                            <?php
+                            $custVal = $_POST['customer_name'] ?? ($customers[0] ?? 'Baskin Robbins');
+                            foreach ($customers as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= $custVal === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
 
                     <div class="col-4 form-group">
-                        <label class="form-label required" for="zone">Zone <span class="label-tag">from photo</span></label>
+                        <label class="form-label required" for="zone">Zone</label>
                         <select id="zone" name="zone" class="form-select" required>
                             <?php
                             $zoneVal = $_POST['zone'] ?? 'WEST';
@@ -424,19 +444,19 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <div class="col-8 form-group">
-                        <label class="form-label required" for="city">City <span class="label-tag">from photo</span></label>
+                        <label class="form-label required" for="city">City</label>
                         <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" required autocomplete="off">
                         <datalist id="city-list"></datalist>
                     </div>
 
                     <div class="col-12 form-group">
-                        <label class="form-label required" for="address">Street address <span class="label-tag">from photo</span></label>
+                        <label class="form-label required" for="address">Street address</label>
                         <input type="text" id="address" name="address" class="form-control" placeholder="Shop No, Building, Street, Area" value="<?= htmlspecialchars($_POST['address'] ?? '') ?>" required>
                         <div class="form-error">Address is required.</div>
                     </div>
 
                     <div class="col-4 form-group">
-                        <label class="form-label required" for="pincode">PIN code <span class="label-tag">from photo</span></label>
+                        <label class="form-label required" for="pincode">PIN code</label>
                         <input type="text" id="pincode" name="pincode" class="form-control" placeholder="6 digits" value="<?= htmlspecialchars($_POST['pincode'] ?? '') ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
                         <div class="form-error">Enter a valid 6-digit PIN code.</div>
                     </div>
@@ -471,16 +491,14 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="form-error">Enter a valid 15-character GSTIN.</div>
                     </div>
                 </div>
-            </div>
+            </fieldset>
 
             <!-- Sub: Store operator -->
-            <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Store Operator
-                        <span>Name, phone, email ID &amp; Aadhaar</span>
-                    </h3>
-                </div>
+            <fieldset class="form-subsection">
+                <legend>
+                    Store Operator
+                    <span>Name, phone, email ID &amp; Aadhaar</span>
+                </legend>
 
                 <div class="form-grid">
                     <div class="col-6 form-group">
@@ -492,7 +510,7 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-label" for="phone_number">Operator phone / mobile</label>
                         <div class="phone-input-group">
                             <span class="phone-prefix" aria-hidden="true">+91</span>
-                            <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars($_POST['phone_number'] ?? '') ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
+                            <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars(preg_replace('/\D/', '', substr((string)($_POST['phone_number'] ?? ''), -10))) ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
                         </div>
                         <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
                     </div>
@@ -526,7 +544,7 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                     </div>
                 </div>
-            </div>
+            </fieldset>
         </div>
     </div>
     </div><!-- /step 1 -->
@@ -538,13 +556,11 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card">
         <div class="card-body">
             <!-- Sub: Freezer photos -->
-            <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Freezer Photos
-                        <span>Left &amp; right side · required for verification</span>
-                    </h3>
-                </div>
+            <fieldset class="form-subsection">
+                <legend>
+                    Freezer Photos
+                    <span>Left &amp; right side · required for verification</span>
+                </legend>
 
                 <div class="photo-upload-grid photo-upload-grid-2" style="margin-bottom: 0;">
                     <div class="upload-box" id="dropzone-left">
@@ -575,16 +591,14 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                     </div>
                 </div>
-            </div>
+            </fieldset>
 
             <!-- Sub: Freezer specs -->
-            <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Freezer Specs
-                        <span>Type / brand / model · builds Unique ID + QR</span>
-                    </h3>
-                </div>
+            <fieldset class="form-subsection">
+                <legend>
+                    Freezer Specs
+                    <span>Type / brand / model · builds Unique ID + QR</span>
+                </legend>
 
                 <div class="form-grid">
                     <div class="col-4 form-group">
@@ -631,7 +645,15 @@ require_once __DIR__ . '/includes/header.php';
 
                     <div class="col-3 form-group">
                         <label class="form-label" for="capacity_litres">Capacity (litres)</label>
-                        <input type="number" id="capacity_litres" name="capacity_litres" class="form-control" placeholder="550" value="<?= htmlspecialchars($_POST['capacity_litres'] ?? '') ?>">
+                        <select id="capacity_litres" name="capacity_litres" class="form-select">
+                            <option value="">Select capacity</option>
+                            <?php
+                            $capSel = (string)($_POST['capacity_litres'] ?? '550');
+                            foreach ($capacities as $cap):
+                            ?>
+                                <option value="<?= (int)$cap ?>" <?= $capSel === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
 
                     <div class="col-6 form-group">
@@ -652,7 +674,7 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                     </div>
                 </div>
-            </div>
+            </fieldset>
         </div>
     </div>
     </div><!-- /step 2 -->
@@ -719,7 +741,7 @@ require_once __DIR__ . '/includes/header.php';
 
                 <div class="col-4 form-group">
                     <label class="form-label" for="iot_sim_number">SIM Number</label>
-                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="">
+                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" value="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>">
                 </div>
 
                 <div class="col-4 form-group">
@@ -727,7 +749,7 @@ require_once __DIR__ . '/includes/header.php';
                     <select id="iot_sim_company" name="iot_sim_company" class="form-select">
                         <option value="">Select operator</option>
                         <option value="Jio">Jio</option>
-                        <option value="Airtel">Airtel</option>
+                        <option value="Airtel" selected>Airtel</option>
                         <option value="VI">VI</option>
                         <option value="BSNL">BSNL</option>
                         <option value="Other">Other</option>
@@ -754,12 +776,48 @@ require_once __DIR__ . '/includes/header.php';
             </div>
             <?php endif; ?>
 
-            <div class="form-grid" style="<?= AppConfig::IOT_ENABLED ? 'margin-top:1rem;' : '' ?>">
-                <div class="col-12 form-group">
-                    <label class="form-label" for="notes">Remark</label>
-                    <input type="text" id="notes" name="notes" class="form-control" placeholder="Installation observations, plug location, target temp…" value="">
+            <fieldset class="form-subsection">
+                <legend>
+                    SIM Installation
+                    <span>Number + photo of SIM / ICCID</span>
+                </legend>
+                <div class="form-grid" style="margin-bottom:0;">
+                    <div class="col-6 form-group">
+                        <label class="form-label" for="sim_number">SIM number</label>
+                        <input type="text" id="sim_number" name="sim_number" class="form-control"
+                               placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
+                               value="<?= htmlspecialchars($_POST['sim_number'] ?? AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
+                    </div>
+                    <div class="col-6 form-group">
+                        <label class="form-label" for="sim_company">SIM company</label>
+                        <select id="sim_company" name="sim_company" class="form-select">
+                            <?php
+                            $simCo = $_POST['sim_company'] ?? AppConfig::DEFAULT_SIM_COMPANY;
+                            foreach (['' => 'Select operator', 'Jio' => 'Jio', 'Airtel' => 'Airtel', 'VI' => 'VI', 'BSNL' => 'BSNL', 'Other' => 'Other'] as $val => $label):
+                            ?>
+                                <option value="<?= htmlspecialchars($val) ?>" <?= $simCo === $val ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-12 form-group">
+                        <label class="form-label" for="image_sim">SIM number photo</label>
+                        <div class="upload-box" id="dropzone-sim">
+                            <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-sim">
+                            <div class="upload-icon">📷</div>
+                            <div class="upload-title">SIM / ICCID photo</div>
+                            <div class="upload-hint">Camera · Date stamp · Clear SIM number</div>
+                            <div class="upload-preview-container" id="preview-sim">
+                                <img src="" alt="SIM Preview">
+                                <span class="preview-badge">SIM</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 form-group">
+                        <label class="form-label" for="notes">Remark</label>
+                        <input type="text" id="notes" name="notes" class="form-control" placeholder="Installation observations, plug location, target temp…" value="<?= htmlspecialchars($_POST['notes'] ?? '') ?>">
+                    </div>
                 </div>
-            </div>
+            </fieldset>
         </div>
     </div>
     </div><!-- /step 3 -->
@@ -833,7 +891,6 @@ document.addEventListener('DOMContentLoaded', function() {
     function validateStep(n) {
         let ok = true;
         if (n === 1) {
-            const sf = document.getElementById('image_store_front');
             const box = document.getElementById('dropzone-store-front');
             const hasSf = hasFile('image_store_front');
             if (box) box.classList.toggle('is-invalid', !hasSf);
@@ -979,7 +1036,7 @@ document.addEventListener('DOMContentLoaded', function() {
         el.addEventListener('change', () => setFieldError(el, false));
     });
 
-    ['image_left_side', 'image_right_side', 'image_store_front', 'image_aadhar_card', 'image_aadhar_back'].forEach(id => {
+    ['image_left_side', 'image_right_side', 'image_store_front', 'image_aadhar_card', 'image_aadhar_back', 'image_sim'].forEach(id => {
         const input = document.getElementById(id);
         if (!input) return;
         input.addEventListener('change', () => {

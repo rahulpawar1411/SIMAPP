@@ -2,175 +2,333 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\ImportExportService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\MasterData;
+use App\Models\FreezerLifecycle;
+use App\Models\AssetTag;
 
 AuthService::requireLogin();
+AssetTag::ensureTable();
 $currentUser = AuthService::currentUser();
 
-// Search & Filter parameters
-$search = $_GET['q'] ?? '';
-$type = $_GET['type'] ?? '';
-$brand = $_GET['brand'] ?? '';
-$status = $_GET['status'] ?? '';
-$city = $_GET['city'] ?? '';
-$missing = $_GET['missing'] ?? '';
+/** @return list<string> */
+$asList = static function ($value): array {
+    if ($value === null || $value === '' || $value === []) {
+        return [];
+    }
+    if (!is_array($value)) {
+        $value = [$value];
+    }
+    $out = [];
+    foreach ($value as $item) {
+        $s = trim((string)$item);
+        if ($s !== '') {
+            $out[] = $s;
+        }
+    }
+    return array_values(array_unique($out));
+};
+
+// Search & Filter parameters (checkbox multi-select)
+$search = trim((string)($_GET['q'] ?? ''));
+$typeList = $asList($_GET['type'] ?? []);
+$brandList = $asList($_GET['brand'] ?? []);
+$statusList = $asList($_GET['status'] ?? []);
+$cityList = $asList($_GET['city'] ?? []);
+$missingList = $asList($_GET['missing'] ?? []);
+$kycList = array_values(array_intersect($asList($_GET['kyc'] ?? []), ['pending', 'done']));
+
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20;
 $offset = ($page - 1) * $limit;
 
 $filters = [
     'q' => $search,
-    'type' => $type,
-    'brand' => $brand,
-    'status' => $status,
-    'city' => $city,
-    'missing' => $missing,
+    'type' => $typeList,
+    'brand' => $brandList,
+    'status' => $statusList,
+    'city' => $cityList,
+    'missing' => $missingList,
+    'kyc' => $kycList,
 ];
 
-// Handle CSV export
-if (!empty($_GET['export']) && $_GET['export'] === 'csv') {
-    $allRecords = Freezer::getFiltered($filters, 2000, 0);
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename=freezer_profiles_' . date('Ymd_His') . '.csv');
-    $output = fopen('php://output', 'w');
-    fputcsv($output, ['Freezer ID', 'Store Name', 'Outlet ID', 'Type', 'Brand', 'Model', 'Capacity (L)', 'Condition', 'Location Code', 'PIN Code', 'Install Date', 'City', 'State', 'GPS Lat', 'GPS Lng', 'Status']);
-    foreach ($allRecords as $r) {
-        fputcsv($output, [
-            $r['unique_freezer_id'],
-            $r['store_name'],
-            $r['outlet_id'],
-            $r['freezer_type'],
-            $r['company_code'],
-            $r['model_number'],
-            $r['capacity_litres'],
-            $r['freezer_condition'],
-            $r['location_code'],
-            $r['pincode_last3'],
-            $r['installation_date'],
-            $r['store_city'],
-            $r['store_state'],
-            $r['store_latitude'],
-            $r['store_longitude'],
-            $r['status'],
-        ]);
+$kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
+$activeFilterCount = count($typeList) + count($brandList) + count($statusList)
+    + count($cityList) + count($missingList) + count($kycList);
+$hasActiveFilters = $search !== '' || $activeFilterCount > 0;
+
+/* Single-value helpers for labels that still expect one KYC mode */
+$kyc = count($kycList) === 1 ? $kycList[0] : '';
+$city = count($cityList) === 1 ? $cityList[0] : '';
+$status = count($statusList) === 1 ? $statusList[0] : '';
+
+// Full data export (all store / freezer / KYC / IoT fields; respects filters)
+if (!empty($_GET['export'])) {
+    $exportType = strtolower((string)$_GET['export']);
+    if ($exportType === 'xlsx') {
+        ImportExportService::streamProfilesExportXlsx($filters);
+        exit;
     }
-    fclose($output);
-    exit;
+    if ($exportType === 'csv') {
+        ImportExportService::streamProfilesExportCsv($filters);
+        exit;
+    }
 }
 
-$freezers = Freezer::getFiltered($filters, $limit, $offset);
 $totalCount = Freezer::countFiltered($filters);
-$totalPages = ceil($totalCount / $limit);
+$totalPages = max(1, (int)ceil($totalCount / $limit));
+if ($page > $totalPages) {
+    $page = $totalPages;
+    $offset = ($page - 1) * $limit;
+}
+$freezers = Freezer::getFiltered($filters, $limit, $offset);
+$rangeFrom = $totalCount === 0 ? 0 : ($offset + 1);
+$rangeTo = min($offset + $limit, $totalCount);
+
+/** Build page URL keeping current filters */
+$profilesPageUrl = static function (int $p) use ($search, $typeList, $brandList, $statusList, $cityList, $missingList, $kycList): string {
+    $params = array_filter([
+        'q' => $search !== '' ? $search : null,
+        'type' => $typeList ?: null,
+        'brand' => $brandList ?: null,
+        'status' => $statusList ?: null,
+        'city' => $cityList ?: null,
+        'missing' => $missingList ?: null,
+        'kyc' => $kycList ?: null,
+        'page' => $p > 1 ? $p : null,
+    ], static fn($v) => $v !== null && $v !== '' && $v !== []);
+    $qs = http_build_query($params);
+    return 'profiles.php' . ($qs !== '' ? '?' . $qs : '');
+};
 
 $freezerTypes = MasterData::getFreezerTypes();
 $brands = MasterData::getBrands();
+
+$cityOptions = [];
+try {
+    $pdoCities = \App\Config\Database::getConnection();
+    Freezer::ensureSimColumns();
+    $cityOptions = $pdoCities->query(
+        "SELECT DISTINCT s.city FROM `stores` s
+         INNER JOIN `freezers` f ON f.store_id = s.id
+         WHERE f.deleted_at IS NULL AND s.city IS NOT NULL AND s.city <> ''
+         ORDER BY s.city ASC
+         LIMIT 80"
+    )->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+} catch (Throwable $e) {
+    $cityOptions = [];
+}
+
+$statusOptions = ['Active', 'Maintenance', 'Under Inspection', 'Decommissioned'];
+$missingOptions = [
+    'any' => 'Any gap (GPS / photos' . (AppConfig::IOT_ENABLED ? ' / IoT' : '') . ')',
+    'gps' => 'Missing GPS',
+    'gps_approx' => 'City approx GPS (Excel)',
+    'gps_exact' => 'Exact GPS only',
+    'photos' => 'Missing photos',
+];
+if (AppConfig::IOT_ENABLED) {
+    $missingOptions['iot'] = 'Missing IoT';
+}
 
 $pageTitle = 'Freezer & Store Profiles';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-    <div>
-        <h2 style="font-size: 1.4rem; font-weight: 800; color: #0f172a;">Freezer & Store Profiles Directory</h2>
-        <p style="color: #64748b; font-size: 0.875rem;">Search and manage deployed units, view QR tags, and inspect GPS coordinates.</p>
+<div class="cfg-toolbar">
+    <div class="cfg-toolbar-left">
+        <h1 class="cfg-toolbar-title">Freezer &amp; Store Profiles</h1>
     </div>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <a href="qr_print_bulk.php?<?= http_build_query(array_filter(['q' => $search, 'city' => $city, 'status' => $status])) ?>" class="btn btn-outline" target="_blank">
+        <a href="qr_print_bulk.php?<?= http_build_query(array_filter(['q' => $search, 'city' => $cityList, 'status' => $statusList], static fn($v) => $v !== '' && $v !== [])) ?>" class="btn btn-outline" target="_blank">
             Print all stickers (PDF)
         </a>
-        <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-secondary">
+        <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-secondary" title="Full store + freezer + KYC + IoT data">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                 <polyline points="7 10 12 15 17 10"/>
                 <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            <span>Export CSV</span>
+            <span>Export full CSV</span>
         </a>
-        <a href="qr_scanner.php" class="btn btn-primary">
+        <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'xlsx'])) ?>" class="btn btn-outline" title="Full Excel export">
+            Export Excel
+        </a>
+        <a href="qr_scanner.php" class="btn btn-primary cfg-done-btn">
             Scan QR → Register
         </a>
     </div>
 </div>
 
-<!-- Search & Filter Bar -->
-<div class="card" style="margin-bottom: 1.5rem;">
-    <div class="card-body" style="padding: 1rem 1.25rem;">
-        <form method="GET" action="" style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end;">
-            <div style="flex: 2; min-width: 220px;">
-                <label class="form-label" style="font-size: 0.75rem;">Search Keyword</label>
-                <input type="text" name="q" class="form-control" placeholder="Search Freezer ID, Store Name, Model, City..." value="<?= htmlspecialchars($search) ?>">
+<!-- Search + Filter button (Flipkart-style drawer) -->
+<div class="card profiles-filter-bar">
+    <div class="card-body">
+        <form method="GET" action="" class="profiles-search-row" id="profiles-search-form">
+            <div class="profiles-search-field">
+                <label class="form-label" for="profiles-q">Search</label>
+                <input type="text" id="profiles-q" name="q" class="form-control"
+                       placeholder="Tag code, Freezer ID, Store, Model…"
+                       value="<?= htmlspecialchars($search) ?>">
             </div>
-
-            <div style="flex: 1; min-width: 130px;">
-                <label class="form-label" style="font-size: 0.75rem;">Freezer Type</label>
-                <select name="type" class="form-select">
-                    <option value="">All Types</option>
-                    <?php foreach ($freezerTypes as $ft): ?>
-                        <option value="<?= htmlspecialchars($ft['code']) ?>" <?= $type === $ft['code'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($ft['code']) ?> (<?= htmlspecialchars($ft['name']) ?>)
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <div style="flex: 1; min-width: 120px;">
-                <label class="form-label" style="font-size: 0.75rem;">Brand / OEM</label>
-                <select name="brand" class="form-select">
-                    <option value="">All Brands</option>
-                    <?php foreach ($brands as $b): ?>
-                        <option value="<?= htmlspecialchars($b['code']) ?>" <?= $brand === $b['code'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($b['code']) ?> - <?= htmlspecialchars($b['name']) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <div style="flex: 1; min-width: 110px;">
-                <label class="form-label" style="font-size: 0.75rem;">Status</label>
-                <select name="status" class="form-select">
-                    <option value="">All Statuses</option>
-                    <option value="Active" <?= $status === 'Active' ? 'selected' : '' ?>>Active</option>
-                    <option value="Maintenance" <?= $status === 'Maintenance' ? 'selected' : '' ?>>Maintenance</option>
-                    <option value="Under Inspection" <?= $status === 'Under Inspection' ? 'selected' : '' ?>>Under Inspection</option>
-                </select>
-            </div>
-
-            <div style="flex: 1; min-width: 160px;">
-                <label class="form-label" style="font-size: 0.75rem;">Missing / GPS</label>
-                <select name="missing" class="form-select">
-                    <option value="">All profiles</option>
-                    <option value="any" <?= $missing === 'any' ? 'selected' : '' ?>>Any gap (GPS / photos<?= \App\Config\AppConfig::IOT_ENABLED ? ' / IoT' : '' ?>)</option>
-                    <option value="gps" <?= $missing === 'gps' ? 'selected' : '' ?>>Missing GPS</option>
-                    <option value="gps_approx" <?= $missing === 'gps_approx' ? 'selected' : '' ?>>City approx GPS (Excel)</option>
-                    <option value="gps_exact" <?= $missing === 'gps_exact' ? 'selected' : '' ?>>Exact GPS only</option>
-                    <option value="photos" <?= $missing === 'photos' ? 'selected' : '' ?>>Missing photos</option>
-                    <?php if (\App\Config\AppConfig::IOT_ENABLED): ?>
-                    <option value="iot" <?= $missing === 'iot' ? 'selected' : '' ?>>Missing IoT</option>
+            <div class="profiles-search-actions">
+                <button type="submit" class="btn btn-primary">Search</button>
+                <button type="button" class="btn btn-outline profiles-filter-open" id="profiles-filter-open" aria-haspopup="dialog" aria-controls="profiles-filter-drawer">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                    </svg>
+                    <span>Filter</span>
+                    <?php if ($activeFilterCount > 0): ?>
+                        <span class="profiles-filter-count"><?= (int)$activeFilterCount ?></span>
                     <?php endif; ?>
-                </select>
-            </div>
-
-            <div style="display: flex; gap: 0.5rem;">
-                <button type="submit" class="btn btn-primary" style="padding: 0.65rem 1rem;">
-                    Filter
                 </button>
-                <?php if ($search || $type || $brand || $status || $city || $missing): ?>
-                    <a href="profiles.php" class="btn btn-secondary" style="padding: 0.65rem 0.85rem;" title="Clear Filters">Clear</a>
+                <?php if ($hasActiveFilters): ?>
+                    <a href="profiles.php" class="btn btn-secondary">Clear</a>
                 <?php endif; ?>
             </div>
         </form>
+
+        <?php if ($activeFilterCount > 0): ?>
+            <div class="profiles-active-chips" aria-label="Active filters">
+                <?php foreach ($typeList as $t): ?>
+                    <span class="profiles-chip">Type: <?= htmlspecialchars($t) ?></span>
+                <?php endforeach; ?>
+                <?php foreach ($brandList as $b): ?>
+                    <span class="profiles-chip">Brand: <?= htmlspecialchars($b) ?></span>
+                <?php endforeach; ?>
+                <?php foreach ($statusList as $st): ?>
+                    <span class="profiles-chip">Status: <?= htmlspecialchars($st) ?></span>
+                <?php endforeach; ?>
+                <?php foreach ($cityList as $c): ?>
+                    <span class="profiles-chip">City: <?= htmlspecialchars($c) ?></span>
+                <?php endforeach; ?>
+                <?php foreach ($missingList as $m): ?>
+                    <span class="profiles-chip"><?= htmlspecialchars($missingOptions[$m] ?? $m) ?></span>
+                <?php endforeach; ?>
+                <?php foreach ($kycList as $kv): ?>
+                    <span class="profiles-chip">KYC: <?= $kv === 'pending' ? 'Pending' : 'Within ' . (int)$kycGapMonths . ' mo' ?></span>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<!-- Right filter drawer -->
+<div class="filter-drawer-backdrop" id="profiles-filter-backdrop" hidden></div>
+<aside class="filter-drawer" id="profiles-filter-drawer" role="dialog" aria-modal="true" aria-labelledby="profiles-filter-title" hidden>
+    <form method="GET" action="" id="profiles-filter-form" class="filter-drawer-form">
+        <input type="hidden" name="q" value="<?= htmlspecialchars($search) ?>">
+        <header class="filter-drawer-head">
+            <h2 id="profiles-filter-title">Filters</h2>
+            <button type="button" class="filter-drawer-close" id="profiles-filter-close" aria-label="Close filters">&times;</button>
+        </header>
+        <div class="filter-drawer-body">
+            <section class="filter-section">
+                <h3 class="filter-section-title">Freezer type</h3>
+                <div class="filter-check-list">
+                    <?php foreach ($freezerTypes as $ft): ?>
+                        <label class="filter-check">
+                            <input type="checkbox" name="type[]" value="<?= htmlspecialchars($ft['code']) ?>"
+                                <?= in_array($ft['code'], $typeList, true) ? 'checked' : '' ?>>
+                            <span><?= htmlspecialchars($ft['code']) ?> — <?= htmlspecialchars($ft['name']) ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+
+            <section class="filter-section">
+                <h3 class="filter-section-title">Brand / OEM</h3>
+                <div class="filter-check-list">
+                    <?php foreach ($brands as $b): ?>
+                        <label class="filter-check">
+                            <input type="checkbox" name="brand[]" value="<?= htmlspecialchars($b['code']) ?>"
+                                <?= in_array($b['code'], $brandList, true) ? 'checked' : '' ?>>
+                            <span><?= htmlspecialchars($b['code']) ?> — <?= htmlspecialchars($b['name']) ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+
+            <section class="filter-section">
+                <h3 class="filter-section-title">Status</h3>
+                <div class="filter-check-list">
+                    <?php foreach ($statusOptions as $st): ?>
+                        <label class="filter-check">
+                            <input type="checkbox" name="status[]" value="<?= htmlspecialchars($st) ?>"
+                                <?= in_array($st, $statusList, true) ? 'checked' : '' ?>>
+                            <span><?= htmlspecialchars($st) ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+
+            <?php if (!empty($cityOptions)): ?>
+            <section class="filter-section">
+                <h3 class="filter-section-title">City</h3>
+                <div class="filter-check-list filter-check-list-scroll">
+                    <?php foreach ($cityOptions as $cName): ?>
+                        <label class="filter-check">
+                            <input type="checkbox" name="city[]" value="<?= htmlspecialchars($cName) ?>"
+                                <?= in_array($cName, $cityList, true) ? 'checked' : '' ?>>
+                            <span><?= htmlspecialchars($cName) ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+            <?php endif; ?>
+
+            <section class="filter-section">
+                <h3 class="filter-section-title">Missing / GPS</h3>
+                <div class="filter-check-list">
+                    <?php foreach ($missingOptions as $mVal => $mLabel): ?>
+                        <label class="filter-check">
+                            <input type="checkbox" name="missing[]" value="<?= htmlspecialchars($mVal) ?>"
+                                <?= in_array($mVal, $missingList, true) ? 'checked' : '' ?>>
+                            <span><?= htmlspecialchars($mLabel) ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+
+            <section class="filter-section">
+                <h3 class="filter-section-title">KYC status</h3>
+                <div class="filter-check-list">
+                    <label class="filter-check">
+                        <input type="checkbox" name="kyc[]" value="pending" <?= in_array('pending', $kycList, true) ? 'checked' : '' ?>>
+                        <span>KYC pending</span>
+                    </label>
+                    <label class="filter-check">
+                        <input type="checkbox" name="kyc[]" value="done" <?= in_array('done', $kycList, true) ? 'checked' : '' ?>>
+                        <span>KYC within <?= (int)$kycGapMonths ?> months</span>
+                    </label>
+                </div>
+            </section>
+        </div>
+        <footer class="filter-drawer-foot">
+            <a href="profiles.php<?= $search !== '' ? ('?q=' . urlencode($search)) : '' ?>" class="btn btn-secondary">Clear all</a>
+            <button type="submit" class="btn btn-primary">Apply filters</button>
+        </footer>
+    </form>
+</aside>
+
+<!-- Global loading overlay (search / filter / page change) -->
+<div class="profiles-fetch-loading" id="profiles-list-loading" hidden aria-live="polite" aria-busy="false">
+    <div class="profiles-list-loading-inner">
+        <div class="profiles-list-spinner" aria-hidden="true"></div>
+        <div class="profiles-list-loading-text">Loading freezers…</div>
+        <div class="profiles-list-loading-sub">Please wait</div>
     </div>
 </div>
 
 <!-- Profiles Table -->
-<div class="card">
+<div class="card profiles-list-card" id="profiles-list-card">
     <div class="card-header">
         <div class="card-title">
-            <span>Registered Freezers</span>
-            <span class="badge badge-neutral" style="margin-left: 0.5rem;"><?= $totalCount ?> Total Records</span>
+            <span><?= $kyc === 'pending' ? 'KYC pending freezers' : ($kyc === 'done' ? 'KYC within window' : 'Registered Freezers') ?></span>
+            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : 'badge-neutral' ?>" style="margin-left: 0.5rem;"><?= $totalCount ?> Total Records</span>
         </div>
+        <span class="profiles-page-size">20 per page</span>
     </div>
 
     <div class="table-responsive">
@@ -179,18 +337,19 @@ require_once __DIR__ . '/includes/header.php';
                 <tr>
                     <th>Unique Freezer ID</th>
                     <th>Store / Outlet</th>
-                    <th>Type & Brand</th>
-                    <th>GPS & City</th>
+                    <th>Type</th>
+                    <th>Brand</th>
+                    <th>Tag code</th>
+                    <th>KYC</th>
                     <?php if (AppConfig::IOT_ENABLED): ?><th>IoT Status</th><?php endif; ?>
                     <th>Condition</th>
-                    <th>QR Tag</th>
                     <th style="text-align: right;">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($freezers)): ?>
                     <tr>
-                        <td colspan="<?= AppConfig::IOT_ENABLED ? 8 : 7 ?>" style="text-align: center; padding: 3rem 1rem; color: #94a3b8;">
+                        <td colspan="<?= AppConfig::IOT_ENABLED ? 9 : 8 ?>" style="text-align: center; padding: 3rem 1rem; color: #94a3b8;">
                             <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">No freezer profiles matched your search</div>
                             <p style="font-size: 0.85rem;">Try modifying your keyword filter or register a new freezer.</p>
                             <a href="qr_scanner.php" class="btn btn-primary" style="margin-top: 1rem;">Scan QR → Register</a>
@@ -198,6 +357,13 @@ require_once __DIR__ . '/includes/header.php';
                     </tr>
                 <?php else: ?>
                     <?php foreach ($freezers as $row): ?>
+                        <?php
+                        $rowInstall = !empty($row['installation_date']) ? (string)$row['installation_date'] : null;
+                        $rowLastKyc = !empty($row['last_kyc_at']) ? (string)$row['last_kyc_at'] : null;
+                        $rowKycDue = FreezerLifecycle::isKycDue($rowLastKyc, null, $rowInstall);
+                        $rowAnchor = FreezerLifecycle::kycAnchorDate($rowLastKyc, $rowInstall);
+                        $rowNextDue = FreezerLifecycle::nextKycDueDate($rowAnchor);
+                        ?>
                         <tr>
                             <td>
                                 <a href="profile_view.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="table-id-link">
@@ -211,19 +377,48 @@ require_once __DIR__ . '/includes/header.php';
                             </td>
                             <td>
                                 <span class="badge badge-primary"><?= htmlspecialchars($row['freezer_type']) ?></span>
-                                <span style="font-size: 0.8rem; font-weight: 600; color: #475569; margin-left: 0.2rem;"><?= htmlspecialchars($row['company_code']) ?></span>
                             </td>
                             <td>
-                                <div style="font-weight: 600; color: #334155; font-size: 0.85rem;"><?= htmlspecialchars($row['store_city']) ?></div>
-                                <?php
-                                $hasGps = !empty($row['store_latitude']) && !empty($row['store_longitude']);
-                                $gpsAcc = isset($row['store_gps_accuracy']) ? (float)$row['store_gps_accuracy'] : null;
-                                if (!$hasGps): ?>
-                                    <span style="font-size: 0.7rem; color: #b91c1c; background: #fee2e2; padding: 0.1rem 0.35rem; border-radius: 4px;">Missing GPS</span>
-                                <?php elseif ($gpsAcc !== null && $gpsAcc >= 1000): ?>
-                                    <span style="font-size: 0.7rem; color: #b45309; background: #ffedd5; padding: 0.1rem 0.35rem; border-radius: 4px;">City approx</span>
+                                <span style="font-size: 0.85rem; font-weight: 600; color: #334155;"><?= htmlspecialchars($row['brand_name'] ?? $row['company_code'] ?? '—') ?></span>
+                                <?php if (!empty($row['company_code'])): ?>
+                                    <div style="font-size: 0.7rem; color: #94a3b8;"><?= htmlspecialchars($row['company_code']) ?></div>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if (!empty($row['tag_code'])): ?>
+                                    <a href="tag.php?t=<?= urlencode($row['tag_code']) ?>"
+                                       style="font-family:'JetBrains Mono',ui-monospace,monospace; font-weight:700; font-size:0.85rem; color:#14532d; text-decoration:none; letter-spacing:0.02em;">
+                                        <?= htmlspecialchars($row['tag_code']) ?>
+                                    </a>
+                                    <div style="font-size:0.7rem; color:#94a3b8; margin-top:0.15rem;"><?= htmlspecialchars($row['store_city'] ?? '') ?></div>
                                 <?php else: ?>
-                                    <span style="font-size: 0.7rem; color: #15803d; background: #dcfce7; padding: 0.1rem 0.35rem; border-radius: 4px;">Exact GPS</span>
+                                    <span style="font-size:0.8rem; color:#94a3b8;">—</span>
+                                    <?php if (!empty($row['store_city'])): ?>
+                                        <div style="font-size:0.7rem; color:#94a3b8;"><?= htmlspecialchars($row['store_city']) ?></div>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if ($rowKycDue): ?>
+                                    <div class="kyc-pending-date">
+                                        <?php if ($rowLastKyc): ?>
+                                            Last <?= htmlspecialchars($rowLastKyc) ?>
+                                        <?php elseif ($rowInstall): ?>
+                                            Install <?= htmlspecialchars($rowInstall) ?>
+                                        <?php else: ?>
+                                            Never done
+                                        <?php endif; ?>
+                                    </div>
+                                    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
+                                        <a href="freezer_kyc.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-primary" style="margin-top:0.35rem;">KYC</a>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    <div class="kyc-ok-date">
+                                        Due <?= htmlspecialchars((string)($rowNextDue ?? '—')) ?>
+                                        <?php if (!$rowLastKyc && $rowInstall): ?>
+                                            <span style="display:block;">from install</span>
+                                        <?php endif; ?>
+                                    </div>
                                 <?php endif; ?>
                             </td>
                             <?php if (AppConfig::IOT_ENABLED): ?>
@@ -238,22 +433,10 @@ require_once __DIR__ . '/includes/header.php';
                             <td>
                                 <span style="font-size: 0.75rem; color: #475569;"><?= htmlspecialchars($row['freezer_condition']) ?></span>
                             </td>
-                            <td>
-                                <?php if (!empty($row['qr_code_path']) && file_exists(__DIR__ . '/' . $row['qr_code_path'])): ?>
-                                    <a href="qr_print.php?id=<?= urlencode($row['unique_freezer_id']) ?>" title="Print QR Sticker" target="_blank">
-                                        <img src="<?= htmlspecialchars($row['qr_code_path']) ?>" alt="QR" style="width: 36px; height: 36px; border: 1px solid var(--border-color); border-radius: 4px; padding: 2px;">
-                                    </a>
-                                <?php else: ?>
-                                    <a href="profile_view.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="btn btn-sm btn-outline">QR</a>
-                                <?php endif; ?>
-                            </td>
                             <td style="text-align: right; white-space: nowrap;">
                                 <a href="profile_view.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="btn btn-sm btn-secondary" title="View Full Details">View</a>
                                 <a href="profile_edit.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-outline" title="Edit">Edit</a>
                                 <a href="qr_print.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="btn btn-sm btn-outline" target="_blank" title="Print Tag">Print</a>
-                                <?php if (AuthService::hasRole('super_admin')): ?>
-                                    <a href="profile_delete.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-outline" style="color: #dc2626;" onclick="return confirm('Delete this freezer profile?');" title="Delete">Del</a>
-                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -262,20 +445,133 @@ require_once __DIR__ . '/includes/header.php';
         </table>
     </div>
 
-    <!-- Pagination -->
-    <?php if ($totalPages > 1): ?>
-        <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem;">
-            <span>Showing Page <?= $page ?> of <?= $totalPages ?> (<?= $totalCount ?> total items)</span>
-            <div style="display: flex; gap: 0.35rem;">
-                <?php if ($page > 1): ?>
-                    <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['page' => $page - 1])) ?>" class="btn btn-sm btn-outline">&larr; Prev</a>
-                <?php endif; ?>
-                <?php if ($page < $totalPages): ?>
-                    <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['page' => $page + 1])) ?>" class="btn btn-sm btn-outline">Next &rarr;</a>
-                <?php endif; ?>
-            </div>
+    <!-- Pagination — same pattern as Tag inventory -->
+    <?php if ($totalCount > 0): ?>
+    <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+        <div style="font-size:0.85rem; color:#64748b;">
+            Showing <strong><?= (int)$rangeFrom ?>–<?= (int)$rangeTo ?></strong> of <strong><?= (int)$totalCount ?></strong>
+            · 20 per page
         </div>
+        <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
+            <?php
+            $prevPage = max(1, $page - 1);
+            $nextPage = min($totalPages, $page + 1);
+            $canPrev = $page > 1 && $totalCount > 0;
+            $canNext = $page < $totalPages && $totalCount > 0;
+            ?>
+            <?php if ($canPrev): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl($prevPage)) ?>" data-profiles-loading>Prev</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true" title="No previous page">Prev</button>
+            <?php endif; ?>
+            <?php
+            $window = 2;
+            $startP = max(1, $page - $window);
+            $endP = min($totalPages, $page + $window);
+            if ($startP > 1): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl(1)) ?>" data-profiles-loading>1</a>
+                <?php if ($startP > 2): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+            <?php endif; ?>
+            <?php for ($p = $startP; $p <= $endP; $p++): ?>
+                <a class="btn btn-sm <?= $p === $page ? 'btn-primary' : 'btn-secondary' ?>"
+                   href="<?= htmlspecialchars($profilesPageUrl($p)) ?>"
+                   data-profiles-loading><?= $p ?></a>
+            <?php endfor; ?>
+            <?php if ($endP < $totalPages): ?>
+                <?php if ($endP < $totalPages - 1): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl($totalPages)) ?>" data-profiles-loading><?= (int)$totalPages ?></a>
+            <?php endif; ?>
+            <?php if ($canNext): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl($nextPage)) ?>" data-profiles-loading>Next</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true" title="No next page">Next</button>
+            <?php endif; ?>
+        </div>
+    </div>
     <?php endif; ?>
 </div>
+
+<script>
+(function () {
+    var openBtn = document.getElementById('profiles-filter-open');
+    var closeBtn = document.getElementById('profiles-filter-close');
+    var drawer = document.getElementById('profiles-filter-drawer');
+    var backdrop = document.getElementById('profiles-filter-backdrop');
+    var loadingEl = document.getElementById('profiles-list-loading');
+
+    function showProfilesLoading() {
+        var el = loadingEl || document.getElementById('profiles-list-loading');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'profiles-list-loading';
+            el.className = 'profiles-fetch-loading';
+            el.innerHTML = '<div class="profiles-list-loading-inner">' +
+                '<div class="profiles-list-spinner" aria-hidden="true"></div>' +
+                '<div class="profiles-list-loading-text">Loading freezers…</div>' +
+                '<div class="profiles-list-loading-sub">Please wait</div></div>';
+            document.body.appendChild(el);
+            loadingEl = el;
+        }
+        el.hidden = false;
+        el.removeAttribute('hidden');
+        el.classList.add('is-on');
+        el.setAttribute('aria-busy', 'true');
+        document.body.classList.add('profiles-is-loading');
+        // Force paint before navigation so spinner is visible
+        void el.offsetWidth;
+    }
+
+    function openDrawer() {
+        if (!drawer || !backdrop) return;
+        drawer.hidden = false;
+        backdrop.hidden = false;
+        requestAnimationFrame(function () {
+            drawer.classList.add('is-open');
+            backdrop.classList.add('is-open');
+        });
+        document.body.classList.add('filter-drawer-open');
+        if (openBtn) openBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeDrawer() {
+        if (!drawer || !backdrop) return;
+        drawer.classList.remove('is-open');
+        backdrop.classList.remove('is-open');
+        if (openBtn) openBtn.setAttribute('aria-expanded', 'false');
+        document.body.classList.remove('filter-drawer-open');
+        setTimeout(function () {
+            if (!drawer.classList.contains('is-open')) {
+                drawer.hidden = true;
+                backdrop.hidden = true;
+            }
+        }, 280);
+    }
+
+    if (openBtn) openBtn.addEventListener('click', openDrawer);
+    if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+    if (backdrop) backdrop.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && drawer && drawer.classList.contains('is-open')) closeDrawer();
+    });
+
+    // Loading spinner on search / filter / pagination
+    document.querySelectorAll('#profiles-search-form, #profiles-filter-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            showProfilesLoading();
+        });
+    });
+
+    document.addEventListener('click', function (e) {
+        var link = e.target.closest('[data-profiles-loading], .profiles-filter-bar a.btn-secondary, .filter-drawer-foot a.btn-secondary');
+        if (!link) return;
+        if (link.disabled || link.getAttribute('aria-disabled') === 'true' || link.classList.contains('disabled')) {
+            e.preventDefault();
+            return;
+        }
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        showProfilesLoading();
+    }, true);
+})();
+</script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

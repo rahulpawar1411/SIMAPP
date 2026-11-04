@@ -12,6 +12,7 @@ use App\Services\QRCodeService;
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
 $csrfToken = AuthService::generateCsrfToken();
+Freezer::ensureSimColumns();
 
 $idParam = $_GET['id'] ?? null;
 if (!$idParam) {
@@ -68,8 +69,9 @@ if ($profileAssetTag && !empty($profileAssetTag['qr_code_path']) && file_exists(
 $storeFreezers = [$freezer];
 try {
     $pdoSf = \App\Config\Database::getConnection();
+    Freezer::ensureSimColumns();
     $sfStmt = $pdoSf->prepare("SELECT f.id, f.unique_freezer_id, f.status, f.company_code, f.model_number, f.freezer_type
-        FROM freezers f WHERE f.store_id = :sid ORDER BY f.id ASC");
+        FROM freezers f WHERE f.store_id = :sid AND f.deleted_at IS NULL ORDER BY f.id ASC");
     $sfStmt->execute(['sid' => (int)$freezer['store_id']]);
     $rows = $sfStmt->fetchAll();
     if ($rows) {
@@ -135,11 +137,11 @@ require_once __DIR__ . '/includes/header.php';
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank">Print QR</a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Edit</a>
     <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm <?= $kycStatus['due'] ? 'btn-primary' : 'btn-outline' ?>">
-        KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?>
-    </a>
-    <?php if (AuthService::hasRole('super_admin')): ?>
-        <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('Delete this freezer profile and attached records?');">Delete</a>
-    <?php endif; ?>
+            KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?>
+        </a>
+        <?php if (AuthService::hasRole('super_admin')): ?>
+        <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm" title="Password required">Delete</a>
+        <?php endif; ?>
 </div>
 
 <?php if (!empty($_GET['created'])): ?>
@@ -205,24 +207,24 @@ require_once __DIR__ . '/includes/header.php';
             <?php else: ?>
                 <div class="sp-hero-placeholder">No store photo</div>
             <?php endif; ?>
-        </div>
+                </div>
         <div class="sp-hero-body">
             <div class="sp-hero-top">
                 <div>
                     <h2 class="sp-store-name"><?= htmlspecialchars($freezer['store_name']) ?></h2>
                     <div class="sp-outlet"><?= htmlspecialchars($freezer['outlet_id'] ?? '—') ?></div>
-                </div>
+            </div>
                 <?php if (($freezer['status'] ?? '') === 'Active'): ?>
                     <span class="badge badge-success">Active</span>
-                <?php else: ?>
+                    <?php else: ?>
                     <span class="badge badge-warning"><?= htmlspecialchars($freezer['status'] ?? '—') ?></span>
-                <?php endif; ?>
-            </div>
+                    <?php endif; ?>
+                </div>
             <div class="sp-contact-row">
                 <div><span>Owner / Operator</span><strong><?= htmlspecialchars(($freezer['contact_person'] ?? '') !== '' ? $freezer['contact_person'] : 'N/A') ?></strong></div>
                 <div><span>Phone</span><strong><?= htmlspecialchars($viewPhone !== '' ? $viewPhone : 'N/A') ?></strong></div>
                 <div><span>Email</span><strong><?= htmlspecialchars(($freezer['store_email'] ?? '') !== '' ? $freezer['store_email'] : 'N/A') ?></strong></div>
-            </div>
+                </div>
             <div class="sp-location-chips">
                 <span><?= htmlspecialchars($freezer['store_zone'] ?? $freezer['zone'] ?? '—') ?></span>
                 <span><?= htmlspecialchars($freezer['store_state'] ?? '—') ?></span>
@@ -243,13 +245,13 @@ require_once __DIR__ . '/includes/header.php';
             <?php else: ?>
                 <div class="sp-current-loc-chip is-empty">Current location not saved yet</div>
             <?php endif; ?>
+            </div>
         </div>
-    </div>
 
     <div class="card sp-qr-card">
-        <div class="card-header">
+            <div class="card-header">
             <div class="card-title"><span>Asset QR</span></div>
-        </div>
+                </div>
         <div class="card-body" style="text-align:center;">
             <div class="sp-qr-frame">
                 <?php if ($qrPath && file_exists(__DIR__ . '/' . $qrPath)): ?>
@@ -269,10 +271,10 @@ require_once __DIR__ . '/includes/header.php';
                 <?php if ($qrPath): ?>
                     <a href="<?= htmlspecialchars($qrPath) ?>" download class="btn btn-sm btn-outline">Download QR</a>
                 <?php endif; ?>
-            </div>
-        </div>
-    </div>
-</div>
+                    </div>
+                </div>
+                    </div>
+                    </div>
 
 <!-- Tabs -->
 <div class="sp-tabs" role="tablist">
@@ -289,7 +291,7 @@ require_once __DIR__ . '/includes/header.php';
         <a href="<?= $baseUrl ?>&tab=<?= $key ?><?= $key === 'history' ? '#store-history' : '' ?>"
            class="sp-tab <?= $activeTab === $key ? 'active' : '' ?>"><?= htmlspecialchars($label) ?></a>
     <?php endforeach; ?>
-</div>
+                    </div>
 
 <?php if ($activeTab === 'overview'): ?>
 <div class="sp-main-grid">
@@ -297,7 +299,7 @@ require_once __DIR__ . '/includes/header.php';
         <div class="card-header">
             <div class="card-title"><span>Store details</span></div>
             <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline">Edit</a>
-        </div>
+                    </div>
         <div class="card-body">
             <div class="profile-kv-grid">
                 <div class="profile-kv"><span class="profile-kv-label">Store name</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_name'] ?? '')) ?></strong></div>
@@ -316,7 +318,7 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="profile-kv"><span class="profile-kv-label">Aadhaar</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($aadharDisplay) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">FSSAI</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['fssai_number'] ?? '')) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">GST</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['gst_number'] ?? '')) ?></strong></div>
-            </div>
+                </div>
 
             <div class="sp-current-loc-panel">
                 <div class="sp-current-loc-panel-head">
@@ -338,14 +340,14 @@ require_once __DIR__ . '/includes/header.php';
                             <strong class="profile-kv-value">
                                 <a href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener" class="sp-maps-link"><?= htmlspecialchars($storeMapsLink) ?></a>
                             </strong>
-                        </div>
-                    </div>
-                <?php else: ?>
-                    <p class="sp-current-loc-empty">No current location saved. Use <strong>Save my current location</strong> on the map card.</p>
-                <?php endif; ?>
             </div>
         </div>
+                <?php else: ?>
+                    <p class="sp-current-loc-empty">No current location saved. Use <strong>Save my current location</strong> on the map card.</p>
+        <?php endif; ?>
     </div>
+                </div>
+            </div>
 
     <div class="sp-side-stack">
         <div class="card">
@@ -358,26 +360,46 @@ require_once __DIR__ . '/includes/header.php';
                     <?php else: ?>
                         <span class="badge badge-warning"><?= htmlspecialchars($freezer['status'] ?? '—') ?></span>
                     <?php endif; ?>
-                </div>
+                    </div>
                 <div class="sp-kyc-box">
-                    <?php if (!empty($kycStatus['current'])): ?>
-                        <div><span>Last KYC</span><strong><?= htmlspecialchars($kycStatus['current']['verified_at']) ?> · <?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?></strong></div>
-                    <?php else: ?>
-                        <div><span>Last KYC</span><strong>Not done this cycle</strong></div>
-                    <?php endif; ?>
-                    <div><span>Cycle</span><strong><?= htmlspecialchars($kycStatus['cycle']['label'] ?? '') ?></strong></div>
-                    <div><span>Next / due</span>
-                        <strong class="<?= !empty($kycStatus['due']) ? 'text-warn' : '' ?>">
-                            <?= !empty($kycStatus['due']) ? 'Due now' : htmlspecialchars($kycStatus['cycle']['window'] ?? '—') ?>
+                    <?php
+                    $kycLastAtStore = $kycStatus['last_at_store'] ?? $kycStatus['current'] ?? null;
+                    $kycLastDate = $kycLastAtStore['verified_at'] ?? ($kycStatus['last']['verified_at'] ?? null);
+                    ?>
+                    <div>
+                        <span>KYC window</span>
+                        <strong>
+                            <?= $kycLastDate
+                                ? 'Last KYC: ' . htmlspecialchars((string)$kycLastDate)
+                                : 'Last KYC: —' ?>
+                            <?php if (!empty($kycLastAtStore['result'])): ?>
+                                · <?= htmlspecialchars((string)$kycLastAtStore['result']) ?>
+                            <?php endif; ?>
                         </strong>
                     </div>
-                </div>
+                    <div><span>Gap</span><strong>Every <?= (int)($kycStatus['gap_months'] ?? 6) ?> months</strong></div>
+                    <?php if (!$kycLastDate && ($kycStatus['anchor_source'] ?? '') === 'installation' && !empty($kycStatus['anchor_date'])): ?>
+                        <div><span>From install</span><strong><?= htmlspecialchars((string)$kycStatus['anchor_date']) ?></strong></div>
+                    <?php endif; ?>
+                    <div><span>Window ends / due</span>
+                        <strong class="<?= !empty($kycStatus['due']) ? 'text-warn' : '' ?>">
+                            <?php if (!empty($kycStatus['due'])): ?>
+                                Due now
+                                <?php if (!empty($kycStatus['next_due_at'])): ?>
+                                    (<?= htmlspecialchars((string)$kycStatus['next_due_at']) ?>)
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <?= htmlspecialchars((string)($kycStatus['next_due_at'] ?? '—')) ?>
+                            <?php endif; ?>
+                        </strong>
+                    </div>
+                    </div>
                 <a href="freezer_kyc.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary btn-sm" style="margin-top:0.75rem;"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
-            </div>
-        </div>
+                    </div>
+                    </div>
 
         <?php if ($profileAssetTag): ?>
-        <div class="card">
+        <div class="card tag-inv-profile">
             <div class="card-header"><div class="card-title"><span>Tag inventory</span></div></div>
             <div class="card-body">
                 <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;">
@@ -389,21 +411,21 @@ require_once __DIR__ . '/includes/header.php';
                             <span class="badge badge-primary">Unused</span>
                         <?php endif; ?>
                     </div>
-                    <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Batch</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['batch_label'] ?: '—') ?></strong></div>
-                    <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Created</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['created_at'] ?? '—') ?></strong></div>
+                    <div class="profile-kv profile-kv-wide hide-mobile"><span class="profile-kv-label">Batch</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['batch_label'] ?: '—') ?></strong></div>
+                    <div class="profile-kv profile-kv-wide hide-mobile"><span class="profile-kv-label">Created</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['created_at'] ?? '—') ?></strong></div>
                 </div>
             </div>
         </div>
         <?php endif; ?>
-    </div>
-</div>
+            </div>
+        </div>
 
 <div class="sp-main-grid sp-main-grid-2">
-    <div class="card">
+        <div class="card">
         <div class="card-header"><div class="card-title"><span>Location on map</span></div>
             <div class="sp-map-actions-wrap">
                 <div class="sp-map-actions">
-                    <?php if (!empty($freezer['store_latitude'])): ?>
+                <?php if (!empty($freezer['store_latitude'])): ?>
                         <a href="https://maps.google.com/?q=<?= urlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']) ?>" target="_blank" rel="noopener" class="btn btn-sm btn-outline">Open Maps</a>
                         <?php
                         $shareMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
@@ -421,7 +443,7 @@ require_once __DIR__ . '/includes/header.php';
                             data-wa-phone="<?= htmlspecialchars($viewPhone) ?>">
                             Share location
                         </button>
-                    <?php endif; ?>
+                <?php endif; ?>
                     <button type="button" class="btn btn-sm btn-success"
                         data-save-current-location
                         data-store-id="<?= (int)$freezer['store_id'] ?>"
@@ -431,16 +453,16 @@ require_once __DIR__ . '/includes/header.php';
                         data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>">
                         Save my current location
                     </button>
-                </div>
+            </div>
                 <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
                     <span class="gps-process-spinner" aria-hidden="true"></span>
                     <span class="gps-process-text">Processing…</span>
-                </div>
-            </div>
-        </div>
+                    </div>
+                    </div>
+                    </div>
         <div class="card-body">
             <?php if (!empty($freezer['store_latitude'])): ?>
-                <?php
+                        <?php
                 $storeMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
                 if ($storeMapsLink === '') {
                     $storeMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
@@ -448,30 +470,30 @@ require_once __DIR__ . '/includes/header.php';
                 ?>
                 <div class="sp-map-wrap">
                     <div id="store-view-map"></div>
-                </div>
+                    </div>
                 <div class="sp-location-link-box">
                     <div class="sp-location-link-label">Current location link</div>
                     <a class="sp-location-link" href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener"><?= htmlspecialchars($storeMapsLink) ?></a>
                     <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="<?= htmlspecialchars($storeMapsLink) ?>">Copy link</button>
-                </div>
+                    </div>
                 <div class="sp-latlng">
                     Lat <?= htmlspecialchars((string)$freezer['store_latitude']) ?>
                     · Lng <?= htmlspecialchars((string)$freezer['store_longitude']) ?>
                     <?php if (!empty($freezer['store_gps_captured_at'])): ?>
                         · Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?>
                     <?php endif; ?>
-                </div>
+                    </div>
             <?php else: ?>
                 <p style="color:#94a3b8; font-size:0.875rem; margin:0;">No GPS yet — tap <strong>Save my current location</strong> to capture &amp; store your live Maps link.</p>
             <?php endif; ?>
-        </div>
-    </div>
+                    </div>
+                </div>
 
     <div class="card">
         <div class="card-header"><div class="card-title"><span>Store photos</span></div></div>
         <div class="card-body">
             <div class="sp-photo-row">
-                <?php
+                            <?php
                 $photos = [
                     ['path' => $freezer['image_store_front'] ?? '', 'label' => 'Store front'],
                     ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer left'],
@@ -486,14 +508,15 @@ require_once __DIR__ . '/includes/header.php';
                         <?php else: ?>
                             <div class="sp-photo-empty"><?= htmlspecialchars($ph['label']) ?></div>
                         <?php endif; ?>
-                    </div>
+                        </div>
                 <?php endforeach; ?>
-            </div>
+                    </div>
             <div class="sp-photo-row" style="margin-top:0.75rem;">
                 <?php
                 $docs = [
                     ['path' => $freezer['image_aadhar_card'] ?? '', 'label' => 'Aadhaar front'],
                     ['path' => $freezer['image_aadhar_back'] ?? '', 'label' => 'Aadhaar back'],
+                    ['path' => $freezer['image_sim'] ?? '', 'label' => 'SIM number'],
                 ];
                 foreach ($docs as $ph):
                     $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
@@ -507,15 +530,21 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 <?php endforeach; ?>
             </div>
+            <?php if (!empty($freezer['sim_number']) || !empty($freezer['sim_company'])): ?>
+                <div class="profile-kv-grid" style="margin-top:0.85rem;">
+                    <div class="profile-kv"><span class="profile-kv-label">SIM number</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_company'] ?? '')) ?></strong></div>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
-</div>
+        </div>
 
 <div class="sp-main-grid sp-main-grid-2">
-    <div class="card">
-        <div class="card-header">
+        <div class="card">
+            <div class="card-header">
             <div class="card-title"><span>Associated freezers (<?= count($storeFreezers) ?>)</span></div>
-        </div>
+                </div>
         <div class="card-body" style="padding:0;">
             <ul class="sp-freezer-list">
                 <?php foreach ($storeFreezers as $sf): ?>
@@ -526,14 +555,14 @@ require_once __DIR__ . '/includes/header.php';
                         </a>
                         <?php if (($sf['status'] ?? '') === 'Active'): ?>
                             <span class="badge badge-success">Active</span>
-                        <?php else: ?>
+                            <?php else: ?>
                             <span class="badge badge-warning"><?= htmlspecialchars($sf['status'] ?? '—') ?></span>
-                        <?php endif; ?>
+                            <?php endif; ?>
                     </li>
                 <?php endforeach; ?>
             </ul>
-        </div>
-    </div>
+                        </div>
+                    </div>
 
     <div class="card">
         <div class="card-header">
@@ -552,6 +581,8 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="profile-kv"><span class="profile-kv-label">Condition</span><span class="badge badge-neutral"><?= htmlspecialchars($valOrDash($freezer['freezer_condition'] ?? '')) ?></span></div>
                 <div class="profile-kv"><span class="profile-kv-label">Sequence</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['unit_sequence'] ?? '')) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['status'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">SIM number</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_company'] ?? '')) ?></strong></div>
                 <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Remark / notes</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['notes'] ?? '')) ?></strong></div>
             </div>
             <?php if (AppConfig::IOT_ENABLED): ?>
@@ -566,17 +597,17 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="profile-kv"><span class="profile-kv-label">Last ping</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_last_ping'] ?? '')) ?></strong></div>
                 </div>
             </div>
-            <?php endif; ?>
+                            <?php endif; ?>
         </div>
-    </div>
-</div>
+                        </div>
+                    </div>
 
 <div class="card">
     <div class="card-header"><div class="card-title"><span>Store activity</span></div></div>
     <div class="card-body">
         <?php if (empty($lifecycleTimeline)): ?>
             <p style="color:#94a3b8; margin:0;">No activity yet.</p>
-        <?php else: ?>
+                            <?php else: ?>
             <ul class="sp-timeline">
                 <?php foreach (array_slice($lifecycleTimeline, 0, 8) as $ev): ?>
                     <li>
@@ -590,15 +621,15 @@ require_once __DIR__ . '/includes/header.php';
                                 <?php endif; ?>
                                 <?php if (!empty($ev['store_name'])): ?>
                                     · <?= htmlspecialchars($ev['store_name']) ?>
-                                <?php endif; ?>
-                            </div>
+                            <?php endif; ?>
                         </div>
+                    </div>
                     </li>
                 <?php endforeach; ?>
             </ul>
-        <?php endif; ?>
-    </div>
-</div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
 
 <?php elseif ($activeTab === 'freezers'): ?>
 <div class="card">
@@ -642,7 +673,7 @@ require_once __DIR__ . '/includes/header.php';
                         data-wa-phone="<?= htmlspecialchars($viewPhone) ?>">
                         Share location
                     </button>
-                <?php endif; ?>
+                            <?php endif; ?>
                 <button type="button" class="btn btn-sm btn-success"
                     data-save-current-location
                     data-store-id="<?= (int)$freezer['store_id'] ?>"
@@ -652,7 +683,7 @@ require_once __DIR__ . '/includes/header.php';
                     data-wa-title="<?= htmlspecialchars($freezer['store_name'] ?? 'Store location') ?>">
                     Save my current location
                 </button>
-            </div>
+                        </div>
             <div class="gps-process-loading" hidden aria-live="polite">
                 <span class="gps-process-spinner" aria-hidden="true"></span>
                 <span class="gps-process-text">Processing…</span>
@@ -666,17 +697,17 @@ require_once __DIR__ . '/includes/header.php';
             <div class="profile-kv"><span class="profile-kv-label">State</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_state'] ?? '')) ?></strong></div>
             <div class="profile-kv"><span class="profile-kv-label">PIN</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['store_pincode'] ?? '')) ?></strong></div>
             <div class="profile-kv" style="grid-column:1 / -1;"><span class="profile-kv-label">Address</span><strong class="profile-kv-value"><?= htmlspecialchars($storeAddressLine !== '' ? $storeAddressLine : '—') ?></strong></div>
-        </div>
+                    </div>
 
         <div class="sp-current-loc-panel" style="margin-top:0; margin-bottom:1.15rem;">
             <div class="sp-current-loc-panel-head">
                 <h4>Current location</h4>
                 <?php if ($hasGps): ?>
                     <span class="badge badge-success">Recorded</span>
-                <?php else: ?>
+                            <?php else: ?>
                     <span class="badge badge-warning">Not set</span>
-                <?php endif; ?>
-            </div>
+                            <?php endif; ?>
+                        </div>
             <?php if ($hasGps): ?>
                 <div class="profile-kv-grid">
                     <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6)) ?></strong></div>
@@ -692,8 +723,8 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             <?php else: ?>
                 <p class="sp-current-loc-empty">No current location saved yet.</p>
-            <?php endif; ?>
-        </div>
+                    <?php endif; ?>
+                </div>
 
         <?php if ($hasGps): ?>
             <div class="sp-map-wrap sp-map-wrap-lg"><div id="store-view-map"></div></div>
@@ -708,7 +739,7 @@ require_once __DIR__ . '/includes/header.php';
                 <?php if (!empty($freezer['store_gps_captured_at'])): ?>
                     · Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?>
                 <?php endif; ?>
-            </div>
+        </div>
         <?php else: ?>
             <p style="color:#94a3b8;">No GPS yet — tap <strong>Save my current location</strong> to store your live Maps link.</p>
         <?php endif; ?>
@@ -757,16 +788,25 @@ krsort($kycByYear);
     <div class="card-body">
         <?php if ($kycStatus['due']): ?>
             <div class="alert alert-warning" style="margin-bottom:1rem;">
-                <strong><?= htmlspecialchars($kycStatus['cycle']['label']) ?></strong> KYC due
-                (<?= htmlspecialchars($kycStatus['cycle']['window']) ?>).
+                KYC due (every <?= (int)($kycStatus['gap_months'] ?? 6) ?> months from install / last KYC).
+                <?php if (($kycStatus['anchor_source'] ?? '') === 'installation'): ?>
+                    <span class="kyc-pending-date" style="display:inline;">Install <?= htmlspecialchars((string)($kycStatus['anchor_date'] ?? '')) ?></span>.
+                <?php endif; ?>
                 Current store: <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>
                 — <?= htmlspecialchars($freezer['store_name']) ?>.
             </div>
         <?php else: ?>
             <div class="alert alert-success" style="margin-bottom:1rem;">
-                <strong><?= htmlspecialchars($kycStatus['cycle']['label']) ?></strong> KYC done —
+                <?php if (!empty($kycStatus['current'])): ?>
+                    KYC done —
                 <?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?>
-                on <?= htmlspecialchars($kycStatus['current']['verified_at'] ?? '') ?>
+                    on <?= htmlspecialchars($kycStatus['current']['verified_at'] ?? '') ?>.
+                <?php else: ?>
+                    Within KYC window from installation
+                    <?= htmlspecialchars((string)($kycStatus['anchor_date'] ?? $freezer['installation_date'] ?? '')) ?>.
+                <?php endif; ?>
+                Next due <?= htmlspecialchars((string)($kycStatus['next_due_at'] ?? '—')) ?>
+                (<?= (int)($kycStatus['gap_months'] ?? 6) ?>-month gap)
                 at <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>.
             </div>
         <?php endif; ?>
@@ -891,9 +931,9 @@ krsort($kycByYear);
                                         <span class="badge badge-success">PASS</span>
                                     <?php elseif (($k['result'] ?? '') === 'FAIL'): ?>
                                         <span class="badge badge-danger">FAIL</span>
-                                    <?php else: ?>
+        <?php else: ?>
                                         <span class="badge badge-warning"><?= htmlspecialchars($k['result'] ?? '—') ?></span>
-                                    <?php endif; ?>
+                            <?php endif; ?>
                                 </td>
                                 <td class="excel-mono"><?= htmlspecialchars($k['outlet_id'] ?? '—') ?></td>
                                 <td><?= htmlspecialchars($k['store_name'] ?? '—') ?></td>
@@ -910,7 +950,7 @@ krsort($kycByYear);
                                 <td><?= htmlspecialchars($k['notes'] ?: '—') ?></td>
                                 <td><?= htmlspecialchars($k['verified_by_name'] ?: '—') ?></td>
                             </tr>
-                        <?php endforeach; ?>
+                <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
@@ -925,8 +965,8 @@ krsort($kycByYear);
             </p>
             <div class="excel-wrap">
                 <table class="excel-sheet">
-                    <thead>
-                        <tr>
+                        <thead>
+                            <tr>
                             <th class="excel-col-index">#</th>
                             <th>Year</th>
                             <th>H1 result</th>
@@ -937,9 +977,9 @@ krsort($kycByYear);
                             <th>H2 date</th>
                             <th>H2 store ID</th>
                             <th>H2 store name</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+                            </tr>
+                        </thead>
+                        <tbody>
                         <?php $yNum = 1; foreach ($kycByYear as $year => $halves): ?>
                             <?php $h1 = $halves['h1']; $h2 = $halves['h2']; ?>
                             <tr>
@@ -953,11 +993,11 @@ krsort($kycByYear);
                                 <td><?= $h2 ? htmlspecialchars($h2['verified_at']) : '' ?></td>
                                 <td class="excel-mono"><?= $h2 ? htmlspecialchars($h2['outlet_id']) : '' ?></td>
                                 <td><?= $h2 ? htmlspecialchars($h2['store_name']) : '' ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
         <?php endif; ?>
     </div>
 </div>

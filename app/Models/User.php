@@ -7,7 +7,23 @@ use PDO;
 
 class User {
 
+    /** Ensure users.role ENUM includes technician / viewer. */
+    public static function ensureRoleColumn(): void {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $pdo = Database::getConnection();
+            $pdo->exec("ALTER TABLE `users` MODIFY COLUMN `role` ENUM('super_admin','technician','viewer') NOT NULL DEFAULT 'super_admin'");
+        } catch (\Throwable $e) {
+            // column already updated or DB unavailable
+        }
+    }
+
     public static function all(): array {
+        self::ensureRoleColumn();
         $pdo = Database::getConnection();
         $stmt = $pdo->query("SELECT `id`, `name`, `email`, `role`, `phone`, `status`, `last_login`, `created_at`
             FROM `users` ORDER BY `id` ASC");
@@ -40,15 +56,13 @@ class User {
             return ['success' => false, 'error' => 'User not found.'];
         }
 
+        self::ensureRoleColumn();
         $name = trim($data['name'] ?? '');
         $email = strtolower(trim($data['email'] ?? ''));
         $password = $data['password'] ?? '';
-        $role = AppConfig::ROLE_SUPER_ADMIN;
+        $role = trim((string)($data['role'] ?? $existing['role'] ?? AppConfig::ROLE_SUPER_ADMIN));
         $status = trim($data['status'] ?? $existing['status']);
-
-        $allowedRoles = [
-            AppConfig::ROLE_SUPER_ADMIN,
-        ];
+        $allowedRoles = AppConfig::allowedRoles();
 
         if ($name === '' || $email === '') {
             return ['success' => false, 'error' => 'Name and email are required.'];
@@ -155,15 +169,13 @@ class User {
     }
 
     public static function create(array $data): array {
+        self::ensureRoleColumn();
         $name = trim($data['name'] ?? '');
         $email = strtolower(trim($data['email'] ?? ''));
         $password = $data['password'] ?? '';
-        $role = AppConfig::ROLE_SUPER_ADMIN;
+        $role = trim((string)($data['role'] ?? AppConfig::ROLE_SUPER_ADMIN));
         $status = trim($data['status'] ?? 'active');
-
-        $allowedRoles = [
-            AppConfig::ROLE_SUPER_ADMIN,
-        ];
+        $allowedRoles = AppConfig::allowedRoles();
 
         if ($name === '' || $email === '' || $password === '') {
             return ['success' => false, 'error' => 'Name, email and password are required.'];
