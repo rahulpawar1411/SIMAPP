@@ -2,6 +2,7 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\AppLogger;
 use App\Models\User;
 use App\Config\AppConfig;
 
@@ -18,6 +19,7 @@ $editUser = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security token. Please try again.';
+        AppLogger::failed('users.csrf', $error);
     } else {
         $action = $_POST['action'] ?? 'create';
 
@@ -33,8 +35,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($result['success']) {
                 $success = 'User created successfully. They can now sign in with the email and password you set.';
+                AppLogger::audit('users.create', 'User created', [
+                    'email' => $_POST['email'] ?? '',
+                    'role' => $_POST['role'] ?? '',
+                ]);
             } else {
                 $error = $result['error'] ?? 'Failed to create user.';
+                AppLogger::failed('users.create', $error, ['email' => $_POST['email'] ?? '']);
             }
         } elseif ($action === 'update') {
             $userId = (int)($_POST['user_id'] ?? 0);
@@ -42,6 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$editUser) {
                 $error = 'User not found.';
+                AppLogger::failed('users.update', $error, ['user_id' => $userId]);
             } else {
                 $result = User::update($userId, [
                     'name' => $_POST['name'] ?? '',
@@ -54,12 +62,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($result['success']) {
                     $success = 'User updated successfully.';
+                    AppLogger::audit('users.update', 'User updated', ['user_id' => $userId]);
                     $editUser = null;
                     header('Location: users.php?updated=1');
                     exit;
                 }
 
                 $error = $result['error'] ?? 'Failed to update user.';
+                AppLogger::failed('users.update', $error, ['user_id' => $userId]);
                 $editUser = User::findById($userId) ?: $editUser;
             }
         } elseif ($action === 'toggle_status') {
@@ -68,10 +78,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($userId === (int)$currentUser['id']) {
                 $error = 'You cannot deactivate your own account.';
+                AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
             } elseif ($userId > 0 && User::setStatus($userId, $newStatus)) {
                 $success = $newStatus === 'active' ? 'User activated.' : 'User deactivated.';
+                AppLogger::audit('users.toggle_status', $success, [
+                    'user_id' => $userId,
+                    'status' => $newStatus,
+                ]);
             } else {
                 $error = 'Could not update user status.';
+                AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
             }
         }
     }
@@ -155,9 +171,9 @@ require_once __DIR__ . '/includes/header.php';
     <?php endif; ?>
 
     <div class="card" style="margin-bottom: 1.5rem;" id="user-form-card">
-        <div class="card-header">
+        <div class="card-header users-form-head">
             <div class="card-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <?php if ($isEdit): ?>
                         <path d="M12 20h9"/>
                         <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
@@ -170,7 +186,7 @@ require_once __DIR__ . '/includes/header.php';
                 </svg>
                 <span><?= $isEdit ? 'Edit User' : 'Add New User' ?></span>
             </div>
-            <span class="badge badge-primary">Super Admin only</span>
+            <span class="badge badge-primary users-admin-badge">Super Admin only</span>
         </div>
         <div class="card-body">
             <p class="form-step-hint" style="margin-top:0;">
@@ -181,15 +197,6 @@ require_once __DIR__ . '/includes/header.php';
 
             <!-- Account + Access & Contact (one section) -->
             <div class="form-subsection">
-                <div class="form-subsection-head">
-                    <h3 class="form-subsection-title">
-                        Account Details &amp; Access
-                        <span><?= $isEdit
-                            ? 'Name, email, password, role, status &amp; phone'
-                            : 'Name, email, password, role &amp; phone' ?></span>
-                    </h3>
-                </div>
-
                 <div class="form-grid">
                     <div class="col-4 form-group">
                         <label class="form-label required" for="name">Full name</label>
@@ -333,8 +340,8 @@ require_once __DIR__ . '/includes/header.php';
 </div><!-- /users-page -->
 
 <!-- Users directory -->
-<div class="card" id="users-directory" style="margin-top: 1.5rem;">
-    <div class="card-header">
+<div class="card users-directory" id="users-directory">
+    <div class="card-header users-directory-head">
         <div class="card-title">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -345,12 +352,14 @@ require_once __DIR__ . '/includes/header.php';
             <span>All Users (<?= count($users) ?>)</span>
         </div>
     </div>
-    <div class="table-responsive">
+
+    <!-- Desktop table -->
+    <div class="table-responsive users-directory-desktop">
         <table class="data-table">
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th class="hide-mobile">Email</th>
+                    <th>Email</th>
                     <th>Role</th>
                     <th>Status</th>
                     <th style="text-align:right;">Action</th>
@@ -367,9 +376,8 @@ require_once __DIR__ . '/includes/header.php';
                                 <?php if (!empty($u['phone'])): ?>
                                     <div style="font-size:0.75rem;color:#64748b;"><?= htmlspecialchars($u['phone']) ?></div>
                                 <?php endif; ?>
-                                <div class="hide-desktop" style="font-size:0.75rem;color:#64748b; margin-top:0.15rem;"><?= htmlspecialchars($u['email']) ?></div>
                             </td>
-                            <td class="hide-mobile" style="font-size:0.85rem;"><?= htmlspecialchars($u['email']) ?></td>
+                            <td style="font-size:0.85rem;"><?= htmlspecialchars($u['email']) ?></td>
                             <td>
                                 <span class="badge badge-primary" style="text-transform: capitalize;">
                                     <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
@@ -403,6 +411,59 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+    </div>
+
+    <!-- Mobile cards -->
+    <div class="card-body users-directory-mobile">
+        <?php if (empty($users)): ?>
+            <p class="users-empty">No users found.</p>
+        <?php else: ?>
+            <ul class="users-card-list">
+                <?php foreach ($users as $u): ?>
+                    <li class="users-card">
+                        <div class="users-card-top">
+                            <div class="users-card-who">
+                                <div class="users-card-avatar"><?= strtoupper(substr($u['name'] ?? 'U', 0, 1)) ?></div>
+                                <div class="users-card-meta">
+                                    <strong class="users-card-name"><?= htmlspecialchars($u['name']) ?></strong>
+                                    <span class="users-card-email"><?= htmlspecialchars($u['email']) ?></span>
+                                    <?php if (!empty($u['phone'])): ?>
+                                        <span class="users-card-phone"><?= htmlspecialchars($u['phone']) ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <?php if ($u['status'] === 'active'): ?>
+                                <span class="badge badge-success">Active</span>
+                            <?php else: ?>
+                                <span class="badge badge-danger">Inactive</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="users-card-role">
+                            <span class="badge badge-primary" style="text-transform: capitalize;">
+                                <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
+                            </span>
+                            <?php if ((int)$u['id'] === (int)$currentUser['id']): ?>
+                                <span class="users-card-you">You</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="users-card-actions">
+                            <a href="users.php?edit=<?= (int)$u['id'] ?>#user-form-card" class="btn btn-sm btn-secondary">Edit</a>
+                            <?php if ((int)$u['id'] !== (int)$currentUser['id']): ?>
+                                <form method="POST">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="toggle_status">
+                                    <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
+                                    <input type="hidden" name="status" value="<?= htmlspecialchars($u['status']) ?>">
+                                    <button type="submit" class="btn btn-sm btn-outline">
+                                        <?= $u['status'] === 'active' ? 'Deactivate' : 'Activate' ?>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                        </div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
     </div>
 </div>
 

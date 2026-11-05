@@ -33,11 +33,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
     <title>Sign In | ReeferON DF</title>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/app.css?v=<?= (@filemtime(__DIR__ . '/assets/css/app.css') ?: time()) ?>-theme-green">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (@filemtime(__DIR__ . '/assets/css/app.css') ?: time()) ?>-theme-blue">
     <style>
+        /* Login — blue theme (not app green) */
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --primary-light: #eff6ff;
+            --primary-dark: #1e3a8a;
+            --info: #2563eb;
+            --accent: #38bdf8;
+        }
+        /* Login is standalone — ignore app shell zoom / field-nav bottom padding */
+        html {
+            height: 100%;
+            zoom: 1 !important;
+        }
+        html, body {
+            margin: 0;
+            padding: 0 !important;
+            min-height: 100%;
+            min-height: 100vh;
+            min-height: 100dvh;
+            overflow-x: hidden;
+        }
+        body {
+            display: block !important;
+            background: #0b1f3a;
+            padding-bottom: 0 !important;
+        }
         .login-wrap {
             min-height: 100vh;
             min-height: 100dvh;
+            height: 100%;
             display: grid;
             grid-template-columns: 1.15fr 1fr;
             background: #0b1f3a;
@@ -133,6 +161,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 12px;
             font-weight: 700;
         }
+        .login-card .btn-primary {
+            background-color: #2563eb !important;
+            border-color: #2563eb !important;
+            color: #fff !important;
+        }
+        .login-card .btn-primary:hover,
+        .login-card .btn-primary:focus {
+            background-color: #1d4ed8 !important;
+            border-color: #1d4ed8 !important;
+        }
+        .login-card .form-control:focus {
+            border-color: #2563eb !important;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2) !important;
+        }
+        .login-card .form-label.required::after,
+        .login-card .form-label .required {
+            color: #2563eb;
+        }
         .login-brand {
             display: flex;
             align-items: center;
@@ -140,8 +186,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 1.5rem;
         }
         .login-brand img {
-            height: 44px;
+            height: 64px;
             width: auto;
+            max-width: 80px;
+            object-fit: contain;
             display: block;
         }
         .demo-roles-box {
@@ -154,22 +202,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .demo-pill {
             display: inline-block;
-            background: #eff6ff;
-            color: #15803d;
+            background: #dbeafe;
+            color: #1d4ed8;
             padding: 0.25rem 0.65rem;
             border-radius: 999px;
             cursor: pointer;
             margin: 0.2rem 0.1rem;
             font-weight: 700;
         }
+        .demo-pill:hover {
+            background: #bfdbfe;
+            color: #1e40af;
+        }
         @media (max-width: 900px) {
-            .login-wrap { grid-template-columns: 1fr; }
+            .login-wrap {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr;
+                min-height: 100vh;
+                min-height: 100dvh;
+            }
             .login-hero {
-                min-height: 220px;
-                padding: 1.5rem;
+                min-height: 180px;
+                max-height: 32vh;
+                padding: 1.25rem 1.25rem 1.1rem;
                 justify-content: flex-end;
             }
-            .login-hero h1 { font-size: 1.45rem; max-width: none; }
+            .login-hero h1 { font-size: 1.35rem; max-width: none; }
+            .login-panel {
+                align-items: flex-start;
+                padding: 1rem 1rem max(1rem, env(safe-area-inset-bottom));
+            }
         }
     </style>
 </head>

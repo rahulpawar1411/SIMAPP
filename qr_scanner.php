@@ -2,40 +2,75 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\KycScanGate;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 
 AuthService::requireLogin();
 
+$purpose = strtolower(trim((string)($_GET['purpose'] ?? $_POST['purpose'] ?? '')));
+$isKycPurpose = ($purpose === 'kyc');
+$expectUnique = trim((string)($_GET['expect'] ?? $_POST['expect'] ?? ''));
+$error = null;
+
+// Camera / file scan unlock for KYC (JS posts here)
+if ($isKycPurpose && !empty($_POST['kyc_scan_code'])) {
+    $unlock = KycScanGate::tryUnlock((string)$_POST['kyc_scan_code'], $expectUnique);
+    if ($unlock['ok'] && $unlock['freezer']) {
+        header('Location: freezer_kyc.php?id=' . (int)$unlock['freezer']['id']);
+        exit;
+    }
+    $error = $unlock['error'] ?? 'Scan unlock failed.';
+}
+
 // Manual lookup submission (freezer Unique ID or blank tag RO-XXXXXX)
 if (!empty($_POST['manual_freezer_id'])) {
     $searchId = trim($_POST['manual_freezer_id']);
-    $found = Freezer::findByUniqueId($searchId);
-    if ($found) {
-        header("Location: profile_view.php?id=" . urlencode($found['unique_freezer_id']));
-        exit;
+    if ($isKycPurpose) {
+        $unlock = KycScanGate::tryUnlock($searchId, $expectUnique);
+        if ($unlock['ok'] && $unlock['freezer']) {
+            header('Location: freezer_kyc.php?id=' . (int)$unlock['freezer']['id']);
+            exit;
+        }
+        $error = $unlock['error'] ?? "No match for '{$searchId}'.";
+    } else {
+        $found = Freezer::findByUniqueId($searchId);
+        if ($found) {
+            header("Location: profile_view.php?id=" . urlencode($found['unique_freezer_id']));
+            exit;
+        }
+        $tag = AssetTag::findByCode($searchId);
+        if ($tag) {
+            header('Location: tag.php?t=' . urlencode($tag['tag_code']));
+            exit;
+        }
+        $error = "No freezer or blank QR tag found matching '{$searchId}'.";
     }
-    $tag = AssetTag::findByCode($searchId);
-    if ($tag) {
-        header('Location: tag.php?t=' . urlencode($tag['tag_code']));
-        exit;
-    }
-    $error = "No freezer or blank QR tag found matching '{$searchId}'.";
 }
 
-$pageTitle = 'Scan Freezer QR Tag';
+$pageTitle = $isKycPurpose ? 'Scan QR for KYC' : 'Scan Freezer QR Tag';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div class="field-scan-wrap" style="max-width: 600px; margin: 0 auto;">
     <div class="cfg-toolbar" style="margin-bottom:0.75rem;">
         <div class="cfg-toolbar-left">
-            <h1 class="cfg-toolbar-title">Scan QR → Register / View</h1>
+            <h1 class="cfg-toolbar-title"><?= $isKycPurpose ? 'Scan QR → Unlock KYC' : 'Scan QR → Register / View' ?></h1>
         </div>
     </div>
+    <?php if ($isKycPurpose): ?>
+        <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
+            Is freezer ka physical QR / Tag scan karo.
+            <?php if ($expectUnique !== ''): ?>
+                Expected: <code><?= htmlspecialchars($expectUnique) ?></code>
+            <?php endif; ?>
+            Galat unit scan hone pe KYC nahi khulegi.
+        </p>
+    <?php else: ?>
     <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
         <strong>Unused</strong> sticker → fill form. <strong>Registered</strong> sticker → show details.
     </p>
+    <?php endif; ?>
     <div class="field-scan-steps" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; font-size:0.75rem; font-weight:600; color:#475569;">
         <span style="background:#f0fdf4; color:#166534; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bbf7d0;">1. Scan</span>
         <span style="background:#fefce8; color:#854d0e; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #fde68a;">2. Fill info</span>
@@ -98,18 +133,31 @@ require_once __DIR__ . '/includes/header.php';
         </div>
         <div class="card-body">
             <form method="POST" action="" id="manual-qr-form" style="display: flex; gap: 0.75rem; align-items: flex-start;">
+                <?php if ($isKycPurpose): ?>
+                    <input type="hidden" name="purpose" value="kyc">
+                    <input type="hidden" name="expect" value="<?= htmlspecialchars($expectUnique) ?>">
+                <?php endif; ?>
                 <div class="qr-suggest-wrap" style="flex:1; min-width:0;">
                     <input type="text" name="manual_freezer_id" id="manual-freezer-id" class="form-control"
                            inputmode="text" autocomplete="off" autocapitalize="characters"
                            placeholder="Start typing RO-… or Unique ID" required
                            aria-autocomplete="list" aria-controls="qr-suggest-panel" aria-expanded="false">
                     <div id="qr-suggest-panel" class="qr-suggest-panel" hidden role="listbox"></div>
-                    <p class="qr-suggest-hint">Suggestions by QR type — <strong>Unused</strong> blank tags &amp; <strong>Assigned</strong> (with freezer type)</p>
+                    <p class="qr-suggest-hint"><?= $isKycPurpose
+                        ? 'Type the same Unique Freezer ID / Tag as on the physical unit.'
+                        : 'Suggestions by QR type — <strong>Unused</strong> blank tags &amp; <strong>Assigned</strong> (with freezer type)' ?></p>
                 </div>
                 <button type="submit" class="btn btn-primary" style="white-space: nowrap;">
-                    Open
+                    <?= $isKycPurpose ? 'Unlock KYC' : 'Open' ?>
                 </button>
             </form>
+            <?php if ($isKycPurpose): ?>
+            <form method="POST" action="" id="kyc-scan-unlock-form" hidden>
+                <input type="hidden" name="purpose" value="kyc">
+                <input type="hidden" name="expect" value="<?= htmlspecialchars($expectUnique) ?>">
+                <input type="hidden" name="kyc_scan_code" id="kyc-scan-code" value="">
+            </form>
+            <?php endif; ?>
         </div>
     </div>
 </div>
@@ -171,6 +219,8 @@ document.addEventListener('DOMContentLoaded', function () {
         requestAnimationFrame(tick);
     }
 
+    const isKycPurpose = <?= $isKycPurpose ? 'true' : 'false' ?>;
+
     function handleScannedData(data) {
         scanning = false;
         camStatus.textContent = 'Tag Detected!';
@@ -188,6 +238,18 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Blank tag URL, profile URL, or raw ID / RO-XXXXXX
         let raw = data.trim();
+
+        // KYC: server must verify scan matches expected freezer
+        if (isKycPurpose) {
+            const unlockForm = document.getElementById('kyc-scan-unlock-form');
+            const codeInput = document.getElementById('kyc-scan-code');
+            if (unlockForm && codeInput) {
+                codeInput.value = raw;
+                unlockForm.submit();
+                return;
+            }
+        }
+
         try {
             const url = new URL(raw, window.location.origin);
             const tagCode = url.searchParams.get('t');

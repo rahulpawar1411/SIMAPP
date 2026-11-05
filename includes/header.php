@@ -35,7 +35,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
     <!-- Sidebar -->
     <aside class="sidebar">
         <div class="sidebar-brand">
-            <img src="assets/img/logo.png" alt="ReeferON Logo" style="height: 40px; width: auto; max-width: 44px; object-fit: contain; filter: drop-shadow(0 2px 6px rgba(56, 189, 248, 0.4));">
+            <img src="assets/img/logo.png" alt="ReeferON Logo" class="sidebar-logo">
             <div class="brand-text">
                 <h1>ReeferON DF</h1>
                 <span>Cold-Chain Assets</span>
@@ -96,6 +96,16 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                     <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                 </svg>
                 <span>Technicians</span>
+            </a>
+            <a href="admin_logs.php" class="nav-link <?= $currentPage === 'admin_logs.php' ? 'active' : '' ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <line x1="10" y1="9" x2="8" y2="9"/>
+                </svg>
+                <span>Logs</span>
             </a>
             <?php endif; ?>
         </nav>

@@ -1,9 +1,4 @@
         </main>
-        
-        <footer class="no-print" style="padding: 1.25rem 1.5rem; text-align: center; font-size: 0.8rem; color: #94a3b8; border-top: 1px solid var(--border-color); background: #ffffff; margin-top: auto;">
-            <div>&copy; <?= date('Y') ?> ReeferON DF &bull; Deep Freezer Asset Management</div>
-            <div style="font-size: 0.725rem; margin-top: 0.25rem;">Cold-chain QR · KYC · Store history</div>
-        </footer>
     </div>
 </div>
 

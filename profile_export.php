@@ -26,5 +26,9 @@ if (!$freezer) {
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
 $sheet = strtolower(trim((string)($_GET['sheet'] ?? 'all')));
-FreezerLifecycle::streamHistoryExport($freezer, $sheet);
+$format = strtolower(trim((string)($_GET['format'] ?? 'csv')));
+if (!in_array($format, ['csv', 'xlsx'], true)) {
+    $format = 'csv';
+}
+FreezerLifecycle::streamHistoryExport($freezer, $sheet, $format);
 exit;

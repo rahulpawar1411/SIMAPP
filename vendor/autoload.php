@@ -21,3 +21,8 @@ spl_autoload_register(function ($class) {
     }
     return false;
 });
+
+// File logging — every request: errors, fatals, exceptions → /logs
+if (class_exists(\App\Services\AppLogger::class)) {
+    \App\Services\AppLogger::bootstrap();
+}

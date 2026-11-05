@@ -1,0 +1,2 @@
+{"ts":"2026-11-05 09:28:08","level":"FAILED","event":"test.fail","message":"Sample failed event","user_id":null,"user":null,"role":null,"ip":null,"method":null,"uri":null,"context":{}}
+{"ts":"2026-11-05 09:49:20","level":"FAILED","event":"auth.login","message":"Login failed — invalid credentials","user_id":null,"user":null,"role":null,"ip":"::1","method":"POST","uri":"/DF%20application/login.php","context":{"email":"admin@clinic.local"}}

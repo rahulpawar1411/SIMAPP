@@ -186,13 +186,37 @@ class AssetTag {
     }
 
     /**
+     * Tags marked assigned but freezer missing / soft-deleted → back to unused.
+     */
+    public static function releaseOrphanAssignedTags(): int {
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->query(
+            "UPDATE `asset_tags` t
+             LEFT JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
+             SET t.`status` = 'unused',
+                 t.`freezer_id` = NULL,
+                 t.`assigned_at` = NULL
+             WHERE t.`status` = 'assigned'
+               AND f.id IS NULL"
+        );
+        return $stmt ? $stmt->rowCount() : 0;
+    }
+
+    /**
      * @return array{unused:int,assigned:int,total:int}
      */
     public static function getStats(): array {
         self::ensureTable();
+        self::releaseOrphanAssignedTags();
         $pdo = Database::getConnection();
+        // Assigned = only tags linked to a live freezer
+        $assigned = (int)$pdo->query(
+            "SELECT COUNT(*) FROM `asset_tags` t
+             INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
+             WHERE t.`status` = 'assigned'"
+        )->fetchColumn();
         $unused = (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = 'unused'")->fetchColumn();
-        $assigned = (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = 'assigned'")->fetchColumn();
         return [
             'unused' => $unused,
             'assigned' => $assigned,

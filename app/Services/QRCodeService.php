@@ -59,6 +59,9 @@ class QRCodeService {
             ];
         } catch (Exception $e) {
             error_log("QRCode generation error: " . $e->getMessage());
+            if (class_exists(\App\Services\AppLogger::class)) {
+                \App\Services\AppLogger::error('qr.generate', $e->getMessage());
+            }
             return [
                 'success' => false,
                 'error' => $e->getMessage(),

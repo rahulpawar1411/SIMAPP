@@ -2,22 +2,12 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
-use App\Config\AppConfig;
 use App\Models\Freezer;
-use App\Models\AssetTag;
 use App\Models\FreezerLifecycle;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
 $stats = Freezer::getDashboardStats();
-
-$tagStats = ['unused' => 0, 'assigned' => 0, 'total' => 0];
-try {
-    AssetTag::ensureTable();
-    $tagStats = AssetTag::getStats();
-} catch (Throwable $e) {
-    // table may not exist yet
-}
 
 $cycle = FreezerLifecycle::currentCycle();
 $kycDone = 0;
@@ -145,37 +135,6 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
-    <div class="card dash-panel">
-        <div class="card-header">
-            <div class="card-title"><span>QR batch management</span></div>
-            <a href="blank_qr.php" class="btn btn-sm btn-primary">Manage</a>
-        </div>
-        <div class="card-body">
-            <div class="dash-qr-stats">
-                <div>
-                    <span>Unused</span>
-                    <strong><?= number_format($tagStats['unused'] ?? 0) ?></strong>
-                </div>
-                <div>
-                    <span>Assigned</span>
-                    <strong><?= number_format($tagStats['assigned'] ?? 0) ?></strong>
-                </div>
-                <div>
-                    <span>Total tags</span>
-                    <strong><?= number_format($tagStats['total'] ?? 0) ?></strong>
-                </div>
-            </div>
-            <div class="dash-quick-actions">
-                <a href="blank_qr.php" class="btn btn-secondary btn-sm">Generate batch</a>
-                <a href="blank_qr_print.php?status=unused&limit=20" class="btn btn-outline btn-sm" target="_blank">Print 20</a>
-                <a href="qr_scanner.php" class="btn btn-primary btn-sm">Scan QR</a>
-            </div>
-            <?php if (AppConfig::IOT_ENABLED): ?>
-                <p style="font-size:0.8rem; color:#64748b; margin-top:0.85rem;">IoT sensors: <?= number_format($stats['total_iot']) ?> connected</p>
-            <?php endif; ?>
-        </div>
-    </div>
-
     <div class="card dash-panel dash-kyc-panel <?= $kycPending > 0 ? 'is-due' : 'is-ok' ?>">
         <div class="card-header">
             <div class="card-title"><span>KYC status</span></div>
@@ -203,7 +162,7 @@ require_once __DIR__ . '/includes/header.php';
                 <ul class="dash-kyc-panel-list">
                     <?php foreach ($kycPendingList as $row): ?>
                         <li>
-                            <a href="freezer_kyc.php?id=<?= (int)$row['id'] ?>">
+                            <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($row)) ?>">
                                 <?= htmlspecialchars($row['store_name'] ?? 'Store') ?>
                             </a>
                             <code><?= htmlspecialchars($row['unique_freezer_id']) ?></code>

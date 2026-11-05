@@ -22,11 +22,18 @@ class AuthService {
         $user = $stmt->fetch();
 
         if (!$user || !password_verify($password, $user['password'])) {
+            AppLogger::failed('auth.login', 'Login failed — invalid credentials', [
+                'email' => trim($email),
+            ]);
             return ['success' => false, 'error' => 'Invalid email address or password.'];
         }
 
         $role = (string)($user['role'] ?? '');
         if (!in_array($role, AppConfig::allowedRoles(), true)) {
+            AppLogger::failed('auth.login', 'Login denied — role not allowed', [
+                'email' => trim($email),
+                'role' => $role,
+            ]);
             return ['success' => false, 'error' => 'Access denied. This account role is not allowed to sign in.'];
         }
 
@@ -42,11 +49,23 @@ class AuthService {
         $_SESSION['user_email'] = $user['email'];
         $_SESSION['user_role'] = $user['role'];
 
+        AppLogger::info('auth.login', 'Login success', [
+            'user_id' => (int)$user['id'],
+            'email' => $user['email'],
+            'role' => $user['role'],
+        ]);
+
         return ['success' => true, 'user' => $user];
     }
 
     public static function logout(): void {
         self::startSession();
+        $uid = $_SESSION['user_id'] ?? null;
+        $email = $_SESSION['user_email'] ?? null;
+        AppLogger::info('auth.logout', 'User logged out', [
+            'user_id' => $uid,
+            'email' => $email,
+        ]);
         $_SESSION = [];
         if (ini_get("session.use_cookies")) {
             $params = session_get_cookie_params();
@@ -116,6 +135,12 @@ class AuthService {
     public static function requireRole(array|string $roles): void {
         self::requireLogin();
         if (!self::hasRole($roles)) {
+            $u = self::currentUser();
+            AppLogger::failed('auth.forbidden', '403 — role not permitted', [
+                'user_id' => $u['id'] ?? null,
+                'role' => $u['role'] ?? null,
+                'required' => is_array($roles) ? $roles : [$roles],
+            ]);
             http_response_code(403);
             die("<h1>403 Forbidden</h1><p>You do not have permission to access this resource.</p><p><a href='index.php'>Return to Dashboard</a></p>");
         }

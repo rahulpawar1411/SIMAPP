@@ -35,6 +35,11 @@ class Database {
                 self::$instance = new PDO($dsn, self::USER, self::PASS, $options);
             } catch (PDOException $e) {
                 error_log("Database connection failure: " . $e->getMessage());
+                if (class_exists(\App\Services\AppLogger::class)) {
+                    \App\Services\AppLogger::error('db.connect', 'Database connection failure', [
+                        'error' => $e->getMessage(),
+                    ]);
+                }
                 throw new RuntimeException("Database connection error. Please ensure MySQL is active.");
             }
         }

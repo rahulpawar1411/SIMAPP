@@ -410,7 +410,7 @@ require_once __DIR__ . '/includes/header.php';
                                         <?php endif; ?>
                                     </div>
                                     <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
-                                        <a href="freezer_kyc.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-primary" style="margin-top:0.35rem;">KYC</a>
+                                        <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($row)) ?>" class="btn btn-sm btn-primary" style="margin-top:0.35rem;">KYC</a>
                                     <?php endif; ?>
                                 <?php else: ?>
                                     <div class="kyc-ok-date">

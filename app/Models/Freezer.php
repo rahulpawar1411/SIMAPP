@@ -521,16 +521,23 @@ class Freezer {
         $needsIotJoin = false;
 
         if (!empty($filters['q'])) {
-            $where[] = "(f.unique_freezer_id LIKE :q 
-                        OR s.store_name LIKE :q 
-                        OR s.outlet_id LIKE :q 
-                        OR s.city LIKE :q 
-                        OR f.model_number LIKE :q
+            // PDO native prepares: same named placeholder cannot be reused — use q0..q5
+            $qVal = '%' . trim((string)$filters['q']) . '%';
+            $where[] = "(f.unique_freezer_id LIKE :q0
+                        OR s.store_name LIKE :q1
+                        OR s.outlet_id LIKE :q2
+                        OR s.city LIKE :q3
+                        OR f.model_number LIKE :q4
                         OR EXISTS (
                             SELECT 1 FROM `asset_tags` atq
-                            WHERE atq.freezer_id = f.id AND atq.tag_code LIKE :q
+                            WHERE atq.freezer_id = f.id AND atq.tag_code LIKE :q5
                         ))";
-            $params['q'] = '%' . trim($filters['q']) . '%';
+            $params['q0'] = $qVal;
+            $params['q1'] = $qVal;
+            $params['q2'] = $qVal;
+            $params['q3'] = $qVal;
+            $params['q4'] = $qVal;
+            $params['q5'] = $qVal;
         }
 
         $types = self::normalizeFilterList($filters['type'] ?? null);
@@ -712,7 +719,13 @@ class Freezer {
         self::ensureSimColumns();
 
         $totalFreezers = (int)$pdo->query("SELECT COUNT(*) FROM `freezers` WHERE `deleted_at` IS NULL")->fetchColumn();
-        $totalStores = (int)$pdo->query("SELECT COUNT(*) FROM `stores`")->fetchColumn();
+        // Outlets that currently have at least one live freezer (ignore orphan / leftover store rows)
+        $totalStores = (int)$pdo->query(
+            "SELECT COUNT(DISTINCT f.store_id)
+             FROM `freezers` f
+             WHERE f.deleted_at IS NULL
+               AND f.store_id IS NOT NULL"
+        )->fetchColumn();
         $activeUnits = (int)$pdo->query("SELECT COUNT(*) FROM `freezers` WHERE `status` = 'Active' AND `deleted_at` IS NULL")->fetchColumn();
         $totalIot = (int)$pdo->query("SELECT COUNT(*) FROM `iot_devices`")->fetchColumn();
 
@@ -762,8 +775,23 @@ class Freezer {
                 'details' => $details,
                 'ip' => $ip,
             ]);
+            if (class_exists(\App\Services\AppLogger::class)) {
+                \App\Services\AppLogger::audit('freezer.' . strtolower($action), $details, [
+                    'entity_id' => $entityId,
+                    'freezer_id' => $freezerIdCode,
+                    'user_id' => $userId,
+                    'user_name' => $userName,
+                ]);
+            }
         } catch (\Throwable $e) {
             error_log("Failed to log audit: " . $e->getMessage());
+            if (class_exists(\App\Services\AppLogger::class)) {
+                \App\Services\AppLogger::error('audit.write_failed', $e->getMessage(), [
+                    'action' => $action,
+                    'entity_id' => $entityId,
+                    'freezer_id' => $freezerIdCode,
+                ]);
+            }
         }
     }
 }

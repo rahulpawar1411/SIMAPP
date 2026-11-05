@@ -3,6 +3,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
 use App\Services\FileUploadService;
+use App\Services\KycScanGate;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 use App\Models\FreezerLifecycle;
@@ -24,9 +25,56 @@ $error = null;
 $csrfToken = AuthService::generateCsrfToken();
 
 $assetTag = AssetTag::findByFreezerId((int)$freezer['id']);
+$scanUnlocked = KycScanGate::check((int)$freezer['id']);
+$kycScanUrl = KycScanGate::scannerUrl($freezer);
+
+// Must scan this freezer's QR/Tag before KYC form (blocks list/profile shortcut)
+if (!$scanUnlocked && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $pageTitle = 'KYC — Scan required';
+    require_once __DIR__ . '/includes/header.php';
+    ?>
+    <div style="max-width:640px;margin:0 auto;">
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><span>Scan QR to start KYC</span></div>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning" style="margin-bottom:1rem;">
+                    KYC sirf usi freezer pe ho sakti hai jiska QR / Tag aapne abhi scan kiya ho.
+                    List ya profile se seedha KYC nahi khulegi.
+                </div>
+                <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;margin-bottom:1rem;">
+                    <div class="profile-kv">
+                        <span class="profile-kv-label">Unique Freezer ID</span>
+                        <strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></strong>
+                    </div>
+                    <div class="profile-kv">
+                        <span class="profile-kv-label">Store</span>
+                        <strong class="profile-kv-value"><?= htmlspecialchars($freezer['store_name'] ?? '—') ?></strong>
+                    </div>
+                    <?php if ($assetTag): ?>
+                    <div class="profile-kv profile-kv-wide">
+                        <span class="profile-kv-label">Expected Tag</span>
+                        <strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($assetTag['tag_code']) ?></strong>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+                    <a href="<?= htmlspecialchars($kycScanUrl) ?>" class="btn btn-primary">Scan QR / Tag</a>
+                    <a href="profile_view.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline">Back to profile</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php
+    require_once __DIR__ . '/includes/footer.php';
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
+    if (!$scanUnlocked) {
+        $error = 'Scan this freezer QR / Tag first, then submit KYC.';
+    } elseif (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security token.';
     } elseif (!$kycStatus['due'] && $kycStatus['current']) {
         $nextDue = $kycStatus['next_due_at'] ?? '';
@@ -150,6 +198,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'verified_by' => (int)$currentUser['id'],
             ]);
 
+            KycScanGate::consume((int)$freezer['id']);
+            \App\Services\AppLogger::audit('kyc.submit', 'KYC verification saved', [
+                'freezer_id' => (int)$freezer['id'],
+                'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
+                'result' => $result,
+                'location_mode' => $locationMode,
+            ]);
             $redir = 'profile_view.php?id=' . urlencode($freezer['unique_freezer_id']) . '&kyc=1';
             if ($newOutletId) {
                 $redir .= '&new_outlet=' . urlencode($newOutletId);
@@ -161,6 +216,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } catch (Throwable $e) {
             $error = $e->getMessage();
+            \App\Services\AppLogger::failed('kyc.submit', $e->getMessage(), [
+                'freezer_id' => (int)$freezer['id'],
+                'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
+            ]);
             $kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
         }
     }
@@ -302,10 +361,10 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     <div class="form-group" style="padding:0.85rem 1rem; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
                         <label style="display:flex; gap:0.6rem; align-items:flex-start; font-size:0.875rem; margin:0; cursor:pointer;">
                             <input type="checkbox" name="confirm_asset" value="1" style="margin-top:0.2rem;"
-                                <?= !empty($_POST['confirm_asset']) ? 'checked' : '' ?> required>
+                                <?= (!empty($_POST['confirm_asset']) || $scanUnlocked) ? 'checked' : '' ?> required>
                             <span>
                                 <strong>1. Asset match confirmed</strong><br>
-                                <span style="color:#475569;">Physical Tag / QR matches this Unique Freezer ID and linked Tag code.</span>
+                                <span style="color:#475569;">QR / Tag already scanned for this Unique Freezer ID<?= $assetTag ? ' / ' . htmlspecialchars($assetTag['tag_code']) : '' ?> — confirm physical unit is the same.</span>
                             </span>
                         </label>
                     </div>

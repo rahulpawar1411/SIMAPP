@@ -411,15 +411,93 @@ class FreezerLifecycle {
         return $events;
     }
 
+    /** Strip Unique Freezer ID glued into address text (for display / export). */
+    public static function cleanAddressText(?string $text, ?string $uniqueFreezerId = null): string {
+        $text = trim((string)$text);
+        if ($text === '') {
+            return '';
+        }
+        $fid = trim((string)$uniqueFreezerId);
+        if ($fid !== '') {
+            $escaped = preg_quote($fid, '/');
+            $text = preg_replace('/' . $escaped . '/i', '', $text) ?? $text;
+        }
+        $text = preg_replace('/(?:\s*[,;.\-]?\s*)?(?:DF|DCF|CF)-[A-Z0-9]{2,}(?:-[A-Z0-9]+)+/i', '', $text) ?? $text;
+        return trim(preg_replace('/\s{2,}/', ' ', $text) ?? $text, " \t,;.-");
+    }
+
+    /** @return list<string> */
+    public static function kycExportColumns(): array {
+        return [
+            'Unique Freezer ID',
+            'Tag code',
+            'Cycle',
+            'Cycle year',
+            'Cycle half',
+            'Verified date',
+            'Result',
+            'Store ID',
+            'Store name',
+            'Address',
+            'City',
+            'State',
+            'PIN',
+            'Zone',
+            'Contact',
+            'Phone',
+            'GPS lat',
+            'GPS lng',
+            'Store photo',
+            'Freezer photo',
+            'Notes',
+            'Verified by',
+        ];
+    }
+
+    /** @return list<array<string, scalar|null>> */
+    public static function kycExportRows(array $freezer, string $tagCode = ''): array {
+        $fid = (int)$freezer['id'];
+        $uid = (string)($freezer['unique_freezer_id'] ?? '');
+        $rows = [];
+        foreach (self::kycHistory($fid, 200) as $k) {
+            $rows[] = [
+                'Unique Freezer ID' => $uid,
+                'Tag code' => $tagCode,
+                'Cycle' => $k['cycle_year'] . '-H' . $k['cycle_half'],
+                'Cycle year' => $k['cycle_year'],
+                'Cycle half' => ((int)$k['cycle_half'] === 1) ? 'H1' : 'H2',
+                'Verified date' => $k['verified_at'] ?? '',
+                'Result' => $k['result'] ?? '',
+                'Store ID' => $k['outlet_id'] ?? '',
+                'Store name' => $k['store_name'] ?? '',
+                'Address' => self::cleanAddressText($k['address'] ?? '', $uid),
+                'City' => $k['city'] ?? '',
+                'State' => $k['state'] ?? '',
+                'PIN' => $k['pincode'] ?? '',
+                'Zone' => $k['zone'] ?? '',
+                'Contact' => $k['contact_person'] ?? '',
+                'Phone' => $k['phone_number'] ?? '',
+                'GPS lat' => $k['latitude'] ?? '',
+                'GPS lng' => $k['longitude'] ?? '',
+                'Store photo' => !empty($k['image_store_front']) ? 'YES' : 'NO',
+                'Freezer photo' => !empty($k['image_freezer']) ? 'YES' : 'NO',
+                'Notes' => $k['notes'] ?? '',
+                'Verified by' => $k['verified_by_name'] ?? '',
+            ];
+        }
+        return $rows;
+    }
+
     /**
-     * CSV export: implementation (placements) + KYC sheets.
+     * History export: implementation (placements) + KYC sheets.
      * @param string $sheet all|implementation|kyc
+     * @param string $format csv|xlsx  (xlsx supported for sheet=kyc)
      */
-    public static function streamHistoryExport(array $freezer, string $sheet = 'all'): void {
+    public static function streamHistoryExport(array $freezer, string $sheet = 'all', string $format = 'csv'): void {
         $fid = (int)$freezer['id'];
         $sheet = in_array($sheet, ['all', 'implementation', 'kyc'], true) ? $sheet : 'all';
+        $format = in_array($format, ['csv', 'xlsx'], true) ? $format : 'csv';
         $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $freezer['unique_freezer_id']);
-        $filename = 'store_history_' . $sheet . '_' . $safeName . '_' . date('Ymd_His') . '.csv';
 
         $tagCode = '';
         try {
@@ -429,6 +507,19 @@ class FreezerLifecycle {
             $tagCode = '';
         }
 
+        // Excel export for KYC verifications table
+        if ($format === 'xlsx' && $sheet === 'kyc') {
+            $cols = self::kycExportColumns();
+            $rows = self::kycExportRows($freezer, $tagCode);
+            $writer = new \App\Services\ExcelXlsxWriter(static fn(string $c): string => 'store');
+            $writer->setSheetName('KYC verifications')
+                ->setColumns($cols)
+                ->setRows($rows)
+                ->stream('kyc_verifications_' . $safeName . '_' . date('Ymd_His') . '.xlsx');
+            return;
+        }
+
+        $filename = 'store_history_' . $sheet . '_' . $safeName . '_' . date('Ymd_His') . '.csv';
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename=' . $filename);
         $out = fopen('php://output', 'w');
@@ -471,7 +562,7 @@ class FreezerLifecycle {
                     $p['outlet_id'] ?? '',
                     $p['store_name'] ?? '',
                     $p['customer_name'] ?? '',
-                    $p['address'] ?? '',
+                    self::cleanAddressText($p['address'] ?? '', $freezer['unique_freezer_id'] ?? null),
                     $p['city'] ?? '',
                     $p['state'] ?? '',
                     $p['pincode'] ?? '',
@@ -494,55 +585,14 @@ class FreezerLifecycle {
 
         if ($sheet === 'all' || $sheet === 'kyc') {
             fputcsv($out, ['=== KYC VERIFICATIONS ===']);
-            fputcsv($out, [
-                'unique_freezer_id',
-                'tag_code',
-                'cycle',
-                'cycle_year',
-                'cycle_half',
-                'verified_at',
-                'result',
-                'outlet_id',
-                'store_name',
-                'address',
-                'city',
-                'state',
-                'pincode',
-                'zone',
-                'contact_person',
-                'phone',
-                'latitude',
-                'longitude',
-                'store_photo',
-                'freezer_photo',
-                'notes',
-                'verified_by',
-            ]);
-            foreach (self::kycHistory($fid, 200) as $k) {
-                fputcsv($out, [
-                    $freezer['unique_freezer_id'],
-                    $tagCode,
-                    $k['cycle_year'] . '-H' . $k['cycle_half'],
-                    $k['cycle_year'],
-                    $k['cycle_half'] == 1 ? 'H1' : 'H2',
-                    $k['verified_at'],
-                    $k['result'],
-                    $k['outlet_id'] ?? '',
-                    $k['store_name'] ?? '',
-                    $k['address'] ?? '',
-                    $k['city'] ?? '',
-                    $k['state'] ?? '',
-                    $k['pincode'] ?? '',
-                    $k['zone'] ?? '',
-                    $k['contact_person'] ?? '',
-                    $k['phone_number'] ?? '',
-                    $k['latitude'] ?? '',
-                    $k['longitude'] ?? '',
-                    !empty($k['image_store_front']) ? 'YES' : 'NO',
-                    !empty($k['image_freezer']) ? 'YES' : 'NO',
-                    $k['notes'] ?? '',
-                    $k['verified_by_name'] ?? '',
-                ]);
+            $kycCols = self::kycExportColumns();
+            fputcsv($out, $kycCols);
+            foreach (self::kycExportRows($freezer, $tagCode) as $row) {
+                $line = [];
+                foreach ($kycCols as $col) {
+                    $line[] = $row[$col] ?? '';
+                }
+                fputcsv($out, $line);
             }
 
             // Year grid appendix
