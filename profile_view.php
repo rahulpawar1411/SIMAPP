@@ -2,6 +2,7 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\KycScanGate;
 use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
@@ -47,6 +48,8 @@ if (AppConfig::IOT_ENABLED) {
 }
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
+// On this freezer's profile → KYC may skip QR scan
+KycScanGate::markFromProfile((int)$freezer['id']);
 $placementHistory = FreezerLifecycle::placementHistory((int)$freezer['id']);
 $kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
 $kycHistory = FreezerLifecycle::kycHistory((int)$freezer['id'], 50);
@@ -172,7 +175,7 @@ require_once __DIR__ . '/includes/header.php';
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Edit</a>
-    <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($freezer)) ?>" class="btn btn-sm <?= $kycStatus['due'] ? 'btn-primary' : 'btn-outline' ?>" title="<?= $kycStatus['due'] ? 'KYC due — scan QR first' : 'KYC verify — scan QR first' ?>">
+    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= $kycStatus['due'] ? 'btn-primary' : 'btn-outline' ?>" title="<?= $kycStatus['due'] ? 'KYC due' : 'KYC verify' ?>">
         <span class="btn-label-full">KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?></span>
         <span class="btn-label-short">KYC<?= $kycStatus['due'] ? '*' : '' ?></span>
     </a>
@@ -226,6 +229,11 @@ require_once __DIR__ . '/includes/header.php';
         <?php if (!empty($_GET['new_outlet'])): ?>
             New store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
         <?php endif; ?>
+    </div>
+<?php endif; ?>
+<?php if (!empty($_GET['from_scan'])): ?>
+    <div class="alert alert-success" style="margin-bottom:1rem;">
+        QR scan OK — yeh is freezer ki profile hai. Ab <strong>KYC</strong> button se verification kar sakte ho (dobara scan nahi).
     </div>
 <?php endif; ?>
 <?php if (!empty($_GET['kyc'])): ?>
@@ -443,7 +451,7 @@ require_once __DIR__ . '/includes/header.php';
                         </strong>
                     </div>
                 </div>
-                <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($freezer)) ?>" class="btn btn-primary btn-sm" style="margin-top:0.75rem;"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
+                <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary btn-sm" style="margin-top:0.75rem;"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
             </div>
         </div>
 
@@ -673,7 +681,7 @@ krsort($kycByYear);
     <div class="card-header sp-history-header">
         <div class="card-title"><span>Store history</span></div>
         <div class="sp-history-actions">
-            <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($freezer)) ?>" class="btn btn-primary btn-sm">
+            <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary btn-sm">
                 <?= $kycStatus['due'] ? 'Complete KYC now' : 'KYC verify' ?>
             </a>
             <a href="<?= $exportBase ?>&sheet=all" class="btn btn-outline btn-sm">Export all CSV</a>
@@ -755,28 +763,34 @@ krsort($kycByYear);
                             $fromTs = !empty($p['started_at']) ? strtotime($p['started_at']) : false;
                             $toTs = $isCurrent ? time() : (!empty($p['ended_at']) ? strtotime($p['ended_at']) : false);
                             $days = ($fromTs && $toTs) ? max(0, (int)floor(($toTs - $fromTs) / 86400)) : null;
+                            $cells = [
+                                (string)$rowNum,
+                                $isCurrent ? 'CURRENT' : 'LEFT',
+                                (string)$freezer['unique_freezer_id'],
+                                (string)$tagCodeHist,
+                                (string)($freezer['installation_date'] ?? '—'),
+                                (string)($p['outlet_id'] ?? '—'),
+                                (string)($p['store_name'] ?? '—'),
+                                (string)($p['customer_name'] ?: '—'),
+                                $cleanHistAddress($p['address'] ?? ''),
+                                !empty($p['city']) ? $displayTitleCase($p['city']) : '—',
+                                !empty($p['state']) ? $displayTitleCase($p['state']) : '—',
+                                (string)($p['pincode'] ?: '—'),
+                                !empty($p['zone']) ? $displayTitleCase($p['zone']) : '—',
+                                (string)($p['contact_person'] ?: '—'),
+                                (string)($p['phone_number'] ?: '—'),
+                                (string)($p['started_at'] ?? '—'),
+                                $isCurrent ? 'Still here' : (string)$p['ended_at'],
+                                $days !== null ? (string)$days : '—',
+                                (string)($p['transfer_reason'] ?: '—'),
+                                (string)($p['notes'] ?: '—'),
+                            ];
+                            $rowNum++;
                         ?>
                             <tr class="<?= $isCurrent ? 'excel-row-current' : 'excel-row-left' ?>">
-                                <td class="excel-col-index"><?= $rowNum++ ?></td>
-                                <td><?= $isCurrent ? 'CURRENT' : 'LEFT' ?></td>
-                                <td class="excel-mono"><?= htmlspecialchars($freezer['unique_freezer_id']) ?></td>
-                                <td class="excel-mono"><?= htmlspecialchars($tagCodeHist) ?></td>
-                                <td><?= htmlspecialchars($freezer['installation_date'] ?? '—') ?></td>
-                                <td class="excel-mono"><?= htmlspecialchars($p['outlet_id'] ?? '—') ?></td>
-                                <td><?= htmlspecialchars($p['store_name'] ?? '—') ?></td>
-                                <td><?= htmlspecialchars($p['customer_name'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($cleanHistAddress($p['address'] ?? '')) ?></td>
-                                <td><?= htmlspecialchars(!empty($p['city']) ? $displayTitleCase($p['city']) : '—') ?></td>
-                                <td><?= htmlspecialchars(!empty($p['state']) ? $displayTitleCase($p['state']) : '—') ?></td>
-                                <td class="excel-mono"><?= htmlspecialchars($p['pincode'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars(!empty($p['zone']) ? $displayTitleCase($p['zone']) : '—') ?></td>
-                                <td><?= htmlspecialchars($p['contact_person'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($p['phone_number'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($p['started_at'] ?? '—') ?></td>
-                                <td><?= $isCurrent ? 'Still here' : htmlspecialchars($p['ended_at']) ?></td>
-                                <td><?= $days !== null ? $days : '—' ?></td>
-                                <td><?= htmlspecialchars($p['transfer_reason'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($p['notes'] ?: '—') ?></td>
+                                <?php foreach ($cells as $i => $val): ?>
+                                    <td class="<?= $i === 0 ? 'excel-col-index' : (($i === 2 || $i === 3 || $i === 5 || $i === 11) ? 'excel-mono' : '') ?>" title="<?= htmlspecialchars($val) ?>"><?= htmlspecialchars($val) ?></td>
+                                <?php endforeach; ?>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -799,15 +813,15 @@ krsort($kycByYear);
         <div class="sp-history-actions">
             <a href="<?= $exportBase ?>&sheet=kyc&format=csv" class="btn btn-primary btn-sm">Export CSV</a>
             <a href="<?= $exportBase ?>&sheet=kyc&format=xlsx" class="btn btn-outline btn-sm">Export Excel</a>
-            <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($freezer)) ?>" class="btn btn-outline btn-sm"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
+            <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-outline btn-sm"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
         </div>
     </div>
     <div class="card-body" style="padding-top:0.75rem;">
-        <div class="sp-data-table-wrap">
-            <table class="sp-data-table">
+        <div class="excel-wrap">
+            <table class="excel-sheet">
                 <thead>
                     <tr>
-                        <th class="sp-col-num">#</th>
+                        <th class="excel-col-index">#</th>
                         <th>Cycle</th>
                         <th>Verified date</th>
                         <th>Result</th>
@@ -829,39 +843,37 @@ krsort($kycByYear);
                 </thead>
                 <tbody>
                     <?php if ($kycHistory): ?>
-                        <?php $kNum = 1; foreach ($kycHistory as $k): ?>
+                        <?php $kNum = 1; foreach ($kycHistory as $k):
+                            $cells = [
+                                (string)$kNum++,
+                                (int)$k['cycle_year'] . '-H' . (int)$k['cycle_half'],
+                                (string)($k['verified_at'] ?? '—'),
+                                (string)($k['result'] ?? '—'),
+                                (string)($k['outlet_id'] ?? '—'),
+                                (string)($k['store_name'] ?? '—'),
+                                $cleanHistAddress($k['address'] ?? ''),
+                                !empty($k['city']) ? $displayTitleCase($k['city']) : '—',
+                                !empty($k['state']) ? $displayTitleCase($k['state']) : '—',
+                                (string)($k['pincode'] ?: '—'),
+                                (string)($k['contact_person'] ?: '—'),
+                                (string)($k['phone_number'] ?: '—'),
+                                ($k['latitude'] !== null && $k['latitude'] !== '') ? (string)$k['latitude'] : '—',
+                                ($k['longitude'] !== null && $k['longitude'] !== '') ? (string)$k['longitude'] : '—',
+                                !empty($k['image_store_front']) ? 'Yes' : 'No',
+                                !empty($k['image_freezer']) ? 'Yes' : 'No',
+                                (string)($k['notes'] ?: '—'),
+                                (string)($k['verified_by_name'] ?: '—'),
+                            ];
+                        ?>
                             <tr>
-                                <td class="sp-col-num"><?= $kNum++ ?></td>
-                                <td><strong><?= (int)$k['cycle_year'] ?>-H<?= (int)$k['cycle_half'] ?></strong></td>
-                                <td><?= htmlspecialchars($k['verified_at'] ?? '—') ?></td>
-                                <td>
-                                    <?php if (($k['result'] ?? '') === 'PASS'): ?>
-                                        <span class="badge badge-success">PASS</span>
-                                    <?php elseif (($k['result'] ?? '') === 'FAIL'): ?>
-                                        <span class="badge badge-danger">FAIL</span>
-                                    <?php else: ?>
-                                        <span class="badge badge-warning"><?= htmlspecialchars($k['result'] ?? '—') ?></span>
-                                    <?php endif; ?>
-                                </td>
-                                <td class="sp-mono"><?= htmlspecialchars($k['outlet_id'] ?? '—') ?></td>
-                                <td><?= htmlspecialchars($k['store_name'] ?? '—') ?></td>
-                                <td><?= htmlspecialchars($cleanHistAddress($k['address'] ?? '')) ?></td>
-                                <td><?= htmlspecialchars(!empty($k['city']) ? $displayTitleCase($k['city']) : '—') ?></td>
-                                <td><?= htmlspecialchars(!empty($k['state']) ? $displayTitleCase($k['state']) : '—') ?></td>
-                                <td class="sp-mono"><?= htmlspecialchars($k['pincode'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($k['contact_person'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($k['phone_number'] ?: '—') ?></td>
-                                <td class="sp-mono"><?= htmlspecialchars($k['latitude'] !== null && $k['latitude'] !== '' ? (string)$k['latitude'] : '—') ?></td>
-                                <td class="sp-mono"><?= htmlspecialchars($k['longitude'] !== null && $k['longitude'] !== '' ? (string)$k['longitude'] : '—') ?></td>
-                                <td><?= !empty($k['image_store_front']) ? 'Yes' : 'No' ?></td>
-                                <td><?= !empty($k['image_freezer']) ? 'Yes' : 'No' ?></td>
-                                <td><?= htmlspecialchars($k['notes'] ?: '—') ?></td>
-                                <td><?= htmlspecialchars($k['verified_by_name'] ?: '—') ?></td>
+                                <?php foreach ($cells as $i => $val): ?>
+                                    <td class="<?= $i === 0 ? 'excel-col-index' : (($i === 4 || $i === 9 || $i === 12 || $i === 13) ? 'excel-mono' : '') ?>" title="<?= htmlspecialchars($val) ?>"><?= htmlspecialchars($val) ?></td>
+                                <?php endforeach; ?>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
                         <tr>
-                            <td colspan="18" class="sp-table-empty">No KYC rows yet. Use <strong>KYC verify</strong> to add the first check.</td>
+                            <td colspan="18" class="excel-cell-empty">No KYC rows yet. Use KYC verify to add the first check.</td>
                         </tr>
                     <?php endif; ?>
                 </tbody>
@@ -873,11 +885,11 @@ krsort($kycByYear);
             <p class="excel-sheet-sub">
                 H1 (Jan–Jun) / H2 (Jul–Dec). Blank cell = that half not done yet.
             </p>
-            <div class="sp-data-table-wrap">
-                <table class="sp-data-table sp-data-table-compact">
+            <div class="excel-wrap">
+                <table class="excel-sheet">
                     <thead>
                         <tr>
-                            <th class="sp-col-num">#</th>
+                            <th class="excel-col-index">#</th>
                             <th>Year</th>
                             <th>H1 result</th>
                             <th>H1 date</th>
@@ -891,18 +903,26 @@ krsort($kycByYear);
                     </thead>
                     <tbody>
                         <?php $yNum = 1; foreach ($kycByYear as $year => $halves): ?>
-                            <?php $h1 = $halves['h1']; $h2 = $halves['h2']; ?>
+                            <?php
+                            $h1 = $halves['h1'];
+                            $h2 = $halves['h2'];
+                            $cells = [
+                                (string)$yNum++,
+                                (string)(int)$year,
+                                $h1 ? (string)$h1['result'] : '—',
+                                $h1 ? (string)$h1['verified_at'] : '—',
+                                $h1 ? (string)$h1['outlet_id'] : '—',
+                                $h1 ? (string)$h1['store_name'] : '—',
+                                $h2 ? (string)$h2['result'] : '—',
+                                $h2 ? (string)$h2['verified_at'] : '—',
+                                $h2 ? (string)$h2['outlet_id'] : '—',
+                                $h2 ? (string)$h2['store_name'] : '—',
+                            ];
+                            ?>
                             <tr>
-                                <td class="sp-col-num"><?= $yNum++ ?></td>
-                                <td><strong><?= (int)$year ?></strong></td>
-                                <td><?= $h1 ? htmlspecialchars($h1['result']) : '—' ?></td>
-                                <td><?= $h1 ? htmlspecialchars($h1['verified_at']) : '—' ?></td>
-                                <td class="sp-mono"><?= $h1 ? htmlspecialchars($h1['outlet_id']) : '—' ?></td>
-                                <td><?= $h1 ? htmlspecialchars($h1['store_name']) : '—' ?></td>
-                                <td><?= $h2 ? htmlspecialchars($h2['result']) : '—' ?></td>
-                                <td><?= $h2 ? htmlspecialchars($h2['verified_at']) : '—' ?></td>
-                                <td class="sp-mono"><?= $h2 ? htmlspecialchars($h2['outlet_id']) : '—' ?></td>
-                                <td><?= $h2 ? htmlspecialchars($h2['store_name']) : '—' ?></td>
+                                <?php foreach ($cells as $i => $val): ?>
+                                    <td class="<?= $i === 0 ? 'excel-col-index' : (($i === 4 || $i === 8) ? 'excel-mono' : '') ?>" title="<?= htmlspecialchars($val) ?>"><?= htmlspecialchars($val) ?></td>
+                                <?php endforeach; ?>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>

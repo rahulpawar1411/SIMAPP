@@ -25,10 +25,15 @@ $error = null;
 $csrfToken = AuthService::generateCsrfToken();
 
 $assetTag = AssetTag::findByFreezerId((int)$freezer['id']);
+
+// Profile pe ho → scan skip; list / dashboard se → scan required
+if (isset($_GET['from']) && $_GET['from'] === 'profile') {
+    KycScanGate::markFromProfile((int)$freezer['id']);
+}
+
 $scanUnlocked = KycScanGate::check((int)$freezer['id']);
 $kycScanUrl = KycScanGate::scannerUrl($freezer);
 
-// Must scan this freezer's QR/Tag before KYC form (blocks list/profile shortcut)
 if (!$scanUnlocked && $_SERVER['REQUEST_METHOD'] !== 'POST') {
     $pageTitle = 'KYC — Scan required';
     require_once __DIR__ . '/includes/header.php';
@@ -40,8 +45,8 @@ if (!$scanUnlocked && $_SERVER['REQUEST_METHOD'] !== 'POST') {
             </div>
             <div class="card-body">
                 <div class="alert alert-warning" style="margin-bottom:1rem;">
-                    KYC sirf usi freezer pe ho sakti hai jiska QR / Tag aapne abhi scan kiya ho.
-                    List ya profile se seedha KYC nahi khulegi.
+                    Profile ke bahar se KYC ke liye pehle is freezer ka QR / Tag scan karo.
+                    Store profile ke andar se KYC seedha khulti hai (scan skip).
                 </div>
                 <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;margin-bottom:1rem;">
                     <div class="profile-kv">

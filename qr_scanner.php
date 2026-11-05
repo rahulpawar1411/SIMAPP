@@ -13,11 +13,16 @@ $isKycPurpose = ($purpose === 'kyc');
 $expectUnique = trim((string)($_GET['expect'] ?? $_POST['expect'] ?? ''));
 $error = null;
 
-// Camera / file scan unlock for KYC (JS posts here)
+$kycProfileUrl = static function (array $freezer): string {
+    $uid = (string)($freezer['unique_freezer_id'] ?? '');
+    return 'profile_view.php?id=' . rawurlencode($uid) . '&from_scan=1';
+};
+
+// Camera / file scan for KYC → open that freezer's profile first
 if ($isKycPurpose && !empty($_POST['kyc_scan_code'])) {
     $unlock = KycScanGate::tryUnlock((string)$_POST['kyc_scan_code'], $expectUnique);
     if ($unlock['ok'] && $unlock['freezer']) {
-        header('Location: freezer_kyc.php?id=' . (int)$unlock['freezer']['id']);
+        header('Location: ' . $kycProfileUrl($unlock['freezer']));
         exit;
     }
     $error = $unlock['error'] ?? 'Scan unlock failed.';
@@ -29,7 +34,7 @@ if (!empty($_POST['manual_freezer_id'])) {
     if ($isKycPurpose) {
         $unlock = KycScanGate::tryUnlock($searchId, $expectUnique);
         if ($unlock['ok'] && $unlock['freezer']) {
-            header('Location: freezer_kyc.php?id=' . (int)$unlock['freezer']['id']);
+            header('Location: ' . $kycProfileUrl($unlock['freezer']));
             exit;
         }
         $error = $unlock['error'] ?? "No match for '{$searchId}'.";
@@ -55,16 +60,15 @@ require_once __DIR__ . '/includes/header.php';
 <div class="field-scan-wrap" style="max-width: 600px; margin: 0 auto;">
     <div class="cfg-toolbar" style="margin-bottom:0.75rem;">
         <div class="cfg-toolbar-left">
-            <h1 class="cfg-toolbar-title"><?= $isKycPurpose ? 'Scan QR → Unlock KYC' : 'Scan QR → Register / View' ?></h1>
+            <h1 class="cfg-toolbar-title"><?= $isKycPurpose ? 'Scan QR → Open profile' : 'Scan QR → Register / View' ?></h1>
         </div>
     </div>
     <?php if ($isKycPurpose): ?>
         <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
-            Is freezer ka physical QR / Tag scan karo.
+            Physical QR / Tag scan karo — pehle us freezer ki <strong>profile</strong> khulegi, phir wahan se KYC.
             <?php if ($expectUnique !== ''): ?>
                 Expected: <code><?= htmlspecialchars($expectUnique) ?></code>
             <?php endif; ?>
-            Galat unit scan hone pe KYC nahi khulegi.
         </p>
     <?php else: ?>
     <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
@@ -72,9 +76,15 @@ require_once __DIR__ . '/includes/header.php';
     </p>
     <?php endif; ?>
     <div class="field-scan-steps" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; font-size:0.75rem; font-weight:600; color:#475569;">
-        <span style="background:#f0fdf4; color:#166534; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bbf7d0;">1. Scan</span>
-        <span style="background:#fefce8; color:#854d0e; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #fde68a;">2. Fill info</span>
-        <span style="background:#dcfce7; color:#14532d; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #86efac;">3. Done</span>
+        <?php if ($isKycPurpose): ?>
+            <span style="background:#f0fdf4; color:#166534; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bbf7d0;">1. Scan</span>
+            <span style="background:#eff6ff; color:#1d4ed8; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bfdbfe;">2. Profile</span>
+            <span style="background:#dcfce7; color:#14532d; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #86efac;">3. KYC</span>
+        <?php else: ?>
+            <span style="background:#f0fdf4; color:#166534; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #bbf7d0;">1. Scan</span>
+            <span style="background:#fefce8; color:#854d0e; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #fde68a;">2. Fill info</span>
+            <span style="background:#dcfce7; color:#14532d; padding:0.25rem 0.55rem; border-radius:6px; border:1px solid #86efac;">3. Done</span>
+        <?php endif; ?>
     </div>
 
     <?php if (!empty($error)): ?>

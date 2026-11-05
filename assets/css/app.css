@@ -2556,62 +2556,86 @@ input.form-control[readonly].form-control-display {
     background-color: var(--primary-light);
 }
 
-/* Excel-like history sheets */
+/* Excel-like history sheets — same single-line grid as System Logs */
 .excel-wrap {
     overflow-x: auto;
+    overflow-y: auto;
+    max-height: min(60vh, 560px);
     -webkit-overflow-scrolling: touch;
-    border: 1px solid #c5c5c5;
-    border-radius: 4px;
+    border: 1px solid #c5c9d0;
+    border-radius: 0;
     background: #fff;
     margin-bottom: 1rem;
 }
 .excel-sheet {
-    width: 100%;
-    min-width: 780px;
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size: 0.78rem;
-    font-family: 'Segoe UI', var(--font-sans);
+    font-size: 0.72rem;
+    font-family: var(--font-mono), Consolas, "Courier New", monospace;
+    line-height: 1.2;
 }
 .excel-sheet th,
 .excel-sheet td {
-    border: 1px solid #d0d0d0;
-    padding: 0.4rem 0.5rem;
+    border: 1px solid #d8dde6;
+    padding: 0.18rem 0.4rem;
     vertical-align: middle;
-    line-height: 1.35;
-    word-wrap: break-word;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+    line-height: 1.2;
 }
 .excel-sheet thead th {
-    background: #e7e6e6;
-    color: #1f1f1f;
-    font-weight: 700;
-    font-size: 0.7rem;
-    text-transform: none;
-    letter-spacing: 0;
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: 2;
+    background: #eef1f5;
+    color: #334155;
+    font-weight: 700;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    text-align: left;
+    border: 1px solid #c5c9d0;
+    border-bottom-width: 2px;
+    padding: 0.28rem 0.4rem;
 }
 .excel-sheet .excel-col-index {
     width: 2.2rem;
+    max-width: 2.2rem;
     text-align: center;
-    background: #f3f2f1;
-    color: #605e5c;
+    background: #eef1f5;
+    color: #64748b;
     font-weight: 700;
-    font-size: 0.68rem;
+    font-size: 0.65rem;
 }
-.excel-sheet tbody tr:nth-child(even) td:not(.excel-col-index) {
-    background: #faf9f8;
+.excel-sheet thead .excel-col-index {
+    background: #eef1f5;
 }
-.excel-sheet tbody tr.excel-row-current td:not(.excel-col-index) {
+.excel-sheet tbody tr:nth-child(even) td {
+    background: #f8fafc;
+}
+.excel-sheet tbody tr:hover td {
+    background: #e8f2ff;
+}
+.excel-sheet tbody tr.excel-row-current td {
     background: #dff6dd !important;
 }
-.excel-sheet tbody tr.excel-row-left td:not(.excel-col-index) {
+.excel-sheet tbody tr.excel-row-current:hover td {
+    background: #c8efc4 !important;
+}
+.excel-sheet tbody tr.excel-row-left td {
     background: #f3f2f1;
     color: #605e5c;
 }
+.excel-sheet tbody tr.excel-row-left:hover td {
+    background: #e8f2ff;
+    color: #0f172a;
+}
 .excel-sheet .excel-mono {
-    font-family: var(--font-mono);
+    font-family: inherit;
     font-weight: 700;
     color: #0078d4;
     font-size: 0.72rem;

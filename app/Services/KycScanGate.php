@@ -5,12 +5,12 @@ use App\Models\AssetTag;
 use App\Models\Freezer;
 
 /**
- * KYC may only start after the physical QR/Tag for that freezer was scanned
- * (or typed) in this session — blocks doing KYC from list/profile alone.
+ * KYC from outside a profile (list / dashboard) requires QR/Tag scan first.
+ * Inside that freezer's profile, scan is skipped — user is already on that asset.
  */
 class KycScanGate {
 
-    /** Seconds the scan unlock stays valid. */
+    /** Seconds the scan / profile unlock stays valid. */
     public const TTL = 3600;
 
     public static function mark(int $freezerId): void {
@@ -19,6 +19,11 @@ class KycScanGate {
             $_SESSION['kyc_scan_ok'] = [];
         }
         $_SESSION['kyc_scan_ok'][$freezerId] = time();
+    }
+
+    /** Unlock KYC because user is on this freezer's store profile. */
+    public static function markFromProfile(int $freezerId): void {
+        self::mark($freezerId);
     }
 
     public static function check(int $freezerId): bool {
@@ -39,9 +44,16 @@ class KycScanGate {
         unset($_SESSION['kyc_scan_ok'][$freezerId]);
     }
 
+    /** Outside profile: force QR scan then open KYC. */
     public static function scannerUrl(array $freezer): string {
         $uid = (string)($freezer['unique_freezer_id'] ?? '');
         return 'qr_scanner.php?purpose=kyc&expect=' . rawurlencode($uid);
+    }
+
+    /** From profile page: open KYC form directly (no scan). */
+    public static function profileKycUrl(array $freezer): string {
+        $id = (int)($freezer['id'] ?? 0);
+        return 'freezer_kyc.php?id=' . $id . '&from=profile';
     }
 
     /**
