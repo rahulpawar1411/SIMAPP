@@ -64,8 +64,9 @@ $kyc = count($kycList) === 1 ? $kycList[0] : '';
 $city = count($cityList) === 1 ? $cityList[0] : '';
 $status = count($statusList) === 1 ? $statusList[0] : '';
 
-// Full data export (all store / freezer / KYC / IoT fields; respects filters)
+// Full data export — admin only (same as Reports)
 if (!empty($_GET['export'])) {
+    AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
     $exportType = strtolower((string)$_GET['export']);
     if ($exportType === 'xlsx') {
         ImportExportService::streamProfilesExportXlsx($filters);
@@ -76,6 +77,8 @@ if (!empty($_GET['export'])) {
         exit;
     }
 }
+
+$isAdmin = AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN);
 
 $totalCount = Freezer::countFiltered($filters);
 $totalPages = max(1, (int)ceil($totalCount / $limit));
@@ -142,6 +145,7 @@ require_once __DIR__ . '/includes/header.php';
         <h1 class="cfg-toolbar-title">Freezer &amp; Store Profiles</h1>
     </div>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <?php if ($isAdmin): ?>
         <a href="qr_print_bulk.php?<?= http_build_query(array_filter(['q' => $search, 'city' => $cityList, 'status' => $statusList], static fn($v) => $v !== '' && $v !== [])) ?>" class="btn btn-outline" target="_blank">
             Print all stickers (PDF)
         </a>
@@ -156,6 +160,7 @@ require_once __DIR__ . '/includes/header.php';
         <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'xlsx'])) ?>" class="btn btn-outline" title="Full Excel export">
             Export Excel
         </a>
+        <?php endif; ?>
         <a href="qr_scanner.php" class="btn btn-primary cfg-done-btn">
             Scan QR → Register
         </a>

@@ -44,6 +44,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
 
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
+            <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
             <a href="index.php" class="nav-link <?= $currentPage === 'index.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -51,6 +52,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                 </svg>
                 <span>Dashboard</span>
             </a>
+            <?php endif; ?>
 
             <a href="profiles.php" class="nav-link <?= in_array($currentPage, ['profiles.php', 'profile_view.php', 'profile_edit.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -70,14 +72,41 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                 <span>Scan QR</span>
             </a>
 
-            <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
-            <div class="nav-label">Operations</div>
+            <?php if ($currentUser && AuthService::hasRole(['super_admin', 'technician'])): ?>
             <a href="blank_qr.php" class="nav-link <?= in_array($currentPage, ['blank_qr.php', 'blank_qr_print.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                     <path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/>
                 </svg>
                 <span>QR Management</span>
+            </a>
+            <?php endif; ?>
+
+            <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
+            <?php
+            $notifPending = 0;
+            try {
+                // Legacy pending only (new KYC completes immediately and shows in date history)
+                $notifPending = \App\Models\AppNotification::countPending();
+            } catch (Throwable $e) {
+                $notifPending = 0;
+            }
+            ?>
+            <div class="nav-label">Operations</div>
+            <a href="notifications.php" class="nav-link <?= $currentPage === 'notifications.php' ? 'active' : '' ?><?= $notifPending > 0 ? ' has-notif-dot' : '' ?>">
+                <span class="nav-link-icon-wrap">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                    <?php if ($notifPending > 0): ?>
+                        <span class="nav-notif-dot" aria-hidden="true"></span>
+                    <?php endif; ?>
+                </span>
+                <span>Activity</span>
+                <?php if ($notifPending > 0): ?>
+                    <span class="nav-link-badge"><?= $notifPending > 99 ? '99+' : (int)$notifPending ?></span>
+                <?php endif; ?>
             </a>
             <a href="import_export.php" class="nav-link <?= $currentPage === 'import_export.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

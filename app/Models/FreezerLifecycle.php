@@ -411,6 +411,282 @@ class FreezerLifecycle {
         return $events;
     }
 
+    /**
+     * Single activity log for History tab / export:
+     * Installation, Store move, KYC — Same store, KYC — New store.
+     * Newest first.
+     *
+     * @return list<array{
+     *   date:string, activity:string, activity_key:string, store_id:?string, store_name:?string,
+     *   address:?string, city:?string, state:?string, pincode:?string, zone:?string,
+     *   result:?string, cycle:?string, notes:?string, reason:?string,
+     *   verified_by:?string, latitude:?string, longitude:?string,
+     *   photo_store:?string, photo_freezer:?string, sort_key:string
+     * }>
+     */
+    public static function buildActivityLog(array $freezer): array {
+        $fid = (int)$freezer['id'];
+        $placements = self::placementHistory($fid);
+        // placementHistory is usually newest first — normalize oldest→newest for classification
+        $byStart = $placements;
+        usort($byStart, static function ($a, $b) {
+            return strcmp((string)($a['started_at'] ?? ''), (string)($b['started_at'] ?? ''));
+        });
+
+        $moveDates = []; // date => true when a new-outlet / transfer placement started
+        $moveStoreIds = [];
+        foreach ($byStart as $idx => $p) {
+            $isNewOutlet = stripos((string)($p['transfer_reason'] ?? ''), 'new outlet') !== false
+                || stripos((string)($p['notes'] ?? ''), 'new outlet_id=') !== false
+                || stripos((string)($p['transfer_reason'] ?? ''), 'auto ID') !== false
+                || stripos((string)($p['transfer_reason'] ?? ''), 'moved') !== false
+                || stripos((string)($p['transfer_reason'] ?? ''), 'KYC') !== false;
+            if ($idx > 0 || $isNewOutlet) {
+                $d = substr((string)($p['started_at'] ?? ''), 0, 10);
+                if ($d !== '') {
+                    $moveDates[$d] = true;
+                    $moveStoreIds[(int)($p['store_id'] ?? 0)] = true;
+                }
+            }
+        }
+
+        $rows = [];
+
+        // 1) Installation
+        $installDate = trim((string)($freezer['installation_date'] ?? ''));
+        $first = $byStart[0] ?? null;
+        if ($installDate === '' && $first) {
+            $installDate = (string)($first['started_at'] ?? '');
+        }
+        if ($installDate !== '' || $first) {
+            $installerName = trim((string)($freezer['created_by_name'] ?? ''));
+            if ($installerName === '' && !empty($freezer['created_by'])) {
+                try {
+                    $u = User::findById((int)$freezer['created_by']);
+                    $installerName = trim((string)($u['name'] ?? ''));
+                } catch (\Throwable $e) {
+                    $installerName = '';
+                }
+            }
+            $rows[] = [
+                'date' => $installDate !== '' ? $installDate : (string)($first['started_at'] ?? ''),
+                'activity' => 'Installation',
+                'activity_key' => 'installation',
+                'store_id' => $first['outlet_id'] ?? ($freezer['outlet_id'] ?? null),
+                'store_name' => $first['store_name'] ?? ($freezer['store_name'] ?? null),
+                'address' => self::cleanAddressText($first['address'] ?? ($freezer['store_address'] ?? ''), $freezer['unique_freezer_id'] ?? null),
+                'city' => $first['city'] ?? ($freezer['store_city'] ?? null),
+                'state' => $first['state'] ?? ($freezer['store_state'] ?? null),
+                'pincode' => $first['pincode'] ?? ($freezer['store_pincode'] ?? null),
+                'zone' => $first['zone'] ?? ($freezer['zone'] ?? null),
+                'result' => null,
+                'cycle' => null,
+                'notes' => null,
+                'reason' => 'Initial implementation / SIM install',
+                'verified_by' => $installerName !== '' ? $installerName : null,
+                'latitude' => null,
+                'longitude' => null,
+                'photo_store' => null,
+                'photo_freezer' => null,
+                'sort_key' => ($installDate !== '' ? $installDate : (string)($first['started_at'] ?? '0000-00-00')) . '-A00000000',
+            ];
+        }
+
+        // 2) Store moves (placements after first)
+        foreach ($byStart as $idx => $p) {
+            if ($idx === 0) {
+                continue;
+            }
+            $isNewOutlet = stripos((string)($p['transfer_reason'] ?? ''), 'new outlet') !== false
+                || stripos((string)($p['notes'] ?? ''), 'new outlet_id=') !== false
+                || stripos((string)($p['transfer_reason'] ?? ''), 'auto ID') !== false;
+            $date = (string)($p['started_at'] ?? '');
+            $rows[] = [
+                'date' => $date,
+                'activity' => $isNewOutlet ? 'Store move — new outlet' : 'Store move',
+                'activity_key' => $isNewOutlet ? 'store_move_new' : 'store_move',
+                'store_id' => $p['outlet_id'] ?? null,
+                'store_name' => $p['store_name'] ?? null,
+                'address' => self::cleanAddressText($p['address'] ?? '', $freezer['unique_freezer_id'] ?? null),
+                'city' => $p['city'] ?? null,
+                'state' => $p['state'] ?? null,
+                'pincode' => $p['pincode'] ?? null,
+                'zone' => $p['zone'] ?? null,
+                'result' => null,
+                'cycle' => null,
+                'notes' => $p['notes'] ?? null,
+                'reason' => $p['transfer_reason'] ?? null,
+                'verified_by' => null,
+                'latitude' => null,
+                'longitude' => null,
+                'photo_store' => null,
+                'photo_freezer' => null,
+                'sort_key' => $date . '-M' . str_pad((string)($p['id'] ?? 0), 8, '0', STR_PAD_LEFT),
+            ];
+        }
+
+        // 3) KYC — same store / new store
+        foreach (self::kycHistory($fid, 200) as $k) {
+            $vDate = substr((string)($k['verified_at'] ?? ''), 0, 10);
+            $sid = (int)($k['store_id'] ?? 0);
+            $isNew = !empty($moveDates[$vDate]) || (!empty($sid) && !empty($moveStoreIds[$sid]) && isset($moveDates[$vDate]));
+            // Also: KYC store differs from earliest placement store and placement started same day
+            if (!$isNew && $vDate !== '') {
+                foreach ($byStart as $idx => $p) {
+                    if ($idx === 0) {
+                        continue;
+                    }
+                    if (substr((string)($p['started_at'] ?? ''), 0, 10) === $vDate
+                        && (int)($p['store_id'] ?? 0) === $sid) {
+                        $isNew = true;
+                        break;
+                    }
+                }
+            }
+
+            $rows[] = [
+                'date' => (string)($k['verified_at'] ?? ''),
+                'activity' => $isNew ? 'KYC — New store' : 'KYC — Same store',
+                'activity_key' => $isNew ? 'kyc_new_store' : 'kyc_same_store',
+                'store_id' => $k['outlet_id'] ?? null,
+                'store_name' => $k['store_name'] ?? null,
+                'address' => self::cleanAddressText($k['address'] ?? '', $freezer['unique_freezer_id'] ?? null),
+                'city' => $k['city'] ?? null,
+                'state' => $k['state'] ?? null,
+                'pincode' => $k['pincode'] ?? null,
+                'zone' => $k['zone'] ?? null,
+                'result' => $k['result'] ?? null,
+                'cycle' => ((int)($k['cycle_year'] ?? 0)) . '-H' . ((int)($k['cycle_half'] ?? 0)),
+                'notes' => $k['notes'] ?? null,
+                'reason' => null,
+                'verified_by' => $k['verified_by_name'] ?? null,
+                'latitude' => isset($k['latitude']) ? (string)$k['latitude'] : null,
+                'longitude' => isset($k['longitude']) ? (string)$k['longitude'] : null,
+                'photo_store' => !empty($k['image_store_front']) ? 'Yes' : 'No',
+                'photo_freezer' => !empty($k['image_freezer']) ? 'Yes' : 'No',
+                'sort_key' => (string)($k['verified_at'] ?? '') . '-K' . str_pad((string)($k['id'] ?? 0), 8, '0', STR_PAD_LEFT),
+            ];
+        }
+
+        // 4) Rejected KYC requests (no profile KYC record — from notifications)
+        try {
+            AppNotification::ensureTable();
+            $pdo = Database::getConnection();
+            $rej = $pdo->prepare("SELECT * FROM `app_notifications`
+                WHERE `freezer_id` = :fid
+                  AND `status` = 'rejected'
+                  AND `type` IN ('kyc_same_store', 'kyc_store_move')
+                ORDER BY `id` DESC");
+            $rej->execute(['fid' => $fid]);
+            foreach ($rej->fetchAll(PDO::FETCH_ASSOC) ?: [] as $n) {
+                $payload = AppNotification::decodePayload($n);
+                $kyc = $payload['kyc'] ?? [];
+                $store = $payload['store'] ?? [];
+                $from = $payload['from_store'] ?? [];
+                $isMove = ($n['type'] ?? '') === AppNotification::TYPE_KYC_STORE_MOVE;
+                $date = (string)($n['reviewed_at'] ?? $kyc['verified_at'] ?? $n['created_at'] ?? '');
+                if ($date !== '' && str_contains($date, ' ')) {
+                    $date = substr($date, 0, 10);
+                }
+                $rejectNote = trim((string)($n['review_notes'] ?? ''));
+                $rows[] = [
+                    'date' => $date,
+                    'activity' => $isMove ? 'KYC — Rejected (new store)' : 'KYC — Rejected (same store)',
+                    'activity_key' => 'kyc_rejected',
+                    'store_id' => $isMove ? '—' : ($from['outlet_id'] ?? null),
+                    'store_name' => $isMove
+                        ? ($store['store_name'] ?? null)
+                        : ($from['store_name'] ?? null),
+                    'address' => $isMove
+                        ? trim(implode(', ', array_filter([
+                            $store['address'] ?? '',
+                            $store['city'] ?? '',
+                            $store['pincode'] ?? '',
+                        ])))
+                        : null,
+                    'city' => $isMove ? ($store['city'] ?? null) : null,
+                    'state' => $isMove ? ($store['state'] ?? null) : null,
+                    'pincode' => $isMove ? ($store['pincode'] ?? null) : null,
+                    'zone' => $isMove ? ($store['zone'] ?? null) : null,
+                    'result' => 'REJECTED',
+                    'cycle' => !empty($kyc['cycle_year'])
+                        ? ((int)$kyc['cycle_year'] . '-H' . (int)($kyc['cycle_half'] ?? 0))
+                        : null,
+                    'notes' => $kyc['notes'] ?? null,
+                    'reason' => $rejectNote !== '' ? ('Rejected: ' . $rejectNote) : 'Rejected by admin — no profile change',
+                    'verified_by' => $n['created_by_name']
+                        ?? ($payload['technician_name'] ?? ($kyc['technician_name'] ?? null)),
+                    'latitude' => isset($kyc['latitude']) ? (string)$kyc['latitude'] : null,
+                    'longitude' => isset($kyc['longitude']) ? (string)$kyc['longitude'] : null,
+                    'photo_store' => !empty($store['image_store_front'] ?? $kyc['image_store_front'] ?? null) ? 'Yes' : 'No',
+                    'photo_freezer' => !empty($kyc['image_freezer']) ? 'Yes' : 'No',
+                    'sort_key' => ($date !== '' ? $date : '0000-00-00') . '-R' . str_pad((string)($n['id'] ?? 0), 8, '0', STR_PAD_LEFT),
+                ];
+            }
+        } catch (\Throwable $e) {
+            // notifications table may not exist yet
+        }
+
+        usort($rows, static fn($a, $b) => strcmp((string)$b['sort_key'], (string)$a['sort_key']));
+        return $rows;
+    }
+
+    /** @return list<string> */
+    public static function activityExportColumns(): array {
+        return [
+            'Date',
+            'Activity',
+            'Unique Freezer ID',
+            'Tag code',
+            'Store ID',
+            'Store name',
+            'Address',
+            'City',
+            'State',
+            'PIN',
+            'Zone',
+            'KYC result',
+            'Cycle',
+            'Reason',
+            'Notes',
+            'Verified by',
+            'GPS lat',
+            'GPS lng',
+            'Store photo',
+            'Freezer photo',
+        ];
+    }
+
+    /** @return list<array<string,string>> */
+    public static function activityExportRows(array $freezer, string $tagCode = ''): array {
+        $out = [];
+        foreach (self::buildActivityLog($freezer) as $r) {
+            $out[] = [
+                'Date' => (string)($r['date'] ?? ''),
+                'Activity' => (string)($r['activity'] ?? ''),
+                'Unique Freezer ID' => (string)($freezer['unique_freezer_id'] ?? ''),
+                'Tag code' => $tagCode,
+                'Store ID' => (string)($r['store_id'] ?? ''),
+                'Store name' => (string)($r['store_name'] ?? ''),
+                'Address' => (string)($r['address'] ?? ''),
+                'City' => (string)($r['city'] ?? ''),
+                'State' => (string)($r['state'] ?? ''),
+                'PIN' => (string)($r['pincode'] ?? ''),
+                'Zone' => (string)($r['zone'] ?? ''),
+                'KYC result' => (string)($r['result'] ?? ''),
+                'Cycle' => (string)($r['cycle'] ?? ''),
+                'Reason' => (string)($r['reason'] ?? ''),
+                'Notes' => (string)($r['notes'] ?? ''),
+                'Verified by' => (string)($r['verified_by'] ?? ''),
+                'GPS lat' => (string)($r['latitude'] ?? ''),
+                'GPS lng' => (string)($r['longitude'] ?? ''),
+                'Store photo' => (string)($r['photo_store'] ?? ''),
+                'Freezer photo' => (string)($r['photo_freezer'] ?? ''),
+            ];
+        }
+        return $out;
+    }
+
     /** Strip Unique Freezer ID glued into address text (for display / export). */
     public static function cleanAddressText(?string $text, ?string $uniqueFreezerId = null): string {
         $text = trim((string)$text);
@@ -489,13 +765,13 @@ class FreezerLifecycle {
     }
 
     /**
-     * History export: implementation (placements) + KYC sheets.
-     * @param string $sheet all|implementation|kyc
-     * @param string $format csv|xlsx  (xlsx supported for sheet=kyc)
+     * History export: unified activity / implementation / KYC sheets.
+     * @param string $sheet all|activity|implementation|kyc
+     * @param string $format csv|xlsx  (xlsx supported for sheet=kyc|activity)
      */
     public static function streamHistoryExport(array $freezer, string $sheet = 'all', string $format = 'csv'): void {
         $fid = (int)$freezer['id'];
-        $sheet = in_array($sheet, ['all', 'implementation', 'kyc'], true) ? $sheet : 'all';
+        $sheet = in_array($sheet, ['all', 'activity', 'implementation', 'kyc'], true) ? $sheet : 'activity';
         $format = in_array($format, ['csv', 'xlsx'], true) ? $format : 'csv';
         $safeName = preg_replace('/[^A-Za-z0-9_-]+/', '_', $freezer['unique_freezer_id']);
 
@@ -505,6 +781,38 @@ class FreezerLifecycle {
             $tagCode = $tag['tag_code'] ?? '';
         } catch (\Throwable $e) {
             $tagCode = '';
+        }
+
+        // Unified activity Excel
+        if ($format === 'xlsx' && ($sheet === 'activity' || $sheet === 'all')) {
+            $cols = self::activityExportColumns();
+            $rows = self::activityExportRows($freezer, $tagCode);
+            $writer = new \App\Services\ExcelXlsxWriter(static fn(string $c): string => 'store');
+            $writer->setSheetName('Store activity')
+                ->setColumns($cols)
+                ->setRows($rows)
+                ->stream('store_activity_' . $safeName . '_' . date('Ymd_His') . '.xlsx');
+            return;
+        }
+
+        // Unified activity CSV
+        if ($format === 'csv' && $sheet === 'activity') {
+            $filename = 'store_activity_' . $safeName . '_' . date('Ymd_His') . '.csv';
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename=' . $filename);
+            $out = fopen('php://output', 'w');
+            fprintf($out, chr(0xEF) . chr(0xBB) . chr(0xBF));
+            $cols = self::activityExportColumns();
+            fputcsv($out, $cols);
+            foreach (self::activityExportRows($freezer, $tagCode) as $row) {
+                $line = [];
+                foreach ($cols as $col) {
+                    $line[] = $row[$col] ?? '';
+                }
+                fputcsv($out, $line);
+            }
+            fclose($out);
+            return;
         }
 
         // Excel export for KYC verifications table
@@ -702,9 +1010,10 @@ class FreezerLifecycle {
 
     /**
      * Dashboard KYC counts — pending when install/last KYC + 6 months has passed.
-     * @return array{done:int,pending:int,pending_list:array}
+     * @param array{zone?:string,city?:string} $filters  empty zone/city = All
+     * @return array{done:int,pending:int,pending_list:array,cutoff:string,gap_months:int}
      */
-    public static function dashboardKycStats(int $pendingLimit = 5): array {
+    public static function dashboardKycStats(int $pendingLimit = 5, array $filters = []): array {
         $pdo = Database::getConnection();
         $gap = self::KYC_GAP_MONTHS;
         $dueExpr = self::kycDueSqlExpr('f', $gap);
@@ -713,20 +1022,48 @@ class FreezerLifecycle {
         Freezer::ensureSimColumns();
         $alive = '(f.deleted_at IS NULL)';
 
-        $doneStmt = $pdo->query(
-            "SELECT COUNT(*) FROM `freezers` f WHERE {$alive} AND {$dueExpr} > {$today}"
+        $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
+        $city = trim((string)($filters['city'] ?? ''));
+        if ($zone === 'ALL') {
+            $zone = '';
+        }
+        if (strcasecmp($city, 'All') === 0) {
+            $city = '';
+        }
+
+        $extra = [];
+        $params = [];
+        if ($zone !== '') {
+            $extra[] = 'UPPER(TRIM(s.zone)) = :zone';
+            $params['zone'] = $zone;
+        }
+        if ($city !== '') {
+            $extra[] = 's.city = :city';
+            $params['city'] = $city;
+        }
+        $extraSql = $extra ? (' AND ' . implode(' AND ', $extra)) : '';
+        $join = ($zone !== '' || $city !== '') ? 'INNER' : 'LEFT';
+
+        $doneStmt = $pdo->prepare(
+            "SELECT COUNT(*) FROM `freezers` f
+             {$join} JOIN `stores` s ON s.id = f.store_id
+             WHERE {$alive} AND {$dueExpr} > {$today}{$extraSql}"
         );
+        $doneStmt->execute($params);
         $done = (int)$doneStmt->fetchColumn();
 
-        $pendingStmt = $pdo->query(
-            "SELECT COUNT(*) FROM `freezers` f WHERE {$alive} AND {$dueExpr} <= {$today}"
+        $pendingStmt = $pdo->prepare(
+            "SELECT COUNT(*) FROM `freezers` f
+             {$join} JOIN `stores` s ON s.id = f.store_id
+             WHERE {$alive} AND {$dueExpr} <= {$today}{$extraSql}"
         );
+        $pendingStmt->execute($params);
         $pending = (int)$pendingStmt->fetchColumn();
 
         $list = [];
         if ($pending > 0 && $pendingLimit > 0) {
             $lim = (int)$pendingLimit;
-            $listStmt = $pdo->query(
+            $listStmt = $pdo->prepare(
                 "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city,
                         (
                             SELECT MAX(k.verified_at) FROM `kyc_verifications` k
@@ -734,11 +1071,12 @@ class FreezerLifecycle {
                         ) AS last_kyc_at,
                         {$dueExpr} AS next_kyc_due
                  FROM `freezers` f
-                 INNER JOIN `stores` s ON s.id = f.store_id
-                 WHERE {$alive} AND {$dueExpr} <= {$today}
+                 {$join} JOIN `stores` s ON s.id = f.store_id
+                 WHERE {$alive} AND {$dueExpr} <= {$today}{$extraSql}
                  ORDER BY next_kyc_due ASC, f.id DESC
                  LIMIT {$lim}"
             );
+            $listStmt->execute($params);
             $list = $listStmt->fetchAll() ?: [];
         }
 
@@ -749,5 +1087,139 @@ class FreezerLifecycle {
             'cutoff' => date('Y-m-d', strtotime("-{$gap} months")),
             'gap_months' => $gap,
         ];
+    }
+
+    /**
+     * Date-wise KYC activity for the Activity section.
+     * Pass $from/$to (Y-m-d) for calendar range, or $days for a rolling window.
+     * @return list<array{
+     *   date:string,label:string,total:int,same_store:int,new_store:int,pass:int,fail:int,
+     *   items:list<array>
+     * }>
+     */
+    /**
+     * @param string $location  all|same|new
+     */
+    public static function notificationHistoryByDate(
+        int $days = 90,
+        ?string $from = null,
+        ?string $to = null,
+        string $location = 'all'
+    ): array {
+        $pdo = Database::getConnection();
+
+        $fromDate = trim((string)$from);
+        $toDate = trim((string)$to);
+        $useRange = preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)
+            && preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate);
+        if ($useRange && $fromDate > $toDate) {
+            [$fromDate, $toDate] = [$toDate, $fromDate];
+        }
+
+        $location = strtolower(trim($location));
+        if (!in_array($location, ['all', 'same', 'new'], true)) {
+            $location = 'all';
+        }
+
+        if ($useRange) {
+            $whereSql = 'DATE(k.verified_at) >= :from_d AND DATE(k.verified_at) <= :to_d';
+            $params = ['from_d' => $fromDate, 'to_d' => $toDate];
+        } else {
+            $days = max(7, min(365, $days));
+            $whereSql = "DATE(k.verified_at) >= DATE_SUB(CURDATE(), INTERVAL {$days} DAY)";
+            $params = [];
+        }
+
+        $isNewExpr = "CASE WHEN EXISTS (
+                        SELECT 1 FROM `freezer_placements` p
+                        WHERE p.freezer_id = k.freezer_id
+                          AND p.store_id = k.store_id
+                          AND DATE(p.started_at) = DATE(k.verified_at)
+                          AND EXISTS (
+                              SELECT 1 FROM `freezer_placements` p0
+                              WHERE p0.freezer_id = k.freezer_id AND p0.id < p.id
+                          )
+                    ) THEN 1 ELSE 0 END";
+
+        $stmt = $pdo->prepare(
+            "SELECT k.id, k.freezer_id, k.store_id, k.verified_at, k.result, k.notes, k.verified_by,
+                    f.unique_freezer_id, f.deleted_at AS freezer_deleted,
+                    s.store_name, s.outlet_id, s.city, s.zone,
+                    u.name AS technician_name,
+                    {$isNewExpr} AS is_new_store
+             FROM `kyc_verifications` k
+             INNER JOIN `freezers` f ON f.id = k.freezer_id
+             LEFT JOIN `stores` s ON s.id = k.store_id
+             LEFT JOIN `users` u ON u.id = k.verified_by
+             WHERE {$whereSql}
+             ORDER BY k.verified_at DESC, k.id DESC"
+        );
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $groups = [];
+        foreach ($rows as $r) {
+            $isNew = !empty($r['is_new_store']);
+            if ($location === 'same' && $isNew) {
+                continue;
+            }
+            if ($location === 'new' && !$isNew) {
+                continue;
+            }
+
+            $date = substr((string)($r['verified_at'] ?? ''), 0, 10);
+            if ($date === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                continue;
+            }
+            if (!isset($groups[$date])) {
+                $ts = strtotime($date);
+                $label = $ts ? date('D, d M Y', $ts) : $date;
+                if ($date === date('Y-m-d')) {
+                    $label = 'Today · ' . $label;
+                } elseif ($date === date('Y-m-d', strtotime('-1 day'))) {
+                    $label = 'Yesterday · ' . $label;
+                }
+                $groups[$date] = [
+                    'date' => $date,
+                    'label' => $label,
+                    'total' => 0,
+                    'same_store' => 0,
+                    'new_store' => 0,
+                    'pass' => 0,
+                    'fail' => 0,
+                    'items' => [],
+                ];
+            }
+
+            $result = strtoupper(trim((string)($r['result'] ?? 'PASS')));
+            $groups[$date]['total']++;
+            if ($isNew) {
+                $groups[$date]['new_store']++;
+            } else {
+                $groups[$date]['same_store']++;
+            }
+            if ($result === 'FAIL') {
+                $groups[$date]['fail']++;
+            } else {
+                $groups[$date]['pass']++;
+            }
+
+            $groups[$date]['items'][] = [
+                'id' => (int)$r['id'],
+                'freezer_id' => (int)$r['freezer_id'],
+                'unique_freezer_id' => (string)($r['unique_freezer_id'] ?? ''),
+                'store_name' => (string)($r['store_name'] ?? ''),
+                'outlet_id' => (string)($r['outlet_id'] ?? ''),
+                'city' => (string)($r['city'] ?? ''),
+                'zone' => (string)($r['zone'] ?? ''),
+                'result' => $result,
+                'notes' => (string)($r['notes'] ?? ''),
+                'technician_name' => (string)($r['technician_name'] ?? ''),
+                'is_new_store' => $isNew,
+                'verified_at' => (string)($r['verified_at'] ?? ''),
+            ];
+        }
+
+        return array_values($groups);
     }
 }

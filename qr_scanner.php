@@ -65,7 +65,7 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <?php if ($isKycPurpose): ?>
         <p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 0.85rem; line-height: 1.45;">
-            Physical QR / Tag scan karo — pehle us freezer ki <strong>profile</strong> khulegi, phir wahan se KYC.
+            Scan the physical QR / Tag — the freezer <strong>profile</strong> opens first, then continue KYC from there.
             <?php if ($expectUnique !== ''): ?>
                 Expected: <code><?= htmlspecialchars($expectUnique) ?></code>
             <?php endif; ?>

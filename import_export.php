@@ -5,7 +5,7 @@ use App\Config\AppConfig;
 use App\Services\AuthService;
 use App\Services\ImportExportService;
 
-AuthService::requireRole('super_admin');
+AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 $currentUser = AuthService::currentUser();
 
 $error = null;

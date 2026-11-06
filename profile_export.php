@@ -2,10 +2,11 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
 
-AuthService::requireLogin();
+AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 
 $idParam = $_GET['id'] ?? null;
 if (!$idParam) {
@@ -25,7 +26,7 @@ if (!$freezer) {
 }
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
-$sheet = strtolower(trim((string)($_GET['sheet'] ?? 'all')));
+$sheet = strtolower(trim((string)($_GET['sheet'] ?? 'activity')));
 $format = strtolower(trim((string)($_GET['format'] ?? 'csv')));
 if (!in_array($format, ['csv', 'xlsx'], true)) {
     $format = 'csv';

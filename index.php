@@ -2,12 +2,34 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
 
-AuthService::requireLogin();
+AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 $currentUser = AuthService::currentUser();
-$stats = Freezer::getDashboardStats();
+
+$filterZone = strtoupper(trim((string)($_GET['zone'] ?? '')));
+$filterCity = trim((string)($_GET['city'] ?? ''));
+if ($filterZone === 'ALL') {
+    $filterZone = '';
+}
+if (strcasecmp($filterCity, 'All') === 0) {
+    $filterCity = '';
+}
+$dashFilters = [
+    'zone' => $filterZone,
+    'city' => $filterCity,
+];
+$zoneOptions = Freezer::dashboardZones();
+$cityOptions = Freezer::dashboardCities($filterZone !== '' ? $filterZone : null);
+// Drop invalid city if zone changed and city no longer applies
+if ($filterCity !== '' && !in_array($filterCity, $cityOptions, true)) {
+    $filterCity = '';
+    $dashFilters['city'] = '';
+}
+
+$stats = Freezer::getDashboardStats($dashFilters);
 
 $cycle = FreezerLifecycle::currentCycle();
 $kycDone = 0;
@@ -15,13 +37,14 @@ $kycPending = 0;
 $kycPendingList = [];
 $kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
 try {
-    $kycDash = FreezerLifecycle::dashboardKycStats(5);
+    $kycDash = FreezerLifecycle::dashboardKycStats(5, $dashFilters);
     $kycDone = (int)$kycDash['done'];
     $kycPending = (int)$kycDash['pending'];
     $kycPendingList = $kycDash['pending_list'] ?? [];
 } catch (Throwable $e) {
     $kycPending = (int)$stats['total_freezers'];
 }
+$hasDashFilter = ($filterZone !== '' || $filterCity !== '');
 
 $pageTitle = 'Operations Dashboard';
 require_once __DIR__ . '/includes/header.php';
@@ -43,6 +66,36 @@ require_once __DIR__ . '/includes/header.php';
         <span>Scan QR Code</span>
     </a>
 </div>
+
+<form method="GET" action="index.php" class="dash-filter-bar" id="dash-filter-form">
+    <div class="dash-filter-field">
+        <label class="form-label" for="dash-zone">Zone</label>
+        <select id="dash-zone" name="zone" class="form-select" onchange="document.getElementById('dash-city').value=''; this.form.submit();">
+            <option value="">All</option>
+            <?php foreach ($zoneOptions as $z): ?>
+                <option value="<?= htmlspecialchars($z) ?>" <?= $filterZone === $z ? 'selected' : '' ?>>
+                    <?= htmlspecialchars($z) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div class="dash-filter-field">
+        <label class="form-label" for="dash-city">City</label>
+        <select id="dash-city" name="city" class="form-select" onchange="this.form.submit()">
+            <option value="">All</option>
+            <?php foreach ($cityOptions as $c): ?>
+                <option value="<?= htmlspecialchars($c) ?>" <?= $filterCity === $c ? 'selected' : '' ?>>
+                    <?= htmlspecialchars($c) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <?php if ($hasDashFilter): ?>
+        <div class="dash-filter-actions">
+            <a href="index.php" class="btn btn-sm btn-secondary">Clear</a>
+        </div>
+    <?php endif; ?>
+</form>
 
 <div class="stat-grid dash-kpi-grid">
     <div class="stat-card dash-kpi" style="--stat-accent:#16a34a; --stat-bg:#f0fdf4; --stat-color:#16a34a;">
@@ -92,7 +145,7 @@ require_once __DIR__ . '/includes/header.php';
             </svg>
         </div>
         <div class="stat-info">
-            <h3>KYC Pending</h3>
+            <h3>KYC Due</h3>
             <div class="stat-value"><?= number_format($kycPending) ?></div>
         </div>
     </div>

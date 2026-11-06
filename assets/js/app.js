@@ -359,11 +359,11 @@ async function ensureLocationPermission() {
         const retry = await showPermissionPopup({
             mode: 'denied',
             title: 'Allow Location',
-            body: 'Location is blocked for this site. Enable it to capture GPS on Store Front photos and stamps.',
+            body: 'Location is blocked for this site. Enable it to save your current store location.',
             steps: [
                 'Tap the lock / info icon in the browser address bar',
                 'Set Location to Allow',
-                'Reload the page, then try again'
+                'Reload the page, then tap Save my current location'
             ],
             allowLabel: 'I enabled it — Try again',
             cancelLabel: 'Cancel'
@@ -375,7 +375,7 @@ async function ensureLocationPermission() {
     const ok = await showPermissionPopup({
         mode: 'ask',
         title: 'Allow Location access?',
-        body: 'ReeferON needs your location to stamp GPS on photos and auto-fill store address / PIN.',
+        body: 'ReeferON needs your location only when you tap Save my current location (address / PIN auto-fill).',
         steps: [
             'Tap Allow on the next browser popup',
             'Keep Location / GPS ON on your phone'
@@ -424,7 +424,7 @@ async function ensureCameraPermission() {
     const ok = await showPermissionPopup({
         mode: 'ask',
         title: 'Allow Camera access?',
-        body: 'ReeferON needs the camera to capture Store Front and freezer photos with GPS stamp.',
+        body: 'ReeferON needs the camera to capture Store Front and freezer photos (date & time stamp).',
         steps: [
             'Tap Allow on the next browser popup',
             'Prefer the rear camera for clear store photos'
@@ -436,11 +436,9 @@ async function ensureCameraPermission() {
 }
 
 async function ensureCameraAndLocationPermissions() {
-    const locOk = await ensureLocationPermission();
-    if (!locOk) return { camera: false, location: false };
-
+    // Photos no longer need location — keep helper for any legacy callers
     const camOk = await ensureCameraPermission();
-    return { camera: camOk, location: locOk };
+    return { camera: camOk, location: false };
 }
 
 /**
@@ -1554,7 +1552,7 @@ function isStoreFrontPhotoInput(input) {
 
 /**
  * Compress non–Store Front photos (resize + JPEG) to cut upload size.
- * Store Front is excluded — kept higher quality for GPS stamp / EXIF.
+ * Larger photos are resized; Store Front uses same date-time stamp path.
  *
  * @param {Blob} blob
  * @param {{ maxEdge?: number, quality?: number, minBytes?: number }} [opts]
@@ -1670,13 +1668,11 @@ async function stampDateTimeOnlyOnBlob(blob) {
 }
 
 /**
- * Store Front → GPS map stamp.
- * All other photos → date-time stamp only (no lat/lng/address/map).
- * Shows per-field loading while stamp + save run.
+ * All photos → date-time stamp only (no GPS / map stamp on image).
+ * Location auto-fill is only via Save my current location.
  */
 async function finalizeCapturedPhoto(input, rawBlob, gps) {
     let blob = rawBlob;
-    let usedGps = null;
     const storeFront = isStoreFrontPhotoInput(input);
     const label = imageFieldLabel(input);
 
@@ -1684,79 +1680,47 @@ async function finalizeCapturedPhoto(input, rawBlob, gps) {
     setImageFieldLoading(
         input,
         true,
-        storeFront ? 'Saving photo…' : 'Processing photo…',
-        storeFront ? label + ' · GPS stamp' : label + ' · Date-time stamp'
+        'Processing photo…',
+        label + ' · Date-time stamp'
     );
 
     try {
-        if (storeFront) {
-            usedGps = gps;
-            if (!usedGps || typeof usedGps.lat !== 'number') {
-                setImageFieldLoading(input, true, 'Getting GPS…', label);
-                try {
-                    const pos = await getDevicePosition();
-                    usedGps = {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                        acc: pos.coords.accuracy
-                    };
-                    window.__captureGps = usedGps;
-                } catch (e) {
-                    console.warn('GPS unavailable for stamp', e);
-                }
-            }
-
-            if (usedGps && typeof usedGps.lat === 'number') {
-                setImageFieldLoading(input, true, 'Stamping GPS…', 'Map & location on photo');
-                try {
-                    blob = await stampGpsOverlayOnBlob(rawBlob, usedGps.lat, usedGps.lng);
-                } catch (e) {
-                    console.warn('GPS stamp failed, using raw photo', e);
-                    blob = rawBlob;
-                }
-            }
-        } else {
-            setImageFieldLoading(input, true, 'Stamping date…', label + ' · Please wait');
-            try {
-                blob = await stampDateTimeOnlyOnBlob(rawBlob);
-            } catch (e) {
-                console.warn('Date-time stamp failed, using raw photo', e);
-                blob = rawBlob;
-            }
-
-            // Compress all non–Store Front images (size down) while spinner shows
-            setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
-            try {
-                const before = blob.size || 0;
-                blob = await compressImageBlob(blob, { maxEdge: 1600, quality: 0.72 });
-                const after = blob.size || 0;
-                const kb = Math.max(1, Math.round(after / 1024));
-                const saved = before > after ? Math.round((1 - after / before) * 100) : 0;
-                setImageFieldLoading(
-                    input,
-                    true,
-                    'Saving photo…',
-                    saved > 0 ? (label + ' · ' + kb + ' KB (−' + saved + '%)') : (label + ' · ' + kb + ' KB')
-                );
-            } catch (e) {
-                console.warn('Compress failed, using stamped photo', e);
-                setImageFieldLoading(input, true, 'Saving photo…', label);
-            }
+        setImageFieldLoading(input, true, 'Stamping date…', label + ' · Please wait');
+        try {
+            blob = await stampDateTimeOnlyOnBlob(rawBlob);
+        } catch (e) {
+            console.warn('Date-time stamp failed, using raw photo', e);
+            blob = rawBlob;
         }
 
-        if (storeFront) {
+        setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
+        try {
+            const before = blob.size || 0;
+            blob = await compressImageBlob(blob, { maxEdge: 1600, quality: 0.72 });
+            const after = blob.size || 0;
+            const kb = Math.max(1, Math.round(after / 1024));
+            const saved = before > after ? Math.round((1 - after / before) * 100) : 0;
+            setImageFieldLoading(
+                input,
+                true,
+                'Saving photo…',
+                saved > 0 ? (label + ' · ' + kb + ' KB (−' + saved + '%)') : (label + ' · ' + kb + ' KB')
+            );
+        } catch (e) {
+            console.warn('Compress failed, using stamped photo', e);
             setImageFieldLoading(input, true, 'Saving photo…', label);
         }
-        const prefix = storeFront ? 'gps_cam_' : 'photo_';
+
+        const prefix = storeFront ? 'store_front_' : 'photo_';
         const file = new File([blob], prefix + Date.now() + '.jpg', { type: 'image/jpeg' });
         assignFileToInput(input, file);
 
-        // Store Front keeps loading — EXIF / location analysis continues on change
+        // Store Front keeps a short load — date EXIF fill continues on change
         if (!storeFront) {
             setImageFieldLoading(input, false);
             endImageProcessing();
         }
-        return { file, gps: usedGps };
+        return { file, gps: null };
     } catch (err) {
         setImageFieldLoading(input, false);
         endImageProcessing();
@@ -1777,28 +1741,15 @@ function forceNativeCameraInput(input) {
         tmp.remove();
         if (!file) return;
         try {
-            let gps = null;
-            if (isStoreFrontPhotoInput(input)) {
-                gps = window.__captureGps || null;
-                if (!gps) {
-                    try {
-                        const pos = await getDevicePosition();
-                        gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
-                        window.__captureGps = gps;
-                    } catch (e) { /* optional */ }
-                }
-            }
-            await finalizeCapturedPhoto(input, file, gps);
+            await finalizeCapturedPhoto(input, file, null);
         } catch (e) {
             console.warn('Native capture stamp failed', e);
             beginImageProcessing();
             try {
                 await assignProcessedPhotoFallback(input, file);
             } finally {
-                if (!isStoreFrontPhotoInput(input)) {
-                    setImageFieldLoading(input, false);
-                    endImageProcessing();
-                }
+                setImageFieldLoading(input, false);
+                endImageProcessing();
             }
         }
     });
@@ -1806,18 +1757,17 @@ function forceNativeCameraInput(input) {
     tmp.click();
 }
 
-/** Fallback when stamp pipeline fails — still compress non–Store Front images. */
+/** Fallback when stamp pipeline fails — compress + save. */
 async function assignProcessedPhotoFallback(input, file) {
     const label = imageFieldLabel(input);
     let outFile = file;
-    if (!isStoreFrontPhotoInput(input)) {
-        setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
-        try {
-            const compressed = await compressImageBlob(file, { maxEdge: 1600, quality: 0.72 });
-            outFile = new File([compressed], 'photo_' + Date.now() + '.jpg', { type: 'image/jpeg' });
-        } catch (err) {
-            console.warn('Fallback compress failed', err);
-        }
+    setImageFieldLoading(input, true, 'Compressing…', label + ' · Reducing size');
+    try {
+        const compressed = await compressImageBlob(file, { maxEdge: 1600, quality: 0.72 });
+        const prefix = isStoreFrontPhotoInput(input) ? 'store_front_' : 'photo_';
+        outFile = new File([compressed], prefix + Date.now() + '.jpg', { type: 'image/jpeg' });
+    } catch (err) {
+        console.warn('Fallback compress failed', err);
     }
     setImageFieldLoading(input, true, 'Saving photo…', label);
     assignFileToInput(input, outFile);
@@ -1839,7 +1789,7 @@ function ensureCameraModal() {
             </div>
             <video class="camera-capture-video" playsinline autoplay muted></video>
             <canvas class="camera-capture-canvas" hidden></canvas>
-            <p class="camera-capture-hint">Rear camera · Store Front: GPS stamp · Other photos: date-time only</p>
+            <p class="camera-capture-hint">Rear camera · Date &amp; time stamp on all photos</p>
             <div class="camera-capture-actions">
                 <button type="button" class="btn btn-secondary camera-capture-cancel">Cancel</button>
                 <button type="button" class="btn btn-success camera-capture-shutter">Capture</button>
@@ -1918,22 +1868,6 @@ async function openLiveCameraCapture(input) {
         shutterBtn.onclick = async () => {
             shutterBtn.disabled = true;
             const originalLabel = shutterBtn.textContent;
-            const storeFront = isStoreFrontPhotoInput(input);
-
-            if (storeFront) {
-                shutterBtn.textContent = 'Getting GPS…';
-                try {
-                    const pos = await getDevicePosition();
-                    window.__captureGps = {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                        acc: pos.coords.accuracy
-                    };
-                } catch (gpsErr) {
-                    console.warn('Capture-time GPS failed', gpsErr);
-                    if (!window.__captureGps) window.__captureGps = null;
-                }
-            }
 
             const w = video.videoWidth || 1280;
             const h = video.videoHeight || 720;
@@ -1942,7 +1876,7 @@ async function openLiveCameraCapture(input) {
             const ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, w, h);
 
-            shutterBtn.textContent = storeFront ? 'Stamping GPS…' : 'Stamping date…';
+            shutterBtn.textContent = 'Stamping date…';
             canvas.toBlob(async function (blob) {
                 try {
                     if (!blob) {
@@ -1952,7 +1886,7 @@ async function openLiveCameraCapture(input) {
                         resolve(false);
                         return;
                     }
-                    await finalizeCapturedPhoto(input, blob, storeFront ? window.__captureGps : null);
+                    await finalizeCapturedPhoto(input, blob, null);
                     cleanup();
                     shutterBtn.disabled = false;
                     shutterBtn.textContent = originalLabel;
@@ -1987,28 +1921,15 @@ function openGalleryForInput(input) {
             return;
         }
         try {
-            let gps = null;
-            if (isStoreFrontPhotoInput(input)) {
-                gps = window.__captureGps || null;
-                if (!gps) {
-                    try {
-                        const pos = await getDevicePosition();
-                        gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
-                        window.__captureGps = gps;
-                    } catch (e) { /* optional */ }
-                }
-            }
-            await finalizeCapturedPhoto(input, file, gps);
+            await finalizeCapturedPhoto(input, file, null);
         } catch (e) {
             console.warn('Gallery photo process failed', e);
             beginImageProcessing();
             try {
                 await assignProcessedPhotoFallback(input, file);
             } finally {
-                if (!isStoreFrontPhotoInput(input)) {
-                    setImageFieldLoading(input, false);
-                    endImageProcessing();
-                }
+                setImageFieldLoading(input, false);
+                endImageProcessing();
             }
         }
     }, { once: true });
@@ -2086,40 +2007,9 @@ async function openCameraForInput(input) {
     input.setAttribute('capture', 'environment');
     input.setAttribute('accept', 'image/*');
 
-    // Explain + request Location then Camera (browser popups follow Allow taps)
-    const perms = await ensureCameraAndLocationPermissions();
-    if (!perms.camera) return;
-
-    // Warm up GPS while camera opens (stamp + Store Front auto-fill)
-    if (perms.location && navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-            function (pos) {
-                window.__captureGps = {
-                    lat: pos.coords.latitude,
-                    lng: pos.coords.longitude,
-                    acc: pos.coords.accuracy
-                };
-            },
-            async function (geoErr) {
-                console.warn('GPS warm-up failed', geoErr);
-                if (geoErr && geoErr.code === 1) {
-                    await showPermissionPopup({
-                        mode: 'denied',
-                        title: 'Allow Location',
-                        body: geoErrorMessage(geoErr),
-                        steps: [
-                            'Tap the lock / info icon in the address bar',
-                            'Set Location to Allow',
-                            'Reload, then retake the photo'
-                        ],
-                        allowLabel: 'OK',
-                        cancelLabel: 'Close'
-                    });
-                }
-            },
-            { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
-        );
-    }
+    // Camera only — location is requested on Save my current location
+    const camOk = await ensureCameraPermission();
+    if (!camOk) return;
 
     // Prefer in-app rear camera (no gallery). Fallback to native capture.
     try {
@@ -2294,7 +2184,7 @@ function initImageUploadPreviews() {
 }
 
 // -------------------------------------------------------------
-// Store Front photo → EXIF GPS + date → auto-fill location fields
+// Store Front photo → EXIF date/time only (location via Save my current location)
 // -------------------------------------------------------------
 function setExifStatus(message, type) {
     const el = document.getElementById('store-front-exif-status');
@@ -2375,7 +2265,7 @@ function setStoreFrontLoading(on, message, sub) {
         || document.querySelector('#loc-new:not([style*="display: none"]) input[name="image_new_store_front"]')
         || document.querySelector('input[name="image_new_store_front"]')
         || document.querySelector('input[name="image_store_front"]');
-    setImageFieldLoading(input || 'dropzone-store-front', on, message, sub || 'Location, address, city, PIN, zone & date');
+    setImageFieldLoading(input || 'dropzone-store-front', on, message, sub || 'Date & time from photo');
 }
 
 function initImageProcessingSubmitGuard() {
@@ -2486,7 +2376,7 @@ function getCityMasterPincode(cityName) {
 }
 
 /**
- * BigDataCloud often returns better Indian postcodes than Nominatim (no API key).
+ * BigDataCloud reverse geocode (no API key) — PIN often city-level in India.
  */
 async function fetchBigDataCloudPostcode(lat, lng) {
     const url = 'https://api.bigdatacloud.net/data/reverse-geocode-client'
@@ -2504,6 +2394,127 @@ async function fetchBigDataCloudPostcode(lat, lng) {
         state: data.principalSubdivision || '',
         raw: data
     };
+}
+
+/** Haversine distance in meters */
+function distanceMeters(lat1, lng1, lat2, lng2) {
+    const toRad = (d) => (d * Math.PI) / 180;
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Nearest OpenStreetMap postal_code / addr:postcode near lat,lng.
+ * Usually more accurate for Indian street PIN than city-level reverse geocode.
+ */
+async function fetchNearestOsmPostcode(lat, lng, radiusM) {
+    const radius = radiusM || 1200;
+    const query = '[out:json][timeout:12];'
+        + '('
+        + 'node["postal_code"](around:' + radius + ',' + lat + ',' + lng + ');'
+        + 'way["postal_code"](around:' + radius + ',' + lat + ',' + lng + ');'
+        + 'node["addr:postcode"](around:' + radius + ',' + lat + ',' + lng + ');'
+        + 'way["addr:postcode"](around:' + radius + ',' + lat + ',' + lng + ');'
+        + ');'
+        + 'out center tags;';
+    const endpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
+    ];
+    let elements = [];
+    for (let i = 0; i < endpoints.length; i++) {
+        try {
+            const res = await fetch(endpoints[i], {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: 'data=' + encodeURIComponent(query)
+            });
+            if (!res.ok) continue;
+            const json = await res.json();
+            elements = (json && json.elements) || [];
+            if (elements.length) break;
+        } catch (e) {
+            console.warn('Overpass PIN lookup failed', e);
+        }
+    }
+    if (!elements.length) return { pin: '', dist: null };
+
+    let best = null;
+    elements.forEach(function (el) {
+        const tags = el.tags || {};
+        let pin = String(tags.postal_code || tags['addr:postcode'] || '').replace(/\D/g, '');
+        if (pin.length > 6) pin = pin.slice(0, 6);
+        if (!isValidIndianPincode(pin)) return;
+        const elat = el.lat != null ? el.lat : (el.center && el.center.lat);
+        const elng = el.lon != null ? el.lon : (el.center && el.center.lon);
+        if (elat == null || elng == null) return;
+        const dist = distanceMeters(lat, lng, elat, elng);
+        if (!best || dist < best.dist) {
+            best = { pin: pin, dist: dist };
+        }
+    });
+    return best || { pin: '', dist: null };
+}
+
+/**
+ * Pick best Indian PIN: prefer nearby OSM postal_code, skip city-master defaults.
+ */
+async function resolveBestIndianPincode(lat, lng, nominatimData, cityHint) {
+    const cityDefault = getCityMasterPincode(cityHint || '');
+    const candidates = [];
+
+    // 1) OSM nearest postal code (best street-level source)
+    try {
+        const osm = await fetchNearestOsmPostcode(lat, lng, 1500);
+        if (osm.pin) {
+            candidates.push({
+                pin: osm.pin,
+                score: (osm.dist != null && osm.dist <= 400) ? 100
+                    : (osm.dist != null && osm.dist <= 900) ? 85 : 70,
+                source: 'osm'
+            });
+        }
+    } catch (e) {
+        console.warn('OSM PIN failed', e);
+    }
+
+    // 2) BigDataCloud
+    try {
+        const bdc = await fetchBigDataCloudPostcode(lat, lng);
+        if (bdc.pin) {
+            let score = 55;
+            if (bdc.pin === cityDefault) score = 15; // city default — weak
+            candidates.push({ pin: bdc.pin, score: score, source: 'bdc' });
+        }
+    } catch (e) {
+        console.warn('BDC PIN failed', e);
+    }
+
+    // 3) Nominatim structured postcode
+    const nomPin = extractIndianPincode(
+        (nominatimData && nominatimData.address) || {},
+        (nominatimData && nominatimData.display_name) || ''
+    );
+    if (nomPin) {
+        let score = 40;
+        if (nomPin === cityDefault) score = 10;
+        candidates.push({ pin: nomPin, score: score, source: 'nominatim' });
+    }
+
+    if (!candidates.length) return { pin: '', source: '', weak: true };
+
+    candidates.sort(function (a, b) { return b.score - a.score; });
+    const top = candidates[0];
+
+    // Reject weak city-default-only guesses — leave blank for manual entry
+    if (top.pin === cityDefault && top.score < 60) {
+        return { pin: '', source: top.source, weak: true, cityDefault: cityDefault };
+    }
+    return { pin: top.pin, source: top.source, weak: top.score < 50, cityDefault: cityDefault };
 }
 
 function fillLocationFromAddress(address, displayName) {
@@ -2608,7 +2619,7 @@ function formatPlaceLabel(data) {
 }
 
 async function reverseGeocodeAndFill(lat, lng) {
-    // Nominatim for address lines; BigDataCloud preferred for Indian PIN accuracy
+    // Nominatim → address lines; OSM nearby postal_code → better Indian PIN
     const fetchRev = async (zoom) => {
         const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&addressdetails=1&zoom=${zoom}`;
         const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -2617,73 +2628,57 @@ async function reverseGeocodeAndFill(lat, lng) {
     };
 
     let data = await fetchRev(18);
-    let pin = extractIndianPincode(data.address || {}, data.display_name || '');
+    const cityHint = (data.address && (
+        data.address.city || data.address.town || data.address.village || data.address.suburb
+    )) || '';
 
-    // Prefer BigDataCloud PIN (usually more accurate for India street points)
-    let bdc = null;
-    try {
-        bdc = await fetchBigDataCloudPostcode(lat, lng);
-        if (bdc.pin) {
-            const cityHint = (data.address && (data.address.city || data.address.town || data.address.village)) || bdc.city || '';
-            const cityDefault = getCityMasterPincode(cityHint);
-            // Always prefer BDC when valid; especially if Nominatim equals generic city PIN
-            if (!pin || pin === cityDefault || pin !== bdc.pin) {
-                pin = bdc.pin;
-            }
-        }
-    } catch (e) {
-        console.warn('BigDataCloud PIN lookup failed', e);
-    }
-
-    // If still no PIN, try slightly wider Nominatim — but reject city-default-only guesses
-    if (!isValidIndianPincode(pin)) {
-        try {
-            const wider = await fetchRev(17);
-            const pin2 = extractIndianPincode(wider.address || {}, wider.display_name || '');
-            const cityHint = (wider.address && (wider.address.city || wider.address.town)) || '';
-            const cityDefault = getCityMasterPincode(cityHint);
-            if (isValidIndianPincode(pin2) && pin2 !== cityDefault) {
-                data = wider;
-                pin = pin2;
-            } else if (isValidIndianPincode(pin2) && !pin) {
-                // Keep as weak fallback only if nothing else
-                pin = pin2;
-            }
-        } catch (e) {
-            console.warn('PIN fallback geocode failed', e);
-        }
-    }
+    const pinResult = await resolveBestIndianPincode(lat, lng, data, cityHint);
+    let pin = pinResult.pin || '';
 
     // Inject chosen PIN into address object before fill
     const address = Object.assign({}, data.address || {});
     if (isValidIndianPincode(pin)) {
         address.postcode = pin;
     } else {
-        // Don't invent / force wrong PIN — leave blank for manual entry
+        // Don't invent / force wrong city-default PIN — leave blank for manual entry
         delete address.postcode;
     }
 
     fillLocationFromAddress(address, data.display_name || '');
 
-    // Hard-set final PIN after city handlers (and clear if unknown)
-    const pinEl = document.getElementById('pincode');
-    if (pinEl) {
+    // Hard-set final PIN after city handlers (and clear city-default wrong guesses)
+    const applyFinalPin = function () {
+        const pinEl = document.getElementById('pincode');
+        if (!pinEl) return;
+        window.__locationSource = 'geocode';
+        window.__pincodeSource = 'geocode';
         if (isValidIndianPincode(pin)) {
             pinEl.value = pin;
-            window.__pincodeSource = 'geocode';
             pinEl.dispatchEvent(new Event('input', { bubbles: true }));
-        } else if (window.__pincodeSource === 'geocode' || window.__pincodeSource === 'gps') {
-            // Clear city-default wrong PIN rather than keep inaccurate value
+        } else {
+            // Clear city-master default if geocoders could not find a reliable PIN
             const cityDefault = getCityMasterPincode((document.getElementById('city') || {}).value || '');
-            if (pinEl.value === cityDefault) {
+            if (!pinEl.value || pinEl.value === cityDefault) {
                 pinEl.value = '';
-                window.__pincodeSource = 'geocode';
             }
         }
-    }
+    };
+    applyFinalPin();
+    // Beat delayed city/zone handlers that may still race
+    setTimeout(applyFinalPin, 0);
+    setTimeout(applyFinalPin, 250);
 
     const place = formatPlaceLabel(Object.assign({}, data, { address }));
-    if (place) setGpsPlaceText(place);
+    if (place) {
+        setGpsPlaceText(
+            pinResult.weak || !pin
+                ? (place + (pin ? '' : ' · PIN: enter manually'))
+                : place
+        );
+    }
+    if (!pin && typeof setExifStatus === 'function') {
+        setExifStatus('Address filled — PIN not sure from GPS. Please enter PIN manually.', 'warn');
+    }
     return data;
 }
 
@@ -2799,94 +2794,40 @@ function initStoreFrontExifAutofill() {
             || document.getElementById(input.name === 'image_new_store_front' ? 'dropzone-new-store-front' : 'dropzone-store-front');
         if (box) box.classList.remove('is-invalid');
 
-        // Count may already be open from finalizeCapturedPhoto (camera/gallery stamp)
         const ownedCount = (window.__imageProcessingCount || 0) < 1;
         if (ownedCount) beginImageProcessing();
 
-        setStoreFrontLoading(true, 'Analyzing photo…', 'GPS, date & location details');
-        setExifStatus('Reading location from photo / phone GPS…', 'warn');
+        setStoreFrontLoading(true, 'Reading photo date…', 'Date & time only');
+        setExifStatus('Saving photo date & time…', 'warn');
 
         let dateFilled = false;
 
         try {
-            let gps = null;
-            let exif = null;
-
             if (typeof exifr !== 'undefined') {
-                setStoreFrontLoading(true, 'Extracting GPS from photo…', 'EXIF metadata');
                 try {
-                    gps = await exifr.gps(file);
-                    exif = await exifr.parse(file, [
-                        'DateTimeOriginal', 'CreateDate', 'ModifyDate',
-                        'GPSLatitude', 'GPSLongitude'
+                    const exif = await exifr.parse(file, [
+                        'DateTimeOriginal', 'CreateDate', 'ModifyDate'
                     ]);
+                    dateFilled = fillInstallDateFromExif(exif || {});
                 } catch (exifErr) {
-                    console.warn('EXIF read failed', exifErr);
+                    console.warn('EXIF date read failed', exifErr);
                 }
-                dateFilled = fillInstallDateFromExif(exif || {});
             }
 
-            // Live/in-app camera JPEGs have no EXIF GPS — use pending capture GPS or phone GPS
-            const pending = window.__captureGps;
-            if ((!gps || typeof gps.latitude !== 'number') && pending && typeof pending.lat === 'number') {
-                gps = { latitude: pending.lat, longitude: pending.lng };
-            }
+            // No GPS / location from image — use Save my current location for that
             window.__captureGps = null;
-
-            if (gps && typeof gps.latitude === 'number' && typeof gps.longitude === 'number') {
-                setStoreFrontLoading(true, 'Finding place…', 'Address, city, PIN & zone');
-                await fillPlaceFromCoords(
-                    gps.latitude,
-                    gps.longitude,
-                    pending && pending.acc != null ? pending.acc : 'From photo'
-                );
-            } else {
-                // Always fall back to device GPS so fields still auto-fill
-                try {
-                    await fillLocationFromDeviceGps();
-                } catch (geoErr) {
-                    console.warn(geoErr);
-                    if (!dateFilled) fillInstallDateToday();
-                    setExifStatus(
-                        'Location permission needed. Allow Location, then Retake Store Front photo.',
-                        'err'
-                    );
-                    return;
-                }
-            }
 
             if (!dateFilled) {
                 fillInstallDateToday();
+                dateFilled = true;
             }
 
-            setStoreFrontLoading(true, 'Filling details…', 'Almost done');
-            setExifStatus(
-                'Location details have been auto-filled. Please review them carefully and cross-check with the store representative before saving.',
-                'ok'
-            );
-
+            setExifStatus('Photo date & time saved. Use Save my current location for GPS / address.', 'ok');
             setStoreFrontLoading(false);
-
-            await showPermissionPopup({
-                mode: 'ask',
-                title: 'Please verify store details',
-                body: 'Processing is complete. Kindly review all auto-filled information carefully. If any detail appears incorrect, please update it before continuing.',
-                steps: [
-                    'Confirm address, city, PIN code, zone and GPS location',
-                    'Cross-check with the store representative where possible',
-                    'Correct any inaccurate fields before saving the profile'
-                ],
-                allowLabel: 'Got it — Review details',
-                cancelLabel: 'Close'
-            });
-
-            const anchor = document.getElementById('store-details-anchor') || document.getElementById('address');
-            if (anchor) {
-                setTimeout(() => anchor.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
-            }
         } catch (err) {
-            console.warn('Store front auto-fill failed', err);
-            setExifStatus('Could not auto-fill location. Allow Location & Retake, or fill manually.', 'err');
+            console.warn('Store front date fill failed', err);
+            if (!dateFilled) fillInstallDateToday();
+            setExifStatus('Photo saved. Date set to today. Use Save my current location for GPS.', 'warn');
         } finally {
             setStoreFrontLoading(false);
             endImageProcessing();
@@ -3124,6 +3065,9 @@ function revealShareLocationButton(lat, lng, url) {
         btn.hidden = false;
         btn.style.display = '';
         btn.removeAttribute('disabled');
+        btn.classList.add('is-ready', 'loc-share-trigger');
+        const panel = btn.closest('.loc-save-panel, .gps-capture-widget');
+        if (panel) panel.classList.add('is-located');
     });
     const pill = document.getElementById('gps-status-pill');
     if (pill) {
@@ -3254,41 +3198,55 @@ function ensureLocationShareSheet() {
     modal.setAttribute('aria-hidden', 'true');
     modal.innerHTML = `
         <div class="loc-share-sheet" role="dialog" aria-modal="true" aria-labelledby="loc-share-title">
+            <div class="loc-share-handle" aria-hidden="true"></div>
             <div class="loc-share-head">
-                <h3 id="loc-share-title">Share location</h3>
+                <div class="loc-share-head-text">
+                    <p class="loc-share-kicker">Ready to send</p>
+                    <h3 id="loc-share-title">Share location</h3>
+                </div>
                 <button type="button" class="loc-share-close" aria-label="Close">&times;</button>
             </div>
-            <p class="loc-share-preview" id="loc-share-preview"></p>
-            <div class="loc-share-url-row">
-                <input type="text" id="loc-share-url" class="form-control" readonly>
+            <div class="loc-share-card">
+                <div class="loc-share-card-pin" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+                    </svg>
+                </div>
+                <div class="loc-share-card-body">
+                    <p class="loc-share-preview" id="loc-share-preview"></p>
+                    <div class="loc-share-url-row">
+                        <input type="text" id="loc-share-url" class="form-control" readonly>
+                    </div>
+                </div>
             </div>
+            <p class="loc-share-choose">Choose how to share</p>
             <div class="loc-share-grid">
-                <button type="button" class="loc-share-opt" data-share-action="copy">
-                    <span class="loc-share-ico">🔗</span>
-                    <span>Copy URL</span>
-                </button>
-                <button type="button" class="loc-share-opt" data-share-action="whatsapp">
-                    <span class="loc-share-ico">💬</span>
+                <button type="button" class="loc-share-opt loc-share-opt-wa" data-share-action="whatsapp">
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">WA</span></span>
                     <span>WhatsApp</span>
                 </button>
+                <button type="button" class="loc-share-opt" data-share-action="copy">
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">URL</span></span>
+                    <span>Copy link</span>
+                </button>
+                <button type="button" class="loc-share-opt" data-share-action="maps">
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">Map</span></span>
+                    <span>Open Maps</span>
+                </button>
                 <button type="button" class="loc-share-opt" data-share-action="telegram">
-                    <span class="loc-share-ico">✈️</span>
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">TG</span></span>
                     <span>Telegram</span>
                 </button>
                 <button type="button" class="loc-share-opt" data-share-action="sms">
-                    <span class="loc-share-ico">💬</span>
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">SMS</span></span>
                     <span>SMS</span>
                 </button>
                 <button type="button" class="loc-share-opt" data-share-action="email">
-                    <span class="loc-share-ico">✉️</span>
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">Mail</span></span>
                     <span>Email</span>
                 </button>
-                <button type="button" class="loc-share-opt" data-share-action="maps">
-                    <span class="loc-share-ico">🗺️</span>
-                    <span>Open Maps</span>
-                </button>
                 <button type="button" class="loc-share-opt loc-share-opt-wide" data-share-action="native">
-                    <span class="loc-share-ico">↗</span>
+                    <span class="loc-share-ico-wrap"><span class="loc-share-ico">↗</span></span>
                     <span>Share to other apps</span>
                 </button>
             </div>
@@ -3430,7 +3388,11 @@ async function shareCurrentLocationOnWhatsApp(extra) {
         const lng = pos.coords.longitude;
         const acc = pos.coords.accuracy;
 
-        if (typeof applyGpsToForm === 'function') {
+        // Auto-fill lat/lng + address/city/PIN/zone from live GPS
+        setGpsProcessLoading(true, 'Finding place…', anchor);
+        if (typeof fillPlaceFromCoords === 'function') {
+            await fillPlaceFromCoords(lat, lng, acc);
+        } else if (typeof applyGpsToForm === 'function') {
             applyGpsToForm(lat, lng, acc, 'Current location');
         }
         window.__captureGps = { lat: lat, lng: lng, acc: acc };
@@ -3475,7 +3437,11 @@ async function saveCurrentLocationToStore(btn) {
         const lng = pos.coords.longitude;
         const acc = pos.coords.accuracy;
 
-        if (typeof applyGpsToForm === 'function') {
+        // Auto-fill lat/lng + address/city/state/PIN/zone/map from live GPS
+        setGpsProcessLoading(true, 'Finding place…', btn);
+        if (typeof fillPlaceFromCoords === 'function') {
+            await fillPlaceFromCoords(lat, lng, acc);
+        } else if (typeof applyGpsToForm === 'function') {
             applyGpsToForm(lat, lng, acc, 'Current location saved');
         }
         window.__captureGps = { lat: lat, lng: lng, acc: acc };
@@ -3516,14 +3482,14 @@ async function saveCurrentLocationToStore(btn) {
         if (wrap && !wrap.querySelector('.js-share-location-btn')) {
             const shareBtn = document.createElement('button');
             shareBtn.type = 'button';
-            shareBtn.className = 'btn btn-sm btn-primary js-share-location-btn';
+            shareBtn.className = 'btn loc-share-trigger js-share-location-btn';
             shareBtn.setAttribute('data-share-location', 'saved');
             shareBtn.setAttribute('data-wa-lat', String(lat));
             shareBtn.setAttribute('data-wa-lng', String(lng));
             shareBtn.setAttribute('data-wa-url', savedLink);
             shareBtn.setAttribute('data-wa-title', title);
             shareBtn.setAttribute('data-wa-phone', phone);
-            shareBtn.textContent = 'Share location';
+            shareBtn.innerHTML = '<svg class="loc-share-trigger-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg><span>Share location</span>';
             wrap.insertBefore(shareBtn, btn);
             if (typeof window.bindShareLocationButton === 'function') {
                 window.bindShareLocationButton(shareBtn);
@@ -3568,7 +3534,7 @@ function bindShareLocationButton(btn) {
         }
 
         if (!(Number.isFinite(lat) && Number.isFinite(lng)) && !url) {
-            alert('Pehle Save my current location karo — phir Share location use kar sakte ho.');
+            alert('Please save your current location first, then use Share location.');
             return;
         }
 

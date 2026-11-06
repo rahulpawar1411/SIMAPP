@@ -4,7 +4,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Models\AssetTag;
 
-AuthService::requireRole('super_admin');
+AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
 
 $error = null;

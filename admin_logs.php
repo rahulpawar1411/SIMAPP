@@ -5,6 +5,7 @@ use App\Services\AuthService;
 use App\Services\AppLogger;
 use App\Config\AppConfig;
 
+// Admin only — Notifications / Reports / Logs
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 
 $files = AppLogger::listLogFiles();

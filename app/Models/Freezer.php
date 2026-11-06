@@ -24,6 +24,7 @@ class Freezer {
             'sim_company' => "ALTER TABLE `freezers` ADD COLUMN `sim_company` VARCHAR(50) NULL",
             'image_sim' => "ALTER TABLE `freezers` ADD COLUMN `image_sim` VARCHAR(500) NULL",
             'deleted_at' => "ALTER TABLE `freezers` ADD COLUMN `deleted_at` DATETIME NULL DEFAULT NULL",
+            'created_by_name' => "ALTER TABLE `freezers` ADD COLUMN `created_by_name` VARCHAR(120) NULL",
         ];
         foreach ($cols as $name => $sql) {
             $exists = $pdo->query("SHOW COLUMNS FROM `freezers` LIKE " . $pdo->quote($name))->fetch();
@@ -93,18 +94,30 @@ class Freezer {
         }
 
         // 3. Insert Freezer Record
+        $createdByName = trim((string)($data['created_by_name'] ?? ''));
+        if ($createdByName === '' && !empty($data['created_by'])) {
+            try {
+                $u = User::findById((int)$data['created_by']);
+                $createdByName = trim((string)($u['name'] ?? ''));
+            } catch (\Throwable $e) {
+                $createdByName = '';
+            }
+        }
+
         $sql = "INSERT INTO `freezers` (
             `unique_freezer_id`, `store_id`, `freezer_type`, `company_code`,
             `model_number`, `capacity_litres`, `freezer_condition`, `location_code`,
             `pincode_last3`, `install_month_year`, `unit_sequence`, `installation_date`,
             `image_left_side`, `image_right_side`, `image_iot_device`, `image_sim`,
-            `qr_code_path`, `qr_code_data`, `status`, `notes`, `sim_number`, `sim_company`, `created_by`
+            `qr_code_path`, `qr_code_data`, `status`, `notes`, `sim_number`, `sim_company`,
+            `created_by`, `created_by_name`
         ) VALUES (
             :unique_freezer_id, :store_id, :freezer_type, :company_code,
             :model_number, :capacity_litres, :freezer_condition, :location_code,
             :pincode_last3, :install_month_year, :unit_sequence, :installation_date,
             :image_left_side, :image_right_side, :image_iot_device, :image_sim,
-            :qr_code_path, :qr_code_data, :status, :notes, :sim_number, :sim_company, :created_by
+            :qr_code_path, :qr_code_data, :status, :notes, :sim_number, :sim_company,
+            :created_by, :created_by_name
         )";
 
         $stmt = $pdo->prepare($sql);
@@ -132,6 +145,7 @@ class Freezer {
             'sim_number' => trim((string)($data['sim_number'] ?? '')) ?: null,
             'sim_company' => trim((string)($data['sim_company'] ?? '')) ?: null,
             'created_by' => $data['created_by'] ?? null,
+            'created_by_name' => $createdByName !== '' ? $createdByName : null,
         ]);
 
         $freezerId = (int)$pdo->lastInsertId();
@@ -714,35 +728,71 @@ class Freezer {
         return (int)$stmt->fetchColumn();
     }
 
-    public static function getDashboardStats(): array {
+    /**
+     * @param array{zone?:string,city?:string} $filters  empty zone/city = All
+     */
+    public static function getDashboardStats(array $filters = []): array {
         $pdo = Database::getConnection();
         self::ensureSimColumns();
 
-        $totalFreezers = (int)$pdo->query("SELECT COUNT(*) FROM `freezers` WHERE `deleted_at` IS NULL")->fetchColumn();
-        // Outlets that currently have at least one live freezer (ignore orphan / leftover store rows)
-        $totalStores = (int)$pdo->query(
-            "SELECT COUNT(DISTINCT f.store_id)
-             FROM `freezers` f
-             WHERE f.deleted_at IS NULL
-               AND f.store_id IS NOT NULL"
-        )->fetchColumn();
-        $activeUnits = (int)$pdo->query("SELECT COUNT(*) FROM `freezers` WHERE `status` = 'Active' AND `deleted_at` IS NULL")->fetchColumn();
+        $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
+        $city = trim((string)($filters['city'] ?? ''));
+        if ($zone === 'ALL') {
+            $zone = '';
+        }
+        if (strcasecmp($city, 'All') === 0) {
+            $city = '';
+        }
+
+        $where = ['f.deleted_at IS NULL'];
+        $params = [];
+        if ($zone !== '') {
+            $where[] = 'UPPER(TRIM(s.zone)) = :zone';
+            $params['zone'] = $zone;
+        }
+        if ($city !== '') {
+            $where[] = 's.city = :city';
+            $params['city'] = $city;
+        }
+        $whereSql = implode(' AND ', $where);
+        // Filter needs a store match; "All" keeps freezers even without a store.
+        $join = ($zone !== '' || $city !== '') ? 'INNER' : 'LEFT';
+        $fromSql = "FROM `freezers` f {$join} JOIN `stores` s ON s.id = f.store_id";
+
+        $stmt = $pdo->prepare("SELECT COUNT(*) {$fromSql} WHERE {$whereSql}");
+        $stmt->execute($params);
+        $totalFreezers = (int)$stmt->fetchColumn();
+
+        $stmt = $pdo->prepare(
+            "SELECT COUNT(DISTINCT f.store_id) {$fromSql}
+             WHERE {$whereSql} AND f.store_id IS NOT NULL"
+        );
+        $stmt->execute($params);
+        $totalStores = (int)$stmt->fetchColumn();
+
+        $stmt = $pdo->prepare("SELECT COUNT(*) {$fromSql} WHERE {$whereSql} AND f.status = 'Active'");
+        $stmt->execute($params);
+        $activeUnits = (int)$stmt->fetchColumn();
+
         $totalIot = (int)$pdo->query("SELECT COUNT(*) FROM `iot_devices`")->fetchColumn();
 
-        // Count by type
-        $stmtType = $pdo->query("SELECT f.freezer_type, ft.name, COUNT(*) as cnt 
-                                 FROM `freezers` f 
-                                 LEFT JOIN `freezer_types` ft ON f.freezer_type = ft.code 
-                                 WHERE f.deleted_at IS NULL
-                                 GROUP BY f.freezer_type, ft.name");
+        $stmtType = $pdo->prepare(
+            "SELECT f.freezer_type, ft.name, COUNT(*) as cnt
+             {$fromSql}
+             LEFT JOIN `freezer_types` ft ON f.freezer_type = ft.code
+             WHERE {$whereSql}
+             GROUP BY f.freezer_type, ft.name"
+        );
+        $stmtType->execute($params);
         $byType = $stmtType->fetchAll();
 
-        // Recent freezers
-        $recentStmt = $pdo->query("SELECT f.*, s.store_name, s.city as store_city 
-                                   FROM `freezers` f 
-                                   INNER JOIN `stores` s ON f.store_id = s.id 
-                                   WHERE f.deleted_at IS NULL
-                                   ORDER BY f.id DESC LIMIT 5");
+        $recentStmt = $pdo->prepare(
+            "SELECT f.*, s.store_name, s.city as store_city, s.zone as store_zone
+             {$fromSql}
+             WHERE {$whereSql}
+             ORDER BY f.id DESC LIMIT 5"
+        );
+        $recentStmt->execute($params);
         $recent = $recentStmt->fetchAll();
 
         return [
@@ -752,7 +802,57 @@ class Freezer {
             'total_iot' => $totalIot,
             'by_type' => $byType,
             'recent' => $recent,
+            'filters' => ['zone' => $zone, 'city' => $city],
         ];
+    }
+
+    /** Distinct zones that have at least one live freezer. */
+    public static function dashboardZones(): array {
+        $pdo = Database::getConnection();
+        self::ensureSimColumns();
+        $stmt = $pdo->query(
+            "SELECT DISTINCT UPPER(TRIM(s.zone)) AS zone
+             FROM `stores` s
+             INNER JOIN `freezers` f ON f.store_id = s.id AND f.deleted_at IS NULL
+             WHERE s.zone IS NOT NULL AND TRIM(s.zone) <> ''
+             ORDER BY zone ASC"
+        );
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+            if (!empty($r['zone'])) {
+                $out[] = $r['zone'];
+            }
+        }
+        return $out;
+    }
+
+    /** Distinct cities (optionally within a zone) that have live freezers. */
+    public static function dashboardCities(?string $zone = null): array {
+        $pdo = Database::getConnection();
+        self::ensureSimColumns();
+        $zone = strtoupper(trim((string)$zone));
+        if ($zone === 'ALL') {
+            $zone = '';
+        }
+        $sql = "SELECT DISTINCT s.city
+                FROM `stores` s
+                INNER JOIN `freezers` f ON f.store_id = s.id AND f.deleted_at IS NULL
+                WHERE s.city IS NOT NULL AND TRIM(s.city) <> ''";
+        $params = [];
+        if ($zone !== '') {
+            $sql .= " AND UPPER(TRIM(s.zone)) = :zone";
+            $params['zone'] = $zone;
+        }
+        $sql .= " ORDER BY s.city ASC";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+            if (!empty($r['city'])) {
+                $out[] = $r['city'];
+            }
+        }
+        return $out;
     }
 
     public static function logAudit(string $action, ?int $entityId, ?string $freezerIdCode, string $details): void {

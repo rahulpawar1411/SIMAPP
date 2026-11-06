@@ -2,14 +2,31 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Config\AppConfig;
 
 AuthService::startSession();
 
 $error = null;
 $redirect = $_GET['redirect'] ?? 'index.php';
 
+/** Role home: admin → Dashboard, technician → QR Management, viewer → Assets. */
+$resolveHome = static function (string $target): string {
+    $path = parse_url($target, PHP_URL_PATH) ?: $target;
+    $base = basename($path);
+    if (!in_array($base, ['index.php', '', '/'], true)) {
+        return $target;
+    }
+    if (AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN)) {
+        return 'index.php';
+    }
+    if (AuthService::hasRole(AppConfig::ROLE_TECHNICIAN)) {
+        return 'blank_qr.php';
+    }
+    return 'profiles.php';
+};
+
 if (AuthService::isLoggedIn()) {
-    header("Location: {$redirect}");
+    header('Location: ' . $resolveHome($redirect));
     exit;
 }
 
@@ -19,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $res = AuthService::login($email, $password);
     if ($res['success']) {
-        header("Location: {$redirect}");
+        header('Location: ' . $resolveHome($redirect));
         exit;
     } else {
         $error = $res['error'];

@@ -413,17 +413,16 @@ require_once __DIR__ . '/includes/header.php';
         <div class="card-body">
             <div id="store-front-exif-status" class="store-front-exif-status" style="display:none;" role="status"></div>
             <p style="font-size: var(--fs-xs, 0.75rem); color: #64748b; margin-bottom: 1rem;">
-                A new <strong>Store Front</strong> photo (Location ON) may update GPS and address fields.
-                Please review any auto-filled details and kindly confirm them with the store representative.
+                New <strong>Store Front</strong> photo gets a date &amp; time stamp. Use Save my current location for GPS.
             </p>
             <div class="photo-upload-grid photo-upload-grid-4">
                 <!-- Store Front -->
                 <div class="upload-box">
                     <input type="file" name="image_store_front" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-store-front">
                     <div class="upload-title">Change Store Front Photo</div>
-                    <div class="upload-hint">GPS + date auto-fill</div>
+                    <div class="upload-hint">Date-time stamp only</div>
                     <div class="upload-preview-container" id="edit-preview-store-front" style="<?= !empty($freezer['image_store_front']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_store_front'] ?? '') ?>" alt="Store Front">
+                        <img src="<?= htmlspecialchars($freezer['image_store_front'] ?? '') ?>" alt="Store Front" loading="lazy" decoding="async">
                     </div>
                 </div>
 
@@ -433,7 +432,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="upload-title">Aadhaar front</div>
                     <div class="upload-hint">Store manager ID</div>
                     <div class="upload-preview-container" id="edit-preview-aadhar" style="<?= !empty($freezer['image_aadhar_card']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_aadhar_card'] ?? '') ?>" alt="Aadhaar Front">
+                        <img src="<?= htmlspecialchars($freezer['image_aadhar_card'] ?? '') ?>" alt="Aadhaar Front" loading="lazy" decoding="async">
                     </div>
                 </div>
 
@@ -443,7 +442,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="upload-title">Aadhaar back</div>
                     <div class="upload-hint">Store manager ID</div>
                     <div class="upload-preview-container" id="edit-preview-aadhar-back" style="<?= !empty($freezer['image_aadhar_back']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_aadhar_back'] ?? '') ?>" alt="Aadhaar Back">
+                        <img src="<?= htmlspecialchars($freezer['image_aadhar_back'] ?? '') ?>" alt="Aadhaar Back" loading="lazy" decoding="async">
                     </div>
                 </div>
 
@@ -452,7 +451,7 @@ require_once __DIR__ . '/includes/header.php';
                     <input type="file" name="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-left">
                     <div class="upload-title">Change Left Side Photo</div>
                     <div class="upload-preview-container" id="edit-preview-left" style="<?= !empty($freezer['image_left_side']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_left_side'] ?? '') ?>" alt="Left Side">
+                        <img src="<?= htmlspecialchars($freezer['image_left_side'] ?? '') ?>" alt="Left Side" loading="lazy" decoding="async">
                     </div>
                 </div>
 
@@ -461,7 +460,7 @@ require_once __DIR__ . '/includes/header.php';
                     <input type="file" name="image_right_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-right">
                     <div class="upload-title">Change Right Side Photo</div>
                     <div class="upload-preview-container" id="edit-preview-right" style="<?= !empty($freezer['image_right_side']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_right_side'] ?? '') ?>" alt="Right Side">
+                        <img src="<?= htmlspecialchars($freezer['image_right_side'] ?? '') ?>" alt="Right Side" loading="lazy" decoding="async">
                     </div>
                 </div>
 
@@ -471,7 +470,7 @@ require_once __DIR__ . '/includes/header.php';
                     <input type="file" name="image_iot_device" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-iot">
                     <div class="upload-title">Change IoT Device Photo</div>
                     <div class="upload-preview-container" id="edit-preview-iot" style="<?= !empty($freezer['image_iot_device']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_iot_device'] ?? '') ?>" alt="IoT Device">
+                        <img src="<?= htmlspecialchars($freezer['image_iot_device'] ?? '') ?>" alt="IoT Device" loading="lazy" decoding="async">
                     </div>
                 </div>
                 <?php endif; ?>
@@ -509,7 +508,7 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="upload-title"><?= !empty($freezer['image_sim']) ? 'Change SIM photo' : 'SIM / ICCID photo' ?></div>
                         <div class="upload-hint">Camera · Clear SIM number</div>
                         <div class="upload-preview-container" id="edit-preview-sim" style="<?= !empty($freezer['image_sim']) ? 'display:block;' : '' ?>">
-                            <img src="<?= htmlspecialchars($freezer['image_sim'] ?? '') ?>" alt="SIM">
+                            <img src="<?= htmlspecialchars($freezer['image_sim'] ?? '') ?>" alt="SIM" loading="lazy" decoding="async">
                             <span class="preview-badge">SIM</span>
                         </div>
                     </div>

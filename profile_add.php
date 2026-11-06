@@ -225,6 +225,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'status' => $_POST['freezer_status'] ?? 'Active',
                 'notes' => $_POST['notes'] ?? '',
                 'created_by' => $currentUser['id'],
+                'created_by_name' => trim((string)($currentUser['name'] ?? '')),
                 'asset_tag_code' => $boundTagCode,
             ];
 
@@ -339,63 +340,76 @@ require_once __DIR__ . '/includes/header.php';
 
             <div id="store-front-exif-status" class="store-front-exif-status" style="display:none;" role="status"></div>
 
-            <!-- Sub: Store Front & GPS -->
-            <fieldset class="form-subsection">
-                <legend>
-                    Store Front &amp; GPS
-                    <span>Photo + location for KYS verification</span>
-                </legend>
-
-                <div class="photo-step-lead">
-                    Capture the <strong>Store Front photo</strong> with Location ON.
-                    Please review all auto-filled details and kindly confirm them with the store representative.
-                </div>
-
-                <div class="upload-box upload-box-featured" id="dropzone-store-front">
-                    <input type="file" name="image_store_front" id="image_store_front" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-store-front" required>
-                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M3 21h18"/>
-                        <path d="M5 21V7l7-4 7 4v14"/>
-                        <path d="M9 21v-6h6v6"/>
-                    </svg>
-                    <div class="upload-title">Store Front photo *</div>
-                    <div class="upload-hint">Required · Camera · GPS + location auto-fill</div>
-                    <div class="upload-preview-container" id="preview-store-front">
-                        <img src="" alt="Store Front Preview">
-                        <span class="preview-badge">Store Front</span>
+            <!-- Top: Save live location first -->
+            <div class="loc-save-panel gps-capture-widget" role="region" aria-label="Store location">
+                <div class="loc-save-panel-main">
+                    <div class="loc-save-panel-icon" aria-hidden="true">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                            <circle cx="12" cy="10" r="3"/>
+                        </svg>
                     </div>
-                </div>
-
-                <div class="gps-capture-widget gps-capture-widget-compact" style="margin: 1rem 0 0;">
-                    <div class="gps-header">
-                        <strong style="font-size: 0.9rem; color: #14532d;">Store location</strong>
-                        <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                    <div class="loc-save-panel-copy">
+                        <div class="loc-save-panel-title-row">
+                            <h3 class="loc-save-panel-title">Store location</h3>
+                            <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                        </div>
+                        <p class="loc-save-panel-desc">
+                            Save your live GPS location first — address, city, and PIN will auto-fill.
+                        </p>
                     </div>
-                    <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
-                        <span class="gps-process-spinner" aria-hidden="true"></span>
-                        <span class="gps-process-text">Processing…</span>
-                    </div>
-                    <!-- Hidden hooks for JS GPS fill (not shown in UI) -->
-                    <span id="disp-place" hidden></span>
-                    <span id="disp-lat" hidden></span>
-                    <span id="disp-lng" hidden></span>
-                    <span id="disp-acc" hidden></span>
-                    <div class="gps-action-row" style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
-                        <button type="button" class="btn btn-success" data-save-current-location
+                    <div class="loc-save-panel-actions">
+                        <button type="button" class="btn btn-success loc-save-btn" data-save-current-location
                             data-wa-title="Store location (onboarding)">
                             Save my current location
                         </button>
-                        <button type="button" class="btn btn-primary js-share-location-btn" data-share-location="saved"
+                        <button type="button" class="btn loc-share-trigger js-share-location-btn" data-share-location="saved"
                             data-wa-title="Store location" hidden>
-                            Share location
+                            <svg class="loc-share-trigger-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                            </svg>
+                            <span>Share location</span>
                         </button>
                     </div>
-                    <div class="sp-location-link-box" id="current-location-link-box" hidden>
-                        <div class="sp-location-link-label">Current location link</div>
-                        <a class="sp-location-link" id="current-location-link" href="#" target="_blank" rel="noopener"></a>
-                        <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="">Copy link</button>
+                </div>
+                <div id="gps-process-loading" class="gps-process-loading" hidden aria-live="polite">
+                    <span class="gps-process-spinner" aria-hidden="true"></span>
+                    <span class="gps-process-text">Processing…</span>
+                </div>
+                <span id="disp-place" hidden></span>
+                <span id="disp-lat" hidden></span>
+                <span id="disp-lng" hidden></span>
+                <span id="disp-acc" hidden></span>
+                <div class="sp-location-link-box" id="current-location-link-box" hidden>
+                    <div class="sp-location-link-label">Current location link</div>
+                    <a class="sp-location-link" id="current-location-link" href="#" target="_blank" rel="noopener"></a>
+                    <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="">Copy link</button>
+                </div>
+                <div class="sp-latlng" id="current-location-latlng" hidden></div>
+            </div>
+
+            <!-- Sub: Store Front photo -->
+            <fieldset class="form-subsection">
+                <legend>
+                    Store Front photo
+                    <span>Required · date &amp; time stamp</span>
+                </legend>
+
+                <div class="photo-upload-grid photo-upload-grid-2" style="margin-bottom: 0;">
+                    <div class="upload-box" id="dropzone-store-front">
+                        <input type="file" name="image_store_front" id="image_store_front" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-store-front" required>
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                            <circle cx="12" cy="13" r="4"/>
+                        </svg>
+                        <div class="upload-title">Store Front *</div>
+                        <div class="upload-hint">Required · date-time stamp only</div>
+                        <div class="upload-preview-container" id="preview-store-front">
+                            <img src="" alt="Store Front Preview">
+                            <span class="preview-badge">Front</span>
+                        </div>
                     </div>
-                    <div class="sp-latlng" id="current-location-latlng" hidden></div>
                 </div>
             </fieldset>
 
@@ -897,7 +911,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!hasSf) {
                 ok = false;
                 if (typeof setExifStatus === 'function') {
-                    setExifStatus('Store Front photo required — Location ON for auto-fill.', 'warn');
+                    setExifStatus('Store Front photo required.', 'warn');
                 }
             }
 

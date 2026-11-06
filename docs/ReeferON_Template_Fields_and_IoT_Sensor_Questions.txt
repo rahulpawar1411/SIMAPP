@@ -55,7 +55,7 @@ iot_model
 image_iot_device
 
 
-IOT SENSOR DEVICE (alag — sab ke liye same)
+IOT SENSOR DEVICE (separate — same for all)
 ------------------------------------------
 iot_device_name
 iot_company_name

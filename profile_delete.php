@@ -62,8 +62,8 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <div class="card-body">
         <p style="font-size:0.875rem; color:var(--text-secondary); margin:0 0 1rem; line-height:1.45;">
-            Admin password confirm ke bina delete nahi hoga — logged-in admin
-            (<strong><?= htmlspecialchars($currentUser['email'] ?? $currentUser['name']) ?></strong>) ko bhi password dena hoga.
+            Deletion requires password confirmation from the logged-in admin
+            (<strong><?= htmlspecialchars($currentUser['email'] ?? $currentUser['name']) ?></strong>).
         </p>
 
         <div style="padding:0.85rem 1rem; border:1px solid #fecaca; background:#fef2f2; border-radius:6px; margin-bottom:1rem;">
