@@ -3,42 +3,14 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
 use App\Config\AppConfig;
-use App\Models\AppNotification;
 use App\Models\FreezerLifecycle;
 
 // Admin only — menu + page
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 $currentUser = AuthService::currentUser();
-$csrfToken = AuthService::generateCsrfToken();
 
 $flash = null;
 $error = null;
-
-// Legacy pending approvals (older queue) — still allow clear
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
-        $error = 'Invalid security token.';
-    } else {
-        $action = $_POST['action'] ?? '';
-        $id = (int)($_POST['notification_id'] ?? 0);
-        $notes = trim((string)($_POST['review_notes'] ?? '')) ?: null;
-        try {
-            if ($action === 'approve') {
-                $result = AppNotification::approve($id, (int)$currentUser['id'], $notes);
-                $flash = (($result['type'] ?? '') === AppNotification::TYPE_KYC_STORE_MOVE)
-                    ? 'Approved. New Store ID ' . ($result['outlet_id'] ?? '') . ' linked.'
-                    : 'Approved. Same-store KYC saved.';
-            } elseif ($action === 'reject') {
-                AppNotification::reject($id, (int)$currentUser['id'], $notes);
-                $flash = 'Request rejected. Profile unchanged.';
-            } else {
-                $error = 'Unknown action.';
-            }
-        } catch (Throwable $e) {
-            $error = $e->getMessage();
-        }
-    }
-}
 
 $today = date('Y-m-d');
 $fromDate = trim((string)($_GET['from'] ?? ''));
@@ -47,6 +19,10 @@ $days = (int)($_GET['days'] ?? 0);
 $locationFilter = strtolower(trim((string)($_GET['location'] ?? 'all')));
 if (!in_array($locationFilter, ['all', 'same', 'new'], true)) {
     $locationFilter = 'all';
+}
+$resultFilter = strtoupper(trim((string)($_GET['result'] ?? 'all')));
+if (!in_array($resultFilter, ['ALL', 'PASS', 'FAIL'], true)) {
+    $resultFilter = 'ALL';
 }
 
 $validDate = static function (string $d): bool {
@@ -64,8 +40,8 @@ if (!$validDate($fromDate) || !$validDate($toDate)) {
     if ($fromDate > $toDate) {
         [$fromDate, $toDate] = [$toDate, $fromDate];
     }
-    // Cap range at 2 years
-    $maxFrom = date('Y-m-d', strtotime($toDate . ' -730 days'));
+    // Cap range at 180 days for load safety (use narrower filters for more detail)
+    $maxFrom = date('Y-m-d', strtotime($toDate . ' -180 days'));
     if ($fromDate < $maxFrom) {
         $fromDate = $maxFrom;
     }
@@ -74,7 +50,7 @@ if (!$validDate($fromDate) || !$validDate($toDate)) {
 
 $history = [];
 try {
-    $history = FreezerLifecycle::notificationHistoryByDate(90, $fromDate, $toDate, $locationFilter);
+    $history = FreezerLifecycle::notificationHistoryByDate(90, $fromDate, $toDate, $locationFilter, $resultFilter);
 } catch (Throwable $e) {
     $history = [];
     $error = $error ?: ('Could not load history: ' . $e->getMessage());
@@ -82,8 +58,9 @@ try {
 
 $defaultFrom = date('Y-m-d', strtotime('-90 days'));
 $hasLocationFilter = $locationFilter !== 'all';
+$hasResultFilter = $resultFilter !== 'ALL';
 $isDefaultRange = ($fromDate === $defaultFrom && $toDate === $today && ($days === 90 || $days === 0));
-$hasActiveFilters = $hasLocationFilter || !$isDefaultRange;
+$hasActiveFilters = $hasLocationFilter || $hasResultFilter || !$isDefaultRange;
 
 $activeChips = [];
 $activeChips[] = 'Date: ' . $fromDate . ' → ' . $toDate;
@@ -94,24 +71,29 @@ if ($locationFilter === 'same') {
 } else {
     $activeChips[] = 'All locations';
 }
+if ($resultFilter === 'FAIL') {
+    $activeChips[] = 'Result: FAIL';
+} elseif ($resultFilter === 'PASS') {
+    $activeChips[] = 'Result: PASS';
+} else {
+    $activeChips[] = 'Result: All';
+}
 $activeFilterCount = count($activeChips);
 
 $grandTotal = 0;
 $grandSame = 0;
 $grandNew = 0;
+$grandFail = 0;
+$historyTruncated = false;
 foreach ($history as $day) {
     $grandTotal += (int)$day['total'];
     $grandSame += (int)$day['same_store'];
     $grandNew += (int)$day['new_store'];
+    $grandFail += (int)$day['fail'];
+    if (!empty($day['_truncated'])) {
+        $historyTruncated = true;
+    }
 }
-
-$legacyPending = [];
-try {
-    $legacyPending = AppNotification::listAll(50, AppNotification::STATUS_PENDING);
-} catch (Throwable $e) {
-    $legacyPending = [];
-}
-$pendingCount = count($legacyPending);
 
 $pageTitle = 'Activity';
 require_once __DIR__ . '/includes/header.php';
@@ -122,8 +104,8 @@ require_once __DIR__ . '/includes/header.php';
         <div class="cfg-toolbar-left">
             <h1 class="cfg-toolbar-title">Activity</h1>
             <span class="badge badge-success"><?= number_format($grandTotal) ?> KYC in range</span>
-            <?php if ($pendingCount > 0): ?>
-                <span class="badge badge-warning"><?= (int)$pendingCount ?> legacy pending</span>
+            <?php if ($historyTruncated): ?>
+                <span class="badge badge-warning" title="Latest 500 matching records shown">Showing latest 500</span>
             <?php endif; ?>
         </div>
     </div>
@@ -143,6 +125,11 @@ require_once __DIR__ . '/includes/header.php';
                         <?php else: ?>
                             · All locations
                         <?php endif; ?>
+                        <?php if ($resultFilter === 'FAIL'): ?>
+                            · FAIL only
+                        <?php elseif ($resultFilter === 'PASS'): ?>
+                            · PASS only
+                        <?php endif; ?>
                     </div>
                 </div>
                 <div class="profiles-search-actions">
@@ -156,7 +143,7 @@ require_once __DIR__ . '/includes/header.php';
                         <?php endif; ?>
                     </button>
                     <?php if ($hasActiveFilters): ?>
-                        <a href="notifications.php?days=90&location=all" class="btn btn-secondary">Clear</a>
+                        <a href="notifications.php?days=90&location=all&result=all" class="btn btn-secondary">Clear</a>
                     <?php endif; ?>
                 </div>
             </div>
@@ -226,9 +213,27 @@ require_once __DIR__ . '/includes/header.php';
                         </label>
                     </div>
                 </section>
+
+                <section class="filter-section">
+                    <h3 class="filter-section-title">KYC result</h3>
+                    <div class="filter-check-list">
+                        <label class="filter-check">
+                            <input type="radio" name="result" value="all" <?= $resultFilter === 'ALL' ? 'checked' : '' ?>>
+                            <span>All results</span>
+                        </label>
+                        <label class="filter-check">
+                            <input type="radio" name="result" value="PASS" <?= $resultFilter === 'PASS' ? 'checked' : '' ?>>
+                            <span>PASS only</span>
+                        </label>
+                        <label class="filter-check">
+                            <input type="radio" name="result" value="FAIL" <?= $resultFilter === 'FAIL' ? 'checked' : '' ?>>
+                            <span>FAIL only</span>
+                        </label>
+                    </div>
+                </section>
             </div>
             <footer class="filter-drawer-foot">
-                <a href="notifications.php?days=90&location=all" class="btn btn-secondary">Clear all</a>
+                <a href="notifications.php?days=90&location=all&result=all" class="btn btn-secondary">Clear all</a>
                 <button type="submit" class="btn btn-primary">Apply filters</button>
             </footer>
         </form>
@@ -255,13 +260,21 @@ require_once __DIR__ . '/includes/header.php';
             <strong><?= number_format($grandNew) ?></strong>
         </div>
         <div class="notif-summary-card">
-            <span>Days with activity</span>
-            <strong><?= number_format(count($history)) ?></strong>
+            <span>FAIL</span>
+            <strong><?= number_format($grandFail) ?></strong>
         </div>
     </div>
 
     <p class="notif-history-intro">
         Showing
+        <?php if ($resultFilter === 'FAIL'): ?>
+            <strong>FAIL</strong>
+        <?php elseif ($resultFilter === 'PASS'): ?>
+            <strong>PASS</strong>
+        <?php else: ?>
+            <strong>all results</strong>
+        <?php endif; ?>
+        ·
         <?php if ($locationFilter === 'same'): ?>
             <strong>same location</strong>
         <?php elseif ($locationFilter === 'new'): ?>
@@ -269,8 +282,11 @@ require_once __DIR__ . '/includes/header.php';
         <?php else: ?>
             <strong>all locations</strong>
         <?php endif; ?>
-        activity from <strong><?= htmlspecialchars($fromDate) ?></strong>
+        from <strong><?= htmlspecialchars($fromDate) ?></strong>
         to <strong><?= htmlspecialchars($toDate) ?></strong>.
+        <?php if ($grandFail > 0 && $resultFilter !== 'FAIL'): ?>
+            <a href="profiles.php?kyc[]=failed">View failed profiles</a>
+        <?php endif; ?>
     </p>
 
     <?php
@@ -383,39 +399,6 @@ require_once __DIR__ . '/includes/header.php';
         <?php endif; ?>
     <?php endif; ?>
 
-    <?php if ($pendingCount > 0): ?>
-        <div class="card" style="margin-top:1.5rem;">
-            <div class="card-header">
-                <div class="card-title"><span>Legacy pending approvals</span></div>
-                <span class="badge badge-warning"><?= (int)$pendingCount ?></span>
-            </div>
-            <div class="card-body">
-                <p style="font-size:0.85rem;color:#64748b;margin:0 0 1rem;">
-                    Older requests still waiting for review. New KYC completes immediately and appears in the date history above.
-                </p>
-                <?php foreach ($legacyPending as $n): ?>
-                    <?php
-                    $isMove = ($n['type'] ?? '') === AppNotification::TYPE_KYC_STORE_MOVE;
-                    $tech = trim((string)($n['created_by_name'] ?? '')) ?: 'Technician';
-                    ?>
-                    <div class="notif-legacy-row">
-                        <div>
-                            <strong><?= $isMove ? 'Store move' : 'Same-store KYC' ?></strong>
-                            · <code><?= htmlspecialchars((string)($n['unique_freezer_id'] ?? ('#' . $n['freezer_id']))) ?></code>
-                            · <?= htmlspecialchars($tech) ?>
-                            · <?= htmlspecialchars((string)($n['created_at'] ?? '')) ?>
-                        </div>
-                        <form method="post" class="notif-actions" style="margin:0;">
-                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                            <input type="hidden" name="notification_id" value="<?= (int)$n['id'] ?>">
-                            <button type="submit" name="action" value="approve" class="btn btn-sm btn-primary">Approve</button>
-                            <button type="submit" name="action" value="reject" class="btn btn-sm btn-outline">Reject</button>
-                        </form>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-    <?php endif; ?>
 </div>
 
 <script>

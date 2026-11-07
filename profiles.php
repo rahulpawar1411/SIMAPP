@@ -38,10 +38,10 @@ $brandList = $asList($_GET['brand'] ?? []);
 $statusList = $asList($_GET['status'] ?? []);
 $cityList = $asList($_GET['city'] ?? []);
 $missingList = $asList($_GET['missing'] ?? []);
-$kycList = array_values(array_intersect($asList($_GET['kyc'] ?? []), ['pending', 'done']));
+$kycList = array_values(array_intersect($asList($_GET['kyc'] ?? []), ['pending', 'done', 'failed']));
 
 $page = max(1, (int)($_GET['page'] ?? 1));
-$limit = 20;
+$limit = 20; // Fixed page size — keeps Assets list light under load
 $offset = ($page - 1) * $limit;
 
 $filters = [
@@ -53,6 +53,17 @@ $filters = [
     'missing' => $missingList,
     'kyc' => $kycList,
 ];
+// Technician / Viewer with assigned zone/city only see that area
+$areaScope = AuthService::areaScope();
+$filters = AuthService::applyAreaToFilters($filters);
+if ($areaScope['city'] !== '') {
+    $cityList = [$areaScope['city']];
+}
+// Technician Home “Total installations” → only freezers they filled
+$mineOnly = !empty($_GET['mine']) && (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
+if ($mineOnly) {
+    $filters['created_by'] = (int)($currentUser['id'] ?? 0);
+}
 
 $kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
 $activeFilterCount = count($typeList) + count($brandList) + count($statusList)
@@ -111,15 +122,14 @@ $brands = MasterData::getBrands();
 
 $cityOptions = [];
 try {
-    $pdoCities = \App\Config\Database::getConnection();
-    Freezer::ensureSimColumns();
-    $cityOptions = $pdoCities->query(
-        "SELECT DISTINCT s.city FROM `stores` s
-         INNER JOIN `freezers` f ON f.store_id = s.id
-         WHERE f.deleted_at IS NULL AND s.city IS NOT NULL AND s.city <> ''
-         ORDER BY s.city ASC
-         LIMIT 80"
-    )->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+    if ($areaScope['city'] !== '') {
+        $cityOptions = [$areaScope['city']];
+    } else {
+        $cityOptions = Freezer::dashboardCities($areaScope['zone'] !== '' ? $areaScope['zone'] : null);
+        if (count($cityOptions) > 80) {
+            $cityOptions = array_slice($cityOptions, 0, 80);
+        }
+    }
 } catch (Throwable $e) {
     $cityOptions = [];
 }
@@ -134,6 +144,35 @@ $missingOptions = [
 ];
 if (AppConfig::IOT_ENABLED) {
     $missingOptions['iot'] = 'Missing IoT';
+}
+
+/** Build Assets tab URL keeping search + non-KYC filters */
+$profilesTabUrl = static function (string $tab) use ($search, $typeList, $brandList, $statusList, $cityList, $missingList): string {
+    $params = array_filter([
+        'q' => $search !== '' ? $search : null,
+        'type' => $typeList ?: null,
+        'brand' => $brandList ?: null,
+        'status' => $statusList ?: null,
+        'city' => $cityList ?: null,
+        'missing' => $missingList ?: null,
+    ], static fn($v) => $v !== null && $v !== '' && $v !== []);
+    if ($tab === 'pending') {
+        $params['kyc'] = ['pending'];
+    } elseif ($tab === 'done') {
+        $params['kyc'] = ['done'];
+    } elseif ($tab === 'failed') {
+        $params['kyc'] = ['failed'];
+    }
+    $qs = http_build_query($params);
+    return 'profiles.php' . ($qs !== '' ? '?' . $qs : '');
+};
+$activeTab = 'all';
+if ($kycList === ['pending']) {
+    $activeTab = 'pending';
+} elseif ($kycList === ['done']) {
+    $activeTab = 'done';
+} elseif ($kycList === ['failed']) {
+    $activeTab = 'failed';
 }
 
 $pageTitle = 'Freezer & Store Profiles';
@@ -166,6 +205,14 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     </div>
 </div>
+
+<!-- Status tabs: All / OK / Pending / Issue -->
+<nav class="assets-status-tabs" id="assets-status-tabs" aria-label="KYC status">
+    <a href="<?= htmlspecialchars($profilesTabUrl('all')) ?>" data-profiles-loading data-assets-tab="all" class="<?= $activeTab === 'all' ? 'is-active' : '' ?>">All</a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('done')) ?>" data-profiles-loading data-assets-tab="done" class="<?= $activeTab === 'done' ? 'is-active is-ok' : '' ?>">OK</a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('pending')) ?>" data-profiles-loading data-assets-tab="pending" class="<?= $activeTab === 'pending' ? 'is-active is-pending' : '' ?>">Pending</a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('failed')) ?>" data-profiles-loading data-assets-tab="failed" class="<?= $activeTab === 'failed' ? 'is-active is-issue' : '' ?>">Issue</a>
+</nav>
 
 <!-- Search + Filter button (Flipkart-style drawer) -->
 <div class="card profiles-filter-bar">
@@ -212,7 +259,7 @@ require_once __DIR__ . '/includes/header.php';
                     <span class="profiles-chip"><?= htmlspecialchars($missingOptions[$m] ?? $m) ?></span>
                 <?php endforeach; ?>
                 <?php foreach ($kycList as $kv): ?>
-                    <span class="profiles-chip">KYC: <?= $kv === 'pending' ? 'Pending' : 'Within ' . (int)$kycGapMonths . ' mo' ?></span>
+                    <span class="profiles-chip">KYC: <?= $kv === 'pending' ? 'Pending' : ($kv === 'failed' ? 'Failed' : ('Within ' . (int)$kycGapMonths . ' mo')) ?></span>
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>
@@ -307,6 +354,10 @@ require_once __DIR__ . '/includes/header.php';
                         <input type="checkbox" name="kyc[]" value="done" <?= in_array('done', $kycList, true) ? 'checked' : '' ?>>
                         <span>KYC within <?= (int)$kycGapMonths ?> months</span>
                     </label>
+                    <label class="filter-check">
+                        <input type="checkbox" name="kyc[]" value="failed" <?= in_array('failed', $kycList, true) ? 'checked' : '' ?>>
+                        <span>KYC failed</span>
+                    </label>
                 </div>
             </section>
         </div>
@@ -330,8 +381,8 @@ require_once __DIR__ . '/includes/header.php';
 <div class="card profiles-list-card" id="profiles-list-card">
     <div class="card-header">
         <div class="card-title">
-            <span><?= $kyc === 'pending' ? 'KYC pending freezers' : ($kyc === 'done' ? 'KYC within window' : 'Registered Freezers') ?></span>
-            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : 'badge-neutral' ?>" style="margin-left: 0.5rem;"><?= $totalCount ?> Total Records</span>
+            <span><?= $kyc === 'pending' ? 'KYC pending freezers' : ($kyc === 'done' ? 'KYC within window' : ($kyc === 'failed' ? 'KYC failed freezers' : 'Registered Freezers')) ?></span>
+            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : ($kyc === 'failed' ? 'badge-danger' : 'badge-neutral') ?>" style="margin-left: 0.5rem;"><?= $totalCount ?> Total Records</span>
         </div>
         <span class="profiles-page-size">20 per page</span>
     </div>
@@ -404,10 +455,25 @@ require_once __DIR__ . '/includes/header.php';
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <?php if ($rowKycDue): ?>
+                                <?php
+                                $rowLastResult = strtoupper(trim((string)($row['last_kyc_result'] ?? '')));
+                                $rowFailed = $rowLastResult === 'FAIL';
+                                ?>
+                                <?php if ($rowFailed): ?>
+                                    <span class="badge badge-danger">FAIL</span>
+                                    <div class="kyc-pending-date" style="margin-top:0.25rem;">
+                                        <?= $rowLastKyc ? 'On ' . htmlspecialchars($rowLastKyc) : 'Failed KYC' ?>
+                                    </div>
+                                    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
+                                        <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($row)) ?>" class="btn btn-sm btn-outline" style="margin-top:0.35rem;">Re-verify</a>
+                                    <?php endif; ?>
+                                <?php elseif ($rowKycDue): ?>
                                     <div class="kyc-pending-date">
                                         <?php if ($rowLastKyc): ?>
                                             Last <?= htmlspecialchars($rowLastKyc) ?>
+                                            <?php if ($rowLastResult !== ''): ?>
+                                                · <?= htmlspecialchars($rowLastResult) ?>
+                                            <?php endif; ?>
                                         <?php elseif ($rowInstall): ?>
                                             Install <?= htmlspecialchars($rowInstall) ?>
                                         <?php else: ?>
@@ -419,6 +485,9 @@ require_once __DIR__ . '/includes/header.php';
                                     <?php endif; ?>
                                 <?php else: ?>
                                     <div class="kyc-ok-date">
+                                        <?php if ($rowLastResult === 'PASS'): ?>
+                                            <span class="badge badge-success" style="margin-bottom:0.2rem;">PASS</span>
+                                        <?php endif; ?>
                                         Due <?= htmlspecialchars((string)($rowNextDue ?? '—')) ?>
                                         <?php if (!$rowLastKyc && $rowInstall): ?>
                                             <span style="display:block;">from install</span>
@@ -448,6 +517,61 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endif; ?>
             </tbody>
         </table>
+    </div>
+
+    <!-- Mobile card list (Freezer SIM style) -->
+    <div class="mapp-asset-list" id="profiles-mobile-cards">
+        <?php if (empty($freezers)): ?>
+            <div class="mapp-empty-state">
+                <strong>No freezers found</strong>
+                <p>Try another tab or register a new unit.</p>
+                <a href="qr_scanner.php" class="btn btn-primary mapp-btn">Scan QR → Register</a>
+            </div>
+        <?php else: ?>
+            <?php foreach ($freezers as $row): ?>
+                <?php
+                $rowInstall = !empty($row['installation_date']) ? (string)$row['installation_date'] : null;
+                $rowLastKyc = !empty($row['last_kyc_at']) ? (string)$row['last_kyc_at'] : null;
+                $rowKycDue = FreezerLifecycle::isKycDue($rowLastKyc, null, $rowInstall);
+                $rowLastResult = strtoupper(trim((string)($row['last_kyc_result'] ?? '')));
+                $rowFailed = $rowLastResult === 'FAIL';
+                if ($rowFailed) {
+                    $pillClass = 'issue';
+                    $pillLabel = 'Issue';
+                    $nextAction = 'Re-verify';
+                    $nextHref = \App\Services\KycScanGate::scannerUrl($row);
+                } elseif ($rowKycDue) {
+                    $pillClass = 'pending';
+                    $pillLabel = 'Pending';
+                    $nextAction = 'Do KYC';
+                    $nextHref = \App\Services\KycScanGate::scannerUrl($row);
+                } else {
+                    $pillClass = 'success';
+                    $pillLabel = $rowLastResult === 'PASS' ? 'Completed' : 'OK';
+                    $nextAction = 'View';
+                    $nextHref = 'profile_view.php?id=' . urlencode((string)($row['unique_freezer_id'] ?? ''));
+                }
+                $fid = (string)($row['unique_freezer_id'] ?? '');
+                ?>
+                <article class="mapp-asset-card">
+                    <a class="mapp-asset-main" href="profile_view.php?id=<?= urlencode($fid) ?>">
+                        <div class="mapp-asset-top">
+                            <strong><?= htmlspecialchars((string)($row['store_name'] ?? 'Store')) ?></strong>
+                            <span class="mapp-pill mapp-pill-<?= $pillClass ?>"><?= htmlspecialchars($pillLabel) ?></span>
+                        </div>
+                        <div class="mapp-asset-id"><?= htmlspecialchars($fid) ?></div>
+                        <div class="mapp-asset-meta">
+                            <span><?= htmlspecialchars((string)($row['store_city'] ?? '—')) ?></span>
+                            <span><?= htmlspecialchars((string)($row['tag_code'] ?? $row['freezer_type'] ?? '')) ?></span>
+                        </div>
+                    </a>
+                    <div class="mapp-asset-actions">
+                        <a href="<?= htmlspecialchars($nextHref) ?>" class="btn btn-sm <?= $pillClass === 'success' ? 'btn-secondary' : 'btn-primary' ?>"><?= htmlspecialchars($nextAction) ?></a>
+                        <a href="profile_view.php?id=<?= urlencode($fid) ?>" class="btn btn-sm btn-outline">Details</a>
+                    </div>
+                </article>
+            <?php endforeach; ?>
+        <?php endif; ?>
     </div>
 
     <!-- Pagination — same pattern as Tag inventory -->
@@ -504,7 +628,7 @@ require_once __DIR__ . '/includes/header.php';
     var backdrop = document.getElementById('profiles-filter-backdrop');
     var loadingEl = document.getElementById('profiles-list-loading');
 
-    function showProfilesLoading() {
+    function showProfilesLoading(msg) {
         var el = loadingEl || document.getElementById('profiles-list-loading');
         if (!el) {
             el = document.createElement('div');
@@ -513,15 +637,27 @@ require_once __DIR__ . '/includes/header.php';
             el.innerHTML = '<div class="profiles-list-loading-inner">' +
                 '<div class="profiles-list-spinner" aria-hidden="true"></div>' +
                 '<div class="profiles-list-loading-text">Loading freezers…</div>' +
-                '<div class="profiles-list-loading-sub">Please wait</div></div>';
+                '<div class="profiles-list-loading-sub">Please wait</div>' +
+                '<div class="profiles-skeleton" aria-hidden="true">' +
+                '<div class="profiles-skel-card"></div><div class="profiles-skel-card"></div><div class="profiles-skel-card"></div>' +
+                '</div></div>';
             document.body.appendChild(el);
             loadingEl = el;
+        }
+        var textEl = el.querySelector('.profiles-list-loading-text');
+        if (textEl && msg) {
+            textEl.textContent = msg;
         }
         el.hidden = false;
         el.removeAttribute('hidden');
         el.classList.add('is-on');
         el.setAttribute('aria-busy', 'true');
         document.body.classList.add('profiles-is-loading');
+        var tabs = document.getElementById('assets-status-tabs');
+        if (tabs) {
+            tabs.classList.add('is-loading');
+            tabs.setAttribute('aria-busy', 'true');
+        }
         // Force paint before navigation so spinner is visible
         void el.offsetWidth;
     }
@@ -567,13 +703,24 @@ require_once __DIR__ . '/includes/header.php';
     });
 
     document.addEventListener('click', function (e) {
-        var link = e.target.closest('[data-profiles-loading], .profiles-filter-bar a.btn-secondary, .filter-drawer-foot a.btn-secondary');
+        var tabLink = e.target.closest('#assets-status-tabs a[data-profiles-loading]');
+        var link = tabLink || e.target.closest('[data-profiles-loading], .profiles-filter-bar a.btn-secondary, .filter-drawer-foot a.btn-secondary');
         if (!link) return;
         if (link.disabled || link.getAttribute('aria-disabled') === 'true' || link.classList.contains('disabled')) {
             e.preventDefault();
             return;
         }
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        if (tabLink) {
+            if (tabLink.classList.contains('is-active')) {
+                e.preventDefault();
+                return;
+            }
+            var label = (tabLink.getAttribute('data-assets-tab') || tabLink.textContent || 'list').trim();
+            var msgMap = { all: 'Loading all freezers…', done: 'Loading OK freezers…', pending: 'Loading pending KYC…', failed: 'Loading KYC issues…' };
+            showProfilesLoading(msgMap[label] || ('Loading ' + tabLink.textContent.trim() + '…'));
+            return;
+        }
         showProfilesLoading();
     }, true);
 })();

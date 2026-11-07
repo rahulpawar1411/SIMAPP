@@ -3,6 +3,7 @@ namespace App\Services;
 
 use App\Config\Database;
 use App\Config\AppConfig;
+use App\Models\User;
 use PDO;
 
 class AuthService {
@@ -15,6 +16,7 @@ class AuthService {
 
     public static function login(string $email, string $password): array {
         self::startSession();
+        User::ensureAreaColumns();
         $pdo = Database::getConnection();
 
         $stmt = $pdo->prepare("SELECT * FROM `users` WHERE `email` = :email AND `status` = 'active' LIMIT 1");
@@ -44,15 +46,21 @@ class AuthService {
         // Regenerate session ID for security
         session_regenerate_id(true);
 
+        $area = User::normalizeArea($user['zone'] ?? null, $user['city'] ?? null);
+
         $_SESSION['user_id'] = (int)$user['id'];
         $_SESSION['user_name'] = $user['name'];
         $_SESSION['user_email'] = $user['email'];
         $_SESSION['user_role'] = $user['role'];
+        $_SESSION['user_zone'] = $area['zone'];
+        $_SESSION['user_city'] = $area['city'];
 
         AppLogger::info('auth.login', 'Login success', [
             'user_id' => (int)$user['id'],
             'email' => $user['email'],
             'role' => $user['role'],
+            'zone' => $area['zone'],
+            'city' => $area['city'],
         ]);
 
         return ['success' => true, 'user' => $user];
@@ -87,7 +95,82 @@ class AuthService {
             'name' => $_SESSION['user_name'] ?? 'User',
             'email' => $_SESSION['user_email'] ?? '',
             'role' => $_SESSION['user_role'] ?? AppConfig::ROLE_SUPER_ADMIN,
+            'zone' => (string)($_SESSION['user_zone'] ?? ''),
+            'city' => (string)($_SESSION['user_city'] ?? ''),
         ];
+    }
+
+    /**
+     * Assigned zone/city for Technicians only. Empty = no restriction.
+     * Viewer & Super Admin always see All areas.
+     *
+     * @return array{zone:string,city:string}
+     */
+    public static function areaScope(): array {
+        $user = self::currentUser();
+        if (!$user || ($user['role'] ?? '') !== AppConfig::ROLE_TECHNICIAN) {
+            return ['zone' => '', 'city' => ''];
+        }
+        static $cached = null;
+        static $cachedId = 0;
+        $uid = (int)($user['id'] ?? 0);
+        if ($cached !== null && $cachedId === $uid) {
+            return $cached;
+        }
+        $row = User::findById($uid);
+        $area = User::normalizeArea($row['zone'] ?? null, $row['city'] ?? null);
+        $_SESSION['user_zone'] = $area['zone'];
+        $_SESSION['user_city'] = $area['city'];
+        $cached = $area;
+        $cachedId = $uid;
+        return $area;
+    }
+
+    public static function hasAreaScope(): bool {
+        $scope = self::areaScope();
+        return $scope['zone'] !== '' || $scope['city'] !== '';
+    }
+
+    /**
+     * Merge area assignment into Freezer list filters.
+     * Zone is a string; city becomes a single-item list when scoped.
+     */
+    public static function applyAreaToFilters(array $filters): array {
+        $scope = self::areaScope();
+        if ($scope['zone'] !== '') {
+            $filters['zone'] = $scope['zone'];
+        }
+        if ($scope['city'] !== '') {
+            $filters['city'] = [$scope['city']];
+        }
+        return $filters;
+    }
+
+    /** Force store create/edit zone+city to the user's assignment. */
+    public static function applyAreaToStoreData(array $data): array {
+        $scope = self::areaScope();
+        if ($scope['zone'] !== '') {
+            $data['zone'] = $scope['zone'];
+        }
+        if ($scope['city'] !== '') {
+            $data['city'] = $scope['city'];
+        }
+        return $data;
+    }
+
+    /** Whether current user may view/edit a store in this zone/city. */
+    public static function canAccessArea(?string $zone, ?string $city): bool {
+        $scope = self::areaScope();
+        if ($scope['zone'] === '' && $scope['city'] === '') {
+            return true;
+        }
+        if ($scope['zone'] !== '' && strtoupper(trim((string)$zone)) !== $scope['zone']) {
+            return false;
+        }
+        if ($scope['city'] !== '' && strcasecmp(trim((string)$city), $scope['city']) !== 0) {
+            return false;
+        }
+        return true;
     }
 
     public static function isLoggedIn(): bool {
@@ -132,6 +215,19 @@ class AuthService {
         return password_verify($password, $row['password']);
     }
 
+    /** Home URL for the current role (avoid sending technicians to admin Dashboard). */
+    public static function homeUrl(): string {
+        $user = self::currentUser();
+        $role = (string)($user['role'] ?? '');
+        if ($role === AppConfig::ROLE_TECHNICIAN) {
+            return 'field_home.php';
+        }
+        if ($role === AppConfig::ROLE_SUPER_ADMIN) {
+            return 'index.php';
+        }
+        return 'profiles.php';
+    }
+
     public static function requireRole(array|string $roles): void {
         self::requireLogin();
         if (!self::hasRole($roles)) {
@@ -141,8 +237,10 @@ class AuthService {
                 'role' => $u['role'] ?? null,
                 'required' => is_array($roles) ? $roles : [$roles],
             ]);
-            http_response_code(403);
-            die("<h1>403 Forbidden</h1><p>You do not have permission to access this resource.</p><p><a href='index.php'>Return to Dashboard</a></p>");
+            // Soft-land on role home instead of a dead-end 403 loop via index.php
+            $home = self::homeUrl();
+            header('Location: ' . $home);
+            exit;
         }
     }
 

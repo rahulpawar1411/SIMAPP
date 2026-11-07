@@ -30,6 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'password' => $_POST['password'] ?? '',
                 'role' => $_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN,
                 'phone' => $_POST['phone'] ?? '',
+                'zone' => $_POST['zone'] ?? '',
+                'city' => $_POST['city'] ?? '',
                 'status' => 'active',
             ]);
 
@@ -57,6 +59,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'password' => $_POST['password'] ?? '',
                     'role' => $_POST['role'] ?? $editUser['role'],
                     'phone' => $_POST['phone'] ?? '',
+                    'zone' => $_POST['zone'] ?? '',
+                    'city' => $_POST['city'] ?? '',
                     'status' => $_POST['status'] ?? $editUser['status'],
                 ]);
 
@@ -109,7 +113,17 @@ if (!$editUser && isset($_GET['edit'])) {
 }
 
 $isEdit = $editUser !== null;
-$users = User::all();
+$usersPage = max(1, (int)($_GET['upage'] ?? 1));
+$usersLimit = 20;
+$usersTotal = User::countAll();
+$usersPages = max(1, (int)ceil($usersTotal / $usersLimit));
+if ($usersPage > $usersPages) {
+    $usersPage = $usersPages;
+}
+$usersOffset = ($usersPage - 1) * $usersLimit;
+$users = User::listPaged($usersLimit, $usersOffset);
+$usersFrom = $usersTotal === 0 ? 0 : ($usersOffset + 1);
+$usersTo = min($usersOffset + $usersLimit, $usersTotal);
 
 $keepCreate = $error && !$isEdit && (($_POST['action'] ?? '') === 'create');
 $formName = $isEdit
@@ -135,6 +149,29 @@ if (strlen($formPhone) === 12 && str_starts_with($formPhone, '91')) {
     $formPhone = substr($formPhone, 2);
 }
 $formPhone = substr($formPhone, -10);
+$formZone = $isEdit
+    ? strtoupper(trim((string)($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['zone'] ?? ($editUser['zone'] ?? '')) : ($editUser['zone'] ?? ''))))
+    : strtoupper(trim((string)($keepCreate ? ($_POST['zone'] ?? '') : '')));
+$formCity = $isEdit
+    ? trim((string)($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['city'] ?? ($editUser['city'] ?? '')) : ($editUser['city'] ?? '')))
+    : trim((string)($keepCreate ? ($_POST['city'] ?? '') : ''));
+$zoneOptions = AppConfig::zones();
+/** @var array<string, list<string>> cities from store location data, keyed by zone (+ _all) */
+$citiesByZone = ['_all' => []];
+try {
+    foreach ($zoneOptions as $zOpt) {
+        $citiesByZone[$zOpt] = \App\Models\Freezer::dashboardCities($zOpt);
+    }
+    $citiesByZone['_all'] = \App\Models\Freezer::dashboardCities(null);
+} catch (Throwable $e) {
+    $citiesByZone = ['_all' => []];
+}
+$cityOptions = $formZone !== '' && !empty($citiesByZone[$formZone])
+    ? $citiesByZone[$formZone]
+    : ($citiesByZone['_all'] ?? []);
+if ($formCity !== '' && !in_array($formCity, $cityOptions, true)) {
+    $cityOptions[] = $formCity;
+}
 
 $pageTitle = $isEdit ? 'Edit User' : 'Manage Users';
 require_once __DIR__ . '/includes/header.php';
@@ -312,6 +349,28 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="form-error">Enter a valid 10-digit Indian mobile.</div>
                     </div>
+
+                    <div class="col-4 form-group" id="user-zone-group">
+                        <label class="form-label" for="zone">Assigned zone</label>
+                        <select id="zone" name="zone" class="form-select">
+                            <option value="">All zones</option>
+                            <?php foreach ($zoneOptions as $z): ?>
+                                <option value="<?= htmlspecialchars($z) ?>" <?= $formZone === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small style="color:#64748b;font-size:0.75rem;">Admin sets access area · Technician pe apply hota hai</small>
+                    </div>
+
+                    <div class="col-4 form-group" id="user-city-group">
+                        <label class="form-label" for="city">Assigned city</label>
+                        <select id="city" name="city" class="form-select">
+                            <option value="">All cities</option>
+                            <?php foreach ($cityOptions as $cName): ?>
+                                <option value="<?= htmlspecialchars($cName) ?>" <?= $formCity === $cName ? 'selected' : '' ?>><?= htmlspecialchars($cName) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <script type="application/json" id="user-cities-by-zone"><?= json_encode($citiesByZone, JSON_UNESCAPED_UNICODE) ?></script>
                 </div>
             </div>
 
@@ -349,7 +408,8 @@ require_once __DIR__ . '/includes/header.php';
                 <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
                 <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
             </svg>
-            <span>All Users (<?= count($users) ?>)</span>
+            <span>All Users (<?= number_format($usersTotal) ?>)</span>
+            <span class="badge badge-neutral" style="margin-left:0.5rem;"><?= (int)$usersFrom ?>–<?= (int)$usersTo ?> of <?= number_format($usersTotal) ?></span>
         </div>
     </div>
 
@@ -361,15 +421,23 @@ require_once __DIR__ . '/includes/header.php';
                     <th>Name</th>
                     <th>Email</th>
                     <th>Role</th>
+                    <th>Area</th>
                     <th>Status</th>
                     <th style="text-align:right;">Action</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($users)): ?>
-                    <tr><td colspan="5" style="text-align:center; color:#64748b; padding:1.5rem;">No users found.</td></tr>
+                    <tr><td colspan="6" style="text-align:center; color:#64748b; padding:1.5rem;">No users found.</td></tr>
                 <?php else: ?>
                     <?php foreach ($users as $u): ?>
+                        <?php
+                        $uZone = trim((string)($u['zone'] ?? ''));
+                        $uCity = trim((string)($u['city'] ?? ''));
+                        $uArea = $uZone === '' && $uCity === ''
+                            ? 'All areas'
+                            : trim(($uZone !== '' ? $uZone : 'Any zone') . ($uCity !== '' ? ' · ' . $uCity : ''));
+                        ?>
                         <tr>
                             <td>
                                 <strong style="color:#0f172a;"><?= htmlspecialchars($u['name']) ?></strong>
@@ -383,6 +451,7 @@ require_once __DIR__ . '/includes/header.php';
                                     <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
                                 </span>
                             </td>
+                            <td style="font-size:0.8rem;color:#475569;"><?= htmlspecialchars($uArea) ?></td>
                             <td>
                                 <?php if ($u['status'] === 'active'): ?>
                                     <span class="badge badge-success">Active</span>
@@ -438,10 +507,18 @@ require_once __DIR__ . '/includes/header.php';
                                 <span class="badge badge-danger">Inactive</span>
                             <?php endif; ?>
                         </div>
+                        <?php
+                        $uZoneM = trim((string)($u['zone'] ?? ''));
+                        $uCityM = trim((string)($u['city'] ?? ''));
+                        $uAreaM = $uZoneM === '' && $uCityM === ''
+                            ? 'All areas'
+                            : trim(($uZoneM !== '' ? $uZoneM : 'Any zone') . ($uCityM !== '' ? ' · ' . $uCityM : ''));
+                        ?>
                         <div class="users-card-role">
                             <span class="badge badge-primary" style="text-transform: capitalize;">
                                 <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
                             </span>
+                            <span style="font-size:0.75rem;color:#64748b;"><?= htmlspecialchars($uAreaM) ?></span>
                             <?php if ((int)$u['id'] === (int)$currentUser['id']): ?>
                                 <span class="users-card-you">You</span>
                             <?php endif; ?>
@@ -465,6 +542,27 @@ require_once __DIR__ . '/includes/header.php';
             </ul>
         <?php endif; ?>
     </div>
+
+    <?php if ($usersTotal > $usersLimit): ?>
+    <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+        <div style="font-size:0.85rem; color:#64748b;">
+            Page <strong><?= (int)$usersPage ?></strong> of <strong><?= (int)$usersPages ?></strong>
+            · 20 per page
+        </div>
+        <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+            <?php if ($usersPage > 1): ?>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $usersPage - 1 ?>#users-directory">Prev</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
+            <?php endif; ?>
+            <?php if ($usersPage < $usersPages): ?>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $usersPage + 1 ?>#users-directory">Next</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 
 <!-- Role access guide -->
@@ -503,6 +601,7 @@ require_once __DIR__ . '/includes/header.php';
                     <li>Field: Scan QR → fill store / freezer / photos / GPS → Save</li>
                     <li>Edit existing profiles (update data &amp; photos)</li>
                     <li>KYC verify on site</li>
+                    <li>Zone/City at create — only that area’s data &amp; fills</li>
                     <li>View / print QR · no Users, Import, Delete, Blank tags</li>
                 </ul>
             </div>
@@ -511,8 +610,9 @@ require_once __DIR__ . '/includes/header.php';
                     <span class="badge badge-neutral">Viewer</span>
                 </div>
                 <ul class="role-access-list">
-                    <li>Dashboard &amp; profiles view</li>
+                    <li>Dashboard &amp; profiles view — All areas</li>
                     <li>QR print / view only</li>
+                    <li>No zone lock (same as Admin view)</li>
                     <li>No add / edit / KYC</li>
                     <li>No user management</li>
                 </ul>
@@ -528,8 +628,19 @@ require_once __DIR__ . '/includes/header.php';
     var phoneInput = document.getElementById('phone');
     var passwordInput = document.getElementById('password');
     var roleSelect = document.getElementById('role');
+    var zoneSelect = document.getElementById('zone');
+    var citySelect = document.getElementById('city');
+    var zoneGroup = document.getElementById('user-zone-group');
+    var cityGroup = document.getElementById('user-city-group');
     var summary = document.getElementById('user-form-summary');
     var form = document.getElementById('user-create-form');
+    var citiesByZone = {};
+    try {
+        var citiesEl = document.getElementById('user-cities-by-zone');
+        citiesByZone = citiesEl ? JSON.parse(citiesEl.textContent || '{}') : {};
+    } catch (e) {
+        citiesByZone = {};
+    }
 
     function setFieldError(el, on) {
         if (!el) return;
@@ -538,11 +649,56 @@ require_once __DIR__ . '/includes/header.php';
         if (group) group.classList.toggle('has-error', on);
     }
 
+    // Zone + City always visible — admin sets them when giving user access
+    function syncAreaVisibility() {
+        if (zoneGroup) zoneGroup.style.display = '';
+        if (cityGroup) cityGroup.style.display = '';
+    }
+
+    /** Fill city dropdown from stores location data for selected zone */
+    function refillCities(keepValue) {
+        if (!citySelect) return;
+        var z = zoneSelect && zoneSelect.value ? zoneSelect.value : '';
+        var list = (z && citiesByZone[z]) ? citiesByZone[z] : (citiesByZone._all || []);
+        var prev = keepValue ? citySelect.value : '';
+        citySelect.innerHTML = '';
+        var allOpt = document.createElement('option');
+        allOpt.value = '';
+        allOpt.textContent = 'All cities';
+        citySelect.appendChild(allOpt);
+        (list || []).forEach(function (c) {
+            var opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            citySelect.appendChild(opt);
+        });
+        if (prev && list && list.indexOf(prev) !== -1) {
+            citySelect.value = prev;
+        } else if (prev && keepValue && (!list || list.indexOf(prev) === -1)) {
+            var extra = document.createElement('option');
+            extra.value = prev;
+            extra.textContent = prev;
+            citySelect.appendChild(extra);
+            citySelect.value = prev;
+        } else {
+            citySelect.value = '';
+        }
+    }
+
     function syncSummary() {
         if (!summary || !roleSelect) return;
         var label = roleSelect.options[roleSelect.selectedIndex].text.split('—')[0].trim();
         var name = (nameInput && nameInput.value.trim()) || 'New user';
-        summary.textContent = name + ' · ' + label;
+        var z = zoneSelect && zoneSelect.value ? zoneSelect.value : '';
+        var c = citySelect && citySelect.value ? citySelect.value : '';
+        var area = '';
+        if (roleSelect.value === 'technician') {
+            if (z || c) area = ' · ' + (z || 'Any') + (c ? ' / ' + c : '');
+            else area = ' · All areas';
+        } else {
+            area = ' · All areas';
+        }
+        summary.textContent = name + ' · ' + label + area;
     }
 
     if (nameInput) {
@@ -582,7 +738,19 @@ require_once __DIR__ . '/includes/header.php';
     }
 
     if (roleSelect) {
-        roleSelect.addEventListener('change', syncSummary);
+        roleSelect.addEventListener('change', function () {
+            syncAreaVisibility();
+            syncSummary();
+        });
+    }
+    if (zoneSelect) {
+        zoneSelect.addEventListener('change', function () {
+            refillCities(false);
+            syncSummary();
+        });
+    }
+    if (citySelect) {
+        citySelect.addEventListener('change', syncSummary);
     }
 
     if (form) {
@@ -608,6 +776,7 @@ require_once __DIR__ . '/includes/header.php';
         });
     }
 
+    syncAreaVisibility();
     syncSummary();
 })();
 </script>

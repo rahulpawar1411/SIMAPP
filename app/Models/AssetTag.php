@@ -208,7 +208,8 @@ class AssetTag {
      */
     public static function getStats(): array {
         self::ensureTable();
-        self::releaseOrphanAssignedTags();
+        // Orphan cleanup at most once per hour — not on every page load.
+        self::maybeReleaseOrphans();
         $pdo = Database::getConnection();
         // Assigned = only tags linked to a live freezer
         $assigned = (int)$pdo->query(
@@ -222,6 +223,21 @@ class AssetTag {
             'assigned' => $assigned,
             'total' => $unused + $assigned,
         ];
+    }
+
+    private static function maybeReleaseOrphans(): void {
+        $marker = dirname(__DIR__, 2) . '/logs/.asset_tag_orphan_cleanup';
+        $now = time();
+        $last = is_file($marker) ? (int)@filemtime($marker) : 0;
+        if ($last > 0 && ($now - $last) < 3600) {
+            return;
+        }
+        try {
+            self::releaseOrphanAssignedTags();
+            @touch($marker);
+        } catch (\Throwable $e) {
+            // ignore — stats still return counts
+        }
     }
 
     public static function countTags(string $status = ''): int {

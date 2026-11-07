@@ -153,14 +153,91 @@ class FileUploadService {
             return ['success' => false, 'error' => 'Failed to save uploaded file to disk.', 'path' => null];
         }
 
+        // Compress / resize for faster mobile sync and smaller disk use.
+        self::compressSavedImage($targetFilePath, $mime);
+
+        clearstatcache(true, $targetFilePath);
+        $finalSize = is_file($targetFilePath) ? (int)filesize($targetFilePath) : (int)$file['size'];
+
         return [
             'success' => true,
             'path' => $relativeWebPath,
             'full_path' => $targetFilePath,
             'mime' => $mime,
-            'size' => $file['size'],
+            'size' => $finalSize,
             'error' => null
         ];
+    }
+
+    /**
+     * Downscale large photos (max edge 1600px) and re-encode JPG/WebP/PNG.
+     */
+    public static function compressSavedImage(string $path, string $mime, int $maxEdge = 1600, int $quality = 82): void {
+        if (!is_file($path) || !extension_loaded('gd')) {
+            return;
+        }
+        $info = @getimagesize($path);
+        if ($info === false) {
+            return;
+        }
+        $w = (int)($info[0] ?? 0);
+        $h = (int)($info[1] ?? 0);
+        if ($w < 1 || $h < 1) {
+            return;
+        }
+
+        $src = null;
+        if ($mime === 'image/jpeg' || $mime === 'image/jpg') {
+            $src = @imagecreatefromjpeg($path);
+        } elseif ($mime === 'image/png') {
+            $src = @imagecreatefrompng($path);
+        } elseif ($mime === 'image/webp' && function_exists('imagecreatefromwebp')) {
+            $src = @imagecreatefromwebp($path);
+        }
+        if (!$src) {
+            return;
+        }
+
+        $scale = 1.0;
+        $long = max($w, $h);
+        if ($long > $maxEdge) {
+            $scale = $maxEdge / $long;
+        }
+        // Skip tiny recompress if already small file and within size
+        $size = (int)filesize($path);
+        if ($scale >= 1.0 && $size > 0 && $size < 350000) {
+            imagedestroy($src);
+            return;
+        }
+
+        $nw = max(1, (int)round($w * $scale));
+        $nh = max(1, (int)round($h * $scale));
+        $dst = imagecreatetruecolor($nw, $nh);
+        if (!$dst) {
+            imagedestroy($src);
+            return;
+        }
+
+        if ($mime === 'image/png' || $mime === 'image/webp') {
+            imagealphablending($dst, false);
+            imagesavealpha($dst, true);
+            $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+            imagefilledrectangle($dst, 0, 0, $nw, $nh, $transparent);
+        }
+
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+
+        if ($mime === 'image/jpeg' || $mime === 'image/jpg') {
+            imagejpeg($dst, $path, max(60, min(90, $quality)));
+        } elseif ($mime === 'image/png') {
+            // PNG compression 0–9 (higher = smaller)
+            imagepng($dst, $path, 6);
+        } elseif ($mime === 'image/webp' && function_exists('imagewebp')) {
+            imagewebp($dst, $path, max(60, min(90, $quality)));
+        }
+
+        imagedestroy($src);
+        imagedestroy($dst);
     }
 
     /**

@@ -587,6 +587,23 @@ class Freezer {
             $where[] = 'f.status IN (' . implode(',', $ph) . ')';
         }
 
+        $zones = self::normalizeFilterList($filters['zone'] ?? null);
+        if ($zones) {
+            $ph = [];
+            foreach ($zones as $i => $code) {
+                $key = 'zone' . $i;
+                $ph[] = ':' . $key;
+                $params[$key] = strtoupper(trim((string)$code));
+            }
+            $where[] = 'UPPER(TRIM(s.zone)) IN (' . implode(',', $ph) . ')';
+        }
+
+        // Technician’s own installs (data they filled)
+        if (isset($filters['created_by']) && (int)$filters['created_by'] > 0) {
+            $where[] = 'f.created_by = :created_by';
+            $params['created_by'] = (int)$filters['created_by'];
+        }
+
         $cities = self::normalizeFilterList($filters['city'] ?? null);
         if ($cities) {
             $ph = [];
@@ -642,30 +659,45 @@ class Freezer {
             }
         }
 
-        // KYC filter — due = installation/last KYC + 6 months (multi: pending / done)
+        // KYC filter — pending / done (window) / failed (latest result at current store)
         $kycList = self::normalizeFilterList($filters['kyc'] ?? null);
-        $kycList = array_values(array_intersect($kycList, ['pending', 'done']));
-        if ($kycList && count($kycList) === 1) {
-            $kyc = $kycList[0];
+        $kycList = array_values(array_intersect($kycList, ['pending', 'done', 'failed']));
+        $lastKycResultExpr = "(SELECT k2.result FROM `kyc_verifications` k2
+            WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
+            ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
+        if ($kycList) {
             $gapMonths = (int)FreezerLifecycle::KYC_GAP_MONTHS;
             if ($gapMonths < 1) {
                 $gapMonths = 6;
             }
             $dueExpr = FreezerLifecycle::kycDueSqlExpr('f', $gapMonths);
-            $params['kyc_today'] = date('Y-m-d');
-            if ($kyc === 'pending') {
-                $where[] = "{$dueExpr} <= :kyc_today";
-            } else {
-                $where[] = "{$dueExpr} > :kyc_today";
+            $kycParts = [];
+            $needsToday = in_array('pending', $kycList, true) || in_array('done', $kycList, true);
+            if ($needsToday) {
+                // Quote once in SQL — avoid unused / duplicate named PDO binds.
+                $todaySql = Database::getConnection()->quote(date('Y-m-d'));
+                if (in_array('pending', $kycList, true)) {
+                    $kycParts[] = "{$dueExpr} <= {$todaySql}";
+                }
+                if (in_array('done', $kycList, true)) {
+                    $kycParts[] = "{$dueExpr} > {$todaySql}";
+                }
+            }
+            if (in_array('failed', $kycList, true)) {
+                $kycParts[] = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) = 'FAIL'";
+            }
+            if ($kycParts) {
+                $where[] = '(' . implode(' OR ', $kycParts) . ')';
             }
         }
-        // If both pending + done checked, no KYC constraint (shows all)
 
         return [$where, $params, $needsIotJoin];
     }
 
     public static function getFiltered(array $filters = [], int $limit = 50, int $offset = 0): array {
         $pdo = Database::getConnection();
+        $limit = max(1, min(100, $limit));
+        $offset = max(0, $offset);
         [$where, $params] = self::buildListFilters($filters);
         $whereClause = implode(' AND ', $where);
 
@@ -684,7 +716,12 @@ class Freezer {
                        (
                            SELECT MAX(k.verified_at) FROM `kyc_verifications` k
                            WHERE k.freezer_id = f.id AND k.store_id = f.store_id
-                       ) AS last_kyc_at
+                       ) AS last_kyc_at,
+                       (
+                           SELECT k3.result FROM `kyc_verifications` k3
+                           WHERE k3.freezer_id = f.id AND k3.store_id = f.store_id
+                           ORDER BY k3.verified_at DESC, k3.id DESC LIMIT 1
+                       ) AS last_kyc_result
                 FROM `freezers` f
                 INNER JOIN `stores` s ON f.store_id = s.id
                 LEFT JOIN `freezer_types` ft ON f.freezer_type = ft.code
@@ -795,6 +832,133 @@ class Freezer {
         $recentStmt->execute($params);
         $recent = $recentStmt->fetchAll();
 
+        // Installation trends (period: month | 6months | year | custom)
+        $trendMeta = self::resolveTrendRange($filters);
+        $trend = [];
+        $bucket = $trendMeta['bucket']; // day | month
+        if ($bucket === 'day') {
+            $cursor = strtotime($trendMeta['from']);
+            $endTs = strtotime($trendMeta['to']);
+            while ($cursor !== false && $cursor <= $endTs) {
+                $key = date('Y-m-d', $cursor);
+                $trend[$key] = [
+                    'label' => date('d M', $cursor),
+                    'count' => 0,
+                    'target' => 0,
+                ];
+                $cursor = strtotime('+1 day', $cursor);
+            }
+            $groupExpr = "DATE(f.installation_date)";
+        } else {
+            $cursor = strtotime(date('Y-m-01', strtotime($trendMeta['from'])));
+            $endTs = strtotime(date('Y-m-01', strtotime($trendMeta['to'])));
+            while ($cursor !== false && $cursor <= $endTs) {
+                $key = date('Y-m', $cursor);
+                $trend[$key] = [
+                    'label' => date('M Y', $cursor),
+                    'count' => 0,
+                    'target' => 0,
+                ];
+                $cursor = strtotime('+1 month', $cursor);
+            }
+            $groupExpr = "DATE_FORMAT(f.installation_date, '%Y-%m')";
+        }
+
+        $trendParams = $params;
+        $trendParams['trend_from'] = $trendMeta['from'];
+        $trendParams['trend_to'] = $trendMeta['to'];
+        $trendStmt = $pdo->prepare(
+            "SELECT {$groupExpr} AS bucket_key, COUNT(*) AS cnt
+             {$fromSql}
+             WHERE {$whereSql}
+               AND f.installation_date IS NOT NULL
+               AND f.installation_date >= :trend_from
+               AND f.installation_date <= :trend_to
+             GROUP BY bucket_key"
+        );
+        $trendStmt->execute($trendParams);
+        foreach ($trendStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+            $key = (string)($r['bucket_key'] ?? '');
+            if (isset($trend[$key])) {
+                $trend[$key]['count'] = (int)$r['cnt'];
+            }
+        }
+        $avg = 0;
+        $n = count($trend);
+        if ($n > 0) {
+            $avg = (int)round(array_sum(array_column($trend, 'count')) / $n);
+        }
+        foreach ($trend as &$t) {
+            $t['target'] = max($avg, $t['count']);
+        }
+        unset($t);
+
+        // By zone for doughnut
+        $zoneStmt = $pdo->prepare(
+            "SELECT UPPER(TRIM(COALESCE(NULLIF(s.zone, ''), 'OTHER'))) AS zone, COUNT(*) AS cnt
+             {$fromSql}
+             WHERE {$whereSql}
+             GROUP BY UPPER(TRIM(COALESCE(NULLIF(s.zone, ''), 'OTHER')))
+             ORDER BY cnt DESC"
+        );
+        $zoneStmt->execute($params);
+        $byZone = $zoneStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        // Top stores by freezer count
+        $topStmt = $pdo->prepare(
+            "SELECT s.store_name, s.city, s.outlet_id, COUNT(f.id) AS installs
+             {$fromSql}
+             WHERE {$whereSql} AND f.store_id IS NOT NULL
+             GROUP BY s.id, s.store_name, s.city, s.outlet_id
+             ORDER BY installs DESC, s.store_name ASC
+             LIMIT 5"
+        );
+        $topStmt->execute($params);
+        $topStores = $topStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        // Recent activities: latest KYC + recent registrations
+        $activities = [];
+        $kycAct = $pdo->prepare(
+            "SELECT k.result, k.verified_at, k.notes, f.unique_freezer_id,
+                    s.store_name, s.city, u.name AS tech_name
+             FROM `kyc_verifications` k
+             INNER JOIN `freezers` f ON f.id = k.freezer_id AND f.deleted_at IS NULL
+             LEFT JOIN `stores` s ON s.id = k.store_id
+             LEFT JOIN `users` u ON u.id = k.verified_by
+             WHERE 1=1"
+            . ($zone !== '' ? ' AND UPPER(TRIM(s.zone)) = :zone' : '')
+            . ($city !== '' ? ' AND s.city = :city' : '')
+            . " ORDER BY k.verified_at DESC, k.id DESC LIMIT 8"
+        );
+        $kycAct->execute($params);
+        foreach ($kycAct->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+            $res = strtoupper(trim((string)($r['result'] ?? 'PASS')));
+            $activities[] = [
+                'kind' => $res === 'FAIL' ? 'issue' : 'success',
+                'title' => $res === 'FAIL' ? 'KYC Failed' : 'KYC Passed',
+                'subtitle' => trim(($r['store_name'] ?? '') . ($r['city'] ? ' · ' . $r['city'] : '')),
+                'meta' => (string)($r['unique_freezer_id'] ?? ''),
+                'when' => (string)($r['verified_at'] ?? ''),
+                'href' => 'profile_view.php?id=' . urlencode((string)($r['unique_freezer_id'] ?? '')),
+                'badge' => $res === 'FAIL' ? 'Issue' : 'Success',
+            ];
+        }
+        foreach ($recent as $r) {
+            $activities[] = [
+                'kind' => 'pending',
+                'title' => 'Freezer Registered',
+                'subtitle' => trim(($r['store_name'] ?? '') . (!empty($r['store_city']) ? ' · ' . $r['store_city'] : '')),
+                'meta' => (string)($r['unique_freezer_id'] ?? ''),
+                'when' => (string)($r['installation_date'] ?? ''),
+                'href' => 'profile_view.php?id=' . urlencode((string)($r['unique_freezer_id'] ?? '')),
+                'badge' => 'Registered',
+            ];
+        }
+        usort($activities, static function ($a, $b) {
+            return strcmp((string)($b['when'] ?? ''), (string)($a['when'] ?? ''));
+        });
+        $activities = array_slice($activities, 0, 6);
+
         return [
             'total_freezers' => $totalFreezers,
             'total_stores' => $totalStores,
@@ -802,7 +966,68 @@ class Freezer {
             'total_iot' => $totalIot,
             'by_type' => $byType,
             'recent' => $recent,
+            'trend' => array_values($trend),
+            'trend_meta' => $trendMeta,
+            'by_zone' => $byZone,
+            'top_stores' => $topStores,
+            'activities' => $activities,
             'filters' => ['zone' => $zone, 'city' => $city],
+        ];
+    }
+
+    /**
+     * Resolve installation-trend date range from filters.
+     * period: month | 6months | year | custom
+     *
+     * @return array{period:string,from:string,to:string,bucket:string,label:string}
+     */
+    public static function resolveTrendRange(array $filters = []): array {
+        $period = strtolower(trim((string)($filters['trend_period'] ?? '6months')));
+        if (!in_array($period, ['month', '6months', 'year', 'custom'], true)) {
+            $period = '6months';
+        }
+
+        $today = date('Y-m-d');
+        $from = '';
+        $to = $today;
+        $bucket = 'month';
+        $label = 'Last 6 months';
+
+        if ($period === 'month') {
+            $from = date('Y-m-01');
+            $bucket = 'day';
+            $label = 'This month';
+        } elseif ($period === 'year') {
+            $from = date('Y-m-01', strtotime('-11 months'));
+            $bucket = 'month';
+            $label = 'Last 1 year';
+        } elseif ($period === 'custom') {
+            $fromIn = trim((string)($filters['trend_from'] ?? ''));
+            $toIn = trim((string)($filters['trend_to'] ?? ''));
+            $fromOk = preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromIn) === 1;
+            $toOk = preg_match('/^\d{4}-\d{2}-\d{2}$/', $toIn) === 1;
+            $from = $fromOk ? $fromIn : date('Y-m-d', strtotime('-29 days'));
+            $to = $toOk ? $toIn : $today;
+            if ($from > $to) {
+                [$from, $to] = [$to, $from];
+            }
+            $days = (int)floor((strtotime($to) - strtotime($from)) / 86400) + 1;
+            $bucket = $days <= 45 ? 'day' : 'month';
+            $label = date('d M Y', strtotime($from)) . ' – ' . date('d M Y', strtotime($to));
+        } else {
+            // 6months (default)
+            $from = date('Y-m-01', strtotime('-5 months'));
+            $bucket = 'month';
+            $label = 'Last 6 months';
+            $period = '6months';
+        }
+
+        return [
+            'period' => $period,
+            'from' => $from,
+            'to' => $to,
+            'bucket' => $bucket,
+            'label' => $label,
         ];
     }
 

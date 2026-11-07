@@ -14,12 +14,20 @@ use App\Models\AssetTag;
 AuthService::requireRole(['super_admin', 'technician']);
 Freezer::ensureSimColumns();
 $currentUser = AuthService::currentUser();
+$areaScope = AuthService::areaScope();
+$lockZone = $areaScope['zone'] !== '';
+$lockCity = $areaScope['city'] !== '';
 
 $id = !empty($_GET['id']) ? (int)$_GET['id'] : 0;
 $freezer = Freezer::findById($id);
 
 if (!$freezer) {
     die("<h1>Profile Not Found</h1><p>Freezer profile #{$id} does not exist.</p><p><a href='profiles.php'>Back to Profiles</a></p>");
+}
+
+if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? null, $freezer['store_city'] ?? null)) {
+    http_response_code(403);
+    die("<h1>403 Forbidden</h1><p>This store is outside your assigned zone/city.</p><p><a href='profiles.php'>Back to Assets</a></p>");
 }
 
 $error = null;
@@ -98,7 +106,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // Update Store — Outlet ID locked (auto at create; no typing)
-            Store::update((int)$freezer['store_id'], [
+            // Area-scoped technicians cannot change zone/city outside assignment
+            $storePayload = AuthService::applyAreaToStoreData([
                 'outlet_id' => $freezer['outlet_id'],
                 'store_name' => $_POST['store_name'],
                 'customer_name' => $_POST['customer_name'] ?? $freezer['customer_name'],
@@ -128,6 +137,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
                 'status' => 'Active',
             ]);
+            if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
+                throw new Exception('Zone/city is outside your assigned area.');
+            }
+            Store::update((int)$freezer['store_id'], $storePayload);
 
             // Update Freezer Profile — Unique Freezer ID never changes after create
             $candidateId = $freezer['unique_freezer_id'];
@@ -256,18 +269,24 @@ require_once __DIR__ . '/includes/header.php';
                 <input type="hidden" id="state" name="state" value="<?= htmlspecialchars($freezer['store_state'] ?? '') ?>">
                 <div class="col-4 form-group">
                     <label class="form-label required" for="zone">Zone</label>
-                    <select id="zone" name="zone" class="form-select" required>
-                        <option value="CENTRAL" <?= ($freezer['store_zone'] ?? '') === 'CENTRAL' ? 'selected' : '' ?>>CENTRAL</option>
-                        <option value="WEST" <?= ($freezer['store_zone'] ?? 'WEST') === 'WEST' ? 'selected' : '' ?>>WEST</option>
-                        <option value="NORTH" <?= ($freezer['store_zone'] ?? '') === 'NORTH' ? 'selected' : '' ?>>NORTH</option>
-                        <option value="SOUTH" <?= ($freezer['store_zone'] ?? '') === 'SOUTH' ? 'selected' : '' ?>>SOUTH</option>
-                        <option value="EAST" <?= ($freezer['store_zone'] ?? '') === 'EAST' ? 'selected' : '' ?>>EAST</option>
+                    <?php
+                    $editZoneVal = $lockZone ? $areaScope['zone'] : (string)($freezer['store_zone'] ?? 'WEST');
+                    $editZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
+                    ?>
+                    <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
+                        <?php foreach ($editZones as $z): ?>
+                            <option value="<?= htmlspecialchars($z) ?>" <?= $editZoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
+                        <?php endforeach; ?>
                     </select>
+                    <?php if ($lockZone): ?>
+                        <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
+                    <?php endif; ?>
                 </div>
                 <div class="col-8 form-group">
                     <label class="form-label required" for="city">City</label>
-                    <input type="text" id="city" name="city" class="form-control" value="<?= htmlspecialchars($freezer['store_city']) ?>" placeholder="Select zone, then type city…" required autocomplete="off">
-                    <datalist id="city-list"></datalist>
+                    <?php $editCityVal = $lockCity ? $areaScope['city'] : (string)($freezer['store_city'] ?? ''); ?>
+                    <input type="text" id="city" name="city" class="form-control" value="<?= htmlspecialchars($editCityVal) ?>" placeholder="Select zone, then type city…" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
+                    <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
                 </div>
                 <div class="col-12 form-group">
                     <label class="form-label required" for="address">Address</label>
@@ -558,9 +577,9 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <?php endif; ?>
 
-    <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-bottom: 2rem;">
-        <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary btn-lg">Cancel</a>
-        <button type="submit" class="btn btn-primary btn-lg">Save Changes</button>
+    <div class="mapp-sticky-actions form-sticky-actions">
+        <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary">Cancel</a>
+        <button type="submit" class="btn btn-primary mapp-btn">Save Changes</button>
     </div>
 </form>
 

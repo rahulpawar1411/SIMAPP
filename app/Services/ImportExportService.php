@@ -564,7 +564,7 @@ class ImportExportService {
 
     /** Full CSV export for Profiles Directory (respects current filters). */
     public static function streamProfilesExportCsv(array $filters = []): void {
-        $mappedRows = self::buildExportRows($filters, 10000);
+        $mappedRows = self::buildExportRows($filters, 5000);
         self::streamCsv(
             'freezer_profiles_full_' . date('Ymd_His') . '.csv',
             self::exportColumns(),
@@ -574,7 +574,7 @@ class ImportExportService {
 
     /** Full Excel export for Profiles Directory (respects current filters). */
     public static function streamProfilesExportXlsx(array $filters = []): void {
-        $mappedRows = self::buildExportRows($filters, 10000);
+        $mappedRows = self::buildExportRows($filters, 5000);
         self::streamXlsx(
             'freezer_profiles_full_' . date('Ymd_His') . '.xlsx',
             self::exportColumns(),
@@ -588,7 +588,7 @@ class ImportExportService {
      * @param array<string, mixed> $filters Optional Profiles Directory filters
      * @return list<array<string, scalar|null>>
      */
-    public static function buildExportRows(array $filters = [], int $limit = 5000): array {
+    public static function buildExportRows(array $filters = [], int $limit = 3000): array {
         $pdo = \App\Config\Database::getConnection();
         $gap = (int)\App\Models\FreezerLifecycle::KYC_GAP_MONTHS;
         if ($gap < 1) {
@@ -598,7 +598,8 @@ class ImportExportService {
 
         [$where, $params] = \App\Models\Freezer::exportFilterParts($filters);
         $whereClause = implode(' AND ', $where);
-        $limit = max(1, min(20000, $limit));
+        // Hard cap keeps export memory safe on WAMP.
+        $limit = max(1, min(5000, $limit));
 
         $sql = "SELECT f.*,
                        s.store_name, s.outlet_id, s.customer_name, s.distributor_name,

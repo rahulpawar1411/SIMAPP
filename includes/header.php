@@ -24,12 +24,12 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     
     <!-- Application CSS -->
-    <link rel="stylesheet" href="assets/css/app.css?v=<?= (@filemtime(__DIR__ . '/../assets/css/app.css') ?: time()) ?>-theme-green">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (@filemtime(__DIR__ . '/../assets/css/app.css') ?: time()) ?>-shell">
     <?php if ($currentUser): ?>
     <meta name="csrf-token" content="<?= htmlspecialchars(AuthService::generateCsrfToken()) ?>">
     <?php endif; ?>
 </head>
-<body class="theme-cfg">
+<body class="theme-cfg app-shell<?= !empty($bodyClass) ? ' ' . htmlspecialchars($bodyClass) : '' ?>">
 <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 <div class="app-layout">
     <!-- Sidebar -->
@@ -51,6 +51,15 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                     <polyline points="9 22 9 12 15 12 15 22"/>
                 </svg>
                 <span>Dashboard</span>
+            </a>
+            <?php endif; ?>
+            <?php if ($currentUser && (($currentUser['role'] ?? '') === \App\Config\AppConfig::ROLE_TECHNICIAN)): ?>
+            <a href="field_home.php" class="nav-link <?= $currentPage === 'field_home.php' ? 'active' : '' ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                    <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+                <span>Home</span>
             </a>
             <?php endif; ?>
 
@@ -83,30 +92,16 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
             <?php endif; ?>
 
             <?php if ($currentUser && AuthService::hasRole('super_admin')): ?>
-            <?php
-            $notifPending = 0;
-            try {
-                // Legacy pending only (new KYC completes immediately and shows in date history)
-                $notifPending = \App\Models\AppNotification::countPending();
-            } catch (Throwable $e) {
-                $notifPending = 0;
-            }
-            ?>
             <div class="nav-label">Operations</div>
-            <a href="notifications.php" class="nav-link <?= $currentPage === 'notifications.php' ? 'active' : '' ?><?= $notifPending > 0 ? ' has-notif-dot' : '' ?>">
-                <span class="nav-link-icon-wrap">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                    </svg>
-                    <?php if ($notifPending > 0): ?>
-                        <span class="nav-notif-dot" aria-hidden="true"></span>
-                    <?php endif; ?>
-                </span>
+            <a href="notifications.php" class="nav-link <?= $currentPage === 'notifications.php' ? 'active' : '' ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <line x1="10" y1="9" x2="8" y2="9"/>
+                </svg>
                 <span>Activity</span>
-                <?php if ($notifPending > 0): ?>
-                    <span class="nav-link-badge"><?= $notifPending > 99 ? '99+' : (int)$notifPending ?></span>
-                <?php endif; ?>
             </a>
             <a href="import_export.php" class="nav-link <?= $currentPage === 'import_export.php' ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -177,6 +172,24 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
             </div>
 
             <div class="topbar-right">
+                <?php if (!empty($adminDashLayout)): ?>
+                <form class="adash-top-search" action="profiles.php" method="GET" role="search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input type="search" name="q" placeholder="Search freezers, stores…" aria-label="Search">
+                </form>
+                <a href="notifications.php" class="adash-bell" title="Activity" aria-label="Activity">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                </a>
+                <?php if ($currentUser): ?>
+                <div class="adash-user-chip" title="<?= htmlspecialchars($currentUser['name'] ?? '') ?>">
+                    <span class="adash-user-av"><?= strtoupper(substr($currentUser['name'] ?? 'A', 0, 1)) ?></span>
+                    <span class="adash-user-meta">
+                        <strong><?= htmlspecialchars($currentUser['name'] ?? 'Admin') ?></strong>
+                        <small><?= htmlspecialchars(ucwords(str_replace('_', ' ', $currentUser['role'] ?? 'admin'))) ?></small>
+                    </span>
+                </div>
+                <?php endif; ?>
+                <?php else: ?>
                 <a href="qr_scanner.php" class="btn btn-sm btn-primary" title="Scan QR then fill details">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
@@ -184,6 +197,7 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
                     </svg>
                     <span>Scan</span>
                 </a>
+                <?php endif; ?>
             </div>
         </header>
 

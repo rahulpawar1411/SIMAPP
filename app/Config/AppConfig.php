@@ -41,6 +41,14 @@ class AppConfig {
         return array_column(self::getUserRoles(), 'value');
     }
 
+    /** Store / user area zones (same as profile forms). */
+    public const ZONES = ['CENTRAL', 'WEST', 'NORTH', 'SOUTH', 'EAST'];
+
+    /** @return list<string> */
+    public static function zones(): array {
+        return self::ZONES;
+    }
+
     /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) — next phase */
     public const IOT_ENABLED = false;
 

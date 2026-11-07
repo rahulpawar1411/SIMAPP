@@ -20,7 +20,7 @@ $resolveHome = static function (string $target): string {
         return 'index.php';
     }
     if (AuthService::hasRole(AppConfig::ROLE_TECHNICIAN)) {
-        return 'blank_qr.php';
+        return 'field_home.php';
     }
     return 'profiles.php';
 };

@@ -12,6 +12,9 @@ use App\Models\AssetTag;
 AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
 Freezer::ensureSimColumns();
+$areaScope = AuthService::areaScope();
+$lockZone = $areaScope['zone'] !== '';
+$lockCity = $areaScope['city'] !== '';
 
 $error = null;
 $success = null;
@@ -148,15 +151,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            // 2. Create Store
-            $outletId = Store::generateOutletId([
-                'city' => $_POST['city'] ?? 'AMD',
-                'pincode' => $_POST['pincode'] ?? '',
-                'location_code' => $_POST['location_code'] ?? '',
-            ]);
-            $hasGps = !empty($_POST['latitude']) && !empty($_POST['longitude']);
-            $storeId = Store::create([
-                'outlet_id' => $outletId,
+            // 2. Create Store — force assigned zone/city for scoped technicians
+            $storePayload = AuthService::applyAreaToStoreData([
                 'store_name' => $_POST['store_name'],
                 'customer_name' => $_POST['customer_name'] ?? 'Baskin Robbins',
                 'distributor_name' => $_POST['distributor_name'] ?? '',
@@ -172,6 +168,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'pincode' => $_POST['pincode'],
                 'zone' => $_POST['zone'] ?? 'WEST',
                 'location_type' => $_POST['location_type'] ?? 'Retail Store',
+            ]);
+            if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
+                throw new Exception('Zone/city is outside your assigned area.');
+            }
+            $_POST['city'] = $storePayload['city'];
+            $_POST['zone'] = $storePayload['zone'];
+
+            $outletId = Store::generateOutletId([
+                'city' => $storePayload['city'] ?? 'AMD',
+                'pincode' => $_POST['pincode'] ?? '',
+                'location_code' => $_POST['location_code'] ?? '',
+            ]);
+            $hasGps = !empty($_POST['latitude']) && !empty($_POST['longitude']);
+            $storeId = Store::create(array_merge($storePayload, [
+                'outlet_id' => $outletId,
                 'latitude' => $hasGps ? (float)$_POST['latitude'] : null,
                 'longitude' => $hasGps ? (float)$_POST['longitude'] : null,
                 'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : null,
@@ -186,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'image_aadhar_back' => $imgAadharBack ? $imgAadharBack['path'] : null,
                 'status' => 'Active',
                 'created_by' => $currentUser['id'],
-            ]);
+            ]));
 
             // 3. Freezer ID inputs (store PIN + freezer specs → Unique ID → QR)
             $freezerType = $_POST['freezer_type'] ?? 'DF';
@@ -447,20 +458,25 @@ require_once __DIR__ . '/includes/header.php';
 
                     <div class="col-4 form-group">
                         <label class="form-label required" for="zone">Zone</label>
-                        <select id="zone" name="zone" class="form-select" required>
-                            <?php
-                            $zoneVal = $_POST['zone'] ?? 'WEST';
-                            foreach (['CENTRAL', 'WEST', 'NORTH', 'SOUTH', 'EAST'] as $z):
-                            ?>
-                                <option value="<?= $z ?>" <?= $zoneVal === $z ? 'selected' : '' ?>><?= $z ?></option>
+                        <?php
+                        $zoneVal = $lockZone ? $areaScope['zone'] : ($_POST['zone'] ?? 'WEST');
+                        $addZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
+                        ?>
+                        <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
+                            <?php foreach ($addZones as $z): ?>
+                                <option value="<?= htmlspecialchars($z) ?>" <?= $zoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
                             <?php endforeach; ?>
                         </select>
+                        <?php if ($lockZone): ?>
+                            <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
+                        <?php endif; ?>
                     </div>
 
                     <div class="col-8 form-group">
                         <label class="form-label required" for="city">City</label>
-                        <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" required autocomplete="off">
-                        <datalist id="city-list"></datalist>
+                        <?php $cityVal = $lockCity ? $areaScope['city'] : ($_POST['city'] ?? ''); ?>
+                        <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($cityVal) ?>" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
+                        <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
                     </div>
 
                     <div class="col-12 form-group">

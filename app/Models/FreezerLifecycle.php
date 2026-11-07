@@ -14,6 +14,25 @@ class FreezerLifecycle {
     /** Months between KYC visits for the same store. */
     public const KYC_GAP_MONTHS = 6;
 
+    /** Upgrade verified_at from DATE to DATETIME so submit time is stored. */
+    public static function ensureKycVerifiedAtDateTime(): void {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $pdo = Database::getConnection();
+            $col = $pdo->query("SHOW COLUMNS FROM `kyc_verifications` LIKE 'verified_at'")->fetch(PDO::FETCH_ASSOC);
+            $type = strtolower((string)($col['Type'] ?? ''));
+            if ($type !== '' && strpos($type, 'datetime') === false && strpos($type, 'timestamp') === false) {
+                $pdo->exec("ALTER TABLE `kyc_verifications` MODIFY `verified_at` DATETIME NOT NULL");
+            }
+        } catch (\Throwable $e) {
+            // Non-fatal — insert may still work as DATE (time truncated)
+        }
+    }
+
     public static function currentCycle(?string $date = null): array {
         $ts = $date ? strtotime($date) : time();
         $year = (int)date('Y', $ts);
@@ -239,7 +258,16 @@ class FreezerLifecycle {
             throw new Exception('Freezer not found.');
         }
 
-        $verifiedAt = $data['verified_at'] ?? date('Y-m-d');
+        self::ensureKycVerifiedAtDateTime();
+        $verifiedAt = trim((string)($data['verified_at'] ?? ''));
+        if ($verifiedAt === '' || !strtotime($verifiedAt)) {
+            $verifiedAt = date('Y-m-d H:i:s');
+        } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $verifiedAt)) {
+            // Legacy date-only → stamp noon so time is present
+            $verifiedAt .= ' ' . date('H:i:s');
+        } else {
+            $verifiedAt = date('Y-m-d H:i:s', strtotime($verifiedAt));
+        }
         $cycle = self::currentCycle($verifiedAt);
         $year = (int)($data['cycle_year'] ?? $cycle['year']);
         $half = (int)($data['cycle_half'] ?? $cycle['half']);
@@ -576,7 +604,8 @@ class FreezerLifecycle {
                 WHERE `freezer_id` = :fid
                   AND `status` = 'rejected'
                   AND `type` IN ('kyc_same_store', 'kyc_store_move')
-                ORDER BY `id` DESC");
+                ORDER BY `id` DESC
+                LIMIT 50");
             $rej->execute(['fid' => $fid]);
             foreach ($rej->fetchAll(PDO::FETCH_ASSOC) ?: [] as $n) {
                 $payload = AppNotification::decodePayload($n);
@@ -1009,6 +1038,205 @@ class FreezerLifecycle {
     }
 
     /**
+     * Technician work queue: KYC due on freezers this user last verified (re-visits),
+     * plus their KYC completed today.
+     *
+     * @return array{due:list<array>,today:list<array>,due_count:int,today_count:int}
+     */
+    /**
+     * @param array{zone?:string,city?:string} $filters
+     */
+    public static function technicianWorkQueue(int $userId, int $dueLimit = 10, array $filters = []): array {
+        $pdo = Database::getConnection();
+        Freezer::ensureSimColumns();
+        $userId = max(0, $userId);
+        $dueLimit = max(1, min(30, $dueLimit));
+        $gap = self::KYC_GAP_MONTHS;
+        $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $today = date('Y-m-d');
+
+        $due = [];
+        $todayRows = [];
+        if ($userId < 1) {
+            return ['due' => [], 'today' => [], 'due_count' => 0, 'today_count' => 0];
+        }
+
+        $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
+        $city = trim((string)($filters['city'] ?? ''));
+        if ($zone === 'ALL') {
+            $zone = '';
+        }
+        if (strcasecmp($city, 'All') === 0) {
+            $city = '';
+        }
+        $areaSql = '';
+        $areaParams = [];
+        if ($zone !== '') {
+            $areaSql .= ' AND UPPER(TRIM(s.zone)) = :zone';
+            $areaParams['zone'] = $zone;
+        }
+        if ($city !== '') {
+            $areaSql .= ' AND s.city = :city';
+            $areaParams['city'] = $city;
+        }
+
+        // Due re-visits: latest KYC at current store was by this technician, and due date passed
+        $lastByExpr = "(SELECT k2.verified_by FROM `kyc_verifications` k2
+             WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
+             ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
+        $lastAtExpr = "(SELECT k2.verified_at FROM `kyc_verifications` k2
+             WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
+             ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
+        $lastResExpr = "(SELECT k2.result FROM `kyc_verifications` k2
+             WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
+             ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
+
+        $dueParams = array_merge(['uid' => $userId, 'today' => $today], $areaParams);
+        $dueStmt = $pdo->prepare(
+            "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city,
+                    {$lastAtExpr} AS last_kyc_at, {$lastResExpr} AS last_kyc_result,
+                    {$dueExpr} AS next_kyc_due
+             FROM `freezers` f
+             INNER JOIN `stores` s ON s.id = f.store_id
+             WHERE f.deleted_at IS NULL
+               AND {$lastByExpr} = :uid
+               AND {$dueExpr} <= :today
+               {$areaSql}
+             ORDER BY next_kyc_due ASC, f.id DESC
+             LIMIT {$dueLimit}"
+        );
+        $dueStmt->execute($dueParams);
+        $due = $dueStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $cntStmt = $pdo->prepare(
+            "SELECT COUNT(*) FROM `freezers` f
+             INNER JOIN `stores` s ON s.id = f.store_id
+             WHERE f.deleted_at IS NULL
+               AND {$lastByExpr} = :uid
+               AND {$dueExpr} <= :today
+               {$areaSql}"
+        );
+        $cntStmt->execute($dueParams);
+        $dueCount = (int)$cntStmt->fetchColumn();
+
+        $todayParams = array_merge(['uid' => $userId, 'today' => $today], $areaParams);
+        $todayCntStmt = $pdo->prepare(
+            "SELECT COUNT(*)
+             FROM `kyc_verifications` k
+             INNER JOIN `freezers` f ON f.id = k.freezer_id AND f.deleted_at IS NULL
+             LEFT JOIN `stores` s ON s.id = k.store_id
+             WHERE k.verified_by = :uid
+               AND DATE(k.verified_at) = :today
+               {$areaSql}"
+        );
+        $todayCntStmt->execute($todayParams);
+        $todayCount = (int)$todayCntStmt->fetchColumn();
+
+        $todayLimit = max(1, min(100, $dueLimit * 4)); // show more of today’s KYCs on Home
+        $todayStmt = $pdo->prepare(
+            "SELECT k.result, k.verified_at, f.id AS freezer_id, f.unique_freezer_id, s.store_name, s.city
+             FROM `kyc_verifications` k
+             INNER JOIN `freezers` f ON f.id = k.freezer_id AND f.deleted_at IS NULL
+             LEFT JOIN `stores` s ON s.id = k.store_id
+             WHERE k.verified_by = :uid
+               AND DATE(k.verified_at) = :today
+               {$areaSql}
+             ORDER BY k.verified_at DESC, k.id DESC
+             LIMIT {$todayLimit}"
+        );
+        $todayStmt->execute($todayParams);
+        $todayRows = $todayStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            'due' => $due,
+            'today' => $todayRows,
+            'due_count' => $dueCount,
+            'today_count' => $todayCount,
+        ];
+    }
+
+    /**
+     * KYC-due freezers with store GPS for the map (nearby / list).
+     * Caps at $limit for load safety.
+     *
+     * @return list<array{
+     *   id:int,unique_freezer_id:string,store_name:string,outlet_id:string,city:string,zone:string,
+     *   latitude:float,longitude:float,next_kyc_due:string,last_kyc_at:?string,has_gps:bool
+     * }>
+     */
+    public static function kycDueForMap(int $limit = 200, array $filters = []): array {
+        $pdo = Database::getConnection();
+        Freezer::ensureSimColumns();
+        $limit = max(1, min(500, $limit));
+        $gap = self::KYC_GAP_MONTHS;
+        $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $today = date('Y-m-d');
+
+        $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
+        $city = trim((string)($filters['city'] ?? ''));
+        if ($zone === 'ALL') {
+            $zone = '';
+        }
+        if (strcasecmp($city, 'All') === 0) {
+            $city = '';
+        }
+
+        $extra = [];
+        $params = ['today' => $today];
+        if ($zone !== '') {
+            $extra[] = 'UPPER(TRIM(s.zone)) = :zone';
+            $params['zone'] = $zone;
+        }
+        if ($city !== '') {
+            $extra[] = 's.city = :city';
+            $params['city'] = $city;
+        }
+        $extraSql = $extra ? (' AND ' . implode(' AND ', $extra)) : '';
+
+        $lastAtExpr = "(SELECT MAX(k.verified_at) FROM `kyc_verifications` k
+            WHERE k.freezer_id = f.id AND k.store_id = f.store_id)";
+
+        $stmt = $pdo->prepare(
+            "SELECT f.id, f.unique_freezer_id, s.store_name, s.outlet_id, s.city, s.zone,
+                    s.latitude, s.longitude, {$dueExpr} AS next_kyc_due,
+                    {$lastAtExpr} AS last_kyc_at
+             FROM `freezers` f
+             INNER JOIN `stores` s ON s.id = f.store_id
+             WHERE f.deleted_at IS NULL
+               AND {$dueExpr} <= :today
+               {$extraSql}
+             ORDER BY next_kyc_due ASC, f.id DESC
+             LIMIT {$limit}"
+        );
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $out = [];
+        foreach ($rows as $r) {
+            $lat = isset($r['latitude']) && $r['latitude'] !== '' && $r['latitude'] !== null
+                ? (float)$r['latitude'] : null;
+            $lng = isset($r['longitude']) && $r['longitude'] !== '' && $r['longitude'] !== null
+                ? (float)$r['longitude'] : null;
+            $hasGps = $lat !== null && $lng !== null
+                && abs($lat) <= 90 && abs($lng) <= 180
+                && !($lat == 0.0 && $lng == 0.0);
+            $out[] = [
+                'id' => (int)$r['id'],
+                'unique_freezer_id' => (string)($r['unique_freezer_id'] ?? ''),
+                'store_name' => (string)($r['store_name'] ?? ''),
+                'outlet_id' => (string)($r['outlet_id'] ?? ''),
+                'city' => (string)($r['city'] ?? ''),
+                'zone' => (string)($r['zone'] ?? ''),
+                'latitude' => $hasGps ? $lat : null,
+                'longitude' => $hasGps ? $lng : null,
+                'next_kyc_due' => (string)($r['next_kyc_due'] ?? ''),
+                'last_kyc_at' => $r['last_kyc_at'] !== null ? (string)$r['last_kyc_at'] : null,
+                'has_gps' => $hasGps,
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * Dashboard KYC counts — pending when install/last KYC + 6 months has passed.
      * @param array{zone?:string,city?:string} $filters  empty zone/city = All
      * @return array{done:int,pending:int,pending_list:array,cutoff:string,gap_months:int}
@@ -1104,7 +1332,8 @@ class FreezerLifecycle {
         int $days = 90,
         ?string $from = null,
         ?string $to = null,
-        string $location = 'all'
+        string $location = 'all',
+        string $resultFilter = 'all'
     ): array {
         $pdo = Database::getConnection();
 
@@ -1120,14 +1349,25 @@ class FreezerLifecycle {
         if (!in_array($location, ['all', 'same', 'new'], true)) {
             $location = 'all';
         }
+        $resultFilter = strtoupper(trim($resultFilter));
+        if (!in_array($resultFilter, ['ALL', 'PASS', 'FAIL'], true)) {
+            $resultFilter = 'ALL';
+        }
 
         if ($useRange) {
             $whereSql = 'DATE(k.verified_at) >= :from_d AND DATE(k.verified_at) <= :to_d';
             $params = ['from_d' => $fromDate, 'to_d' => $toDate];
         } else {
-            $days = max(7, min(365, $days));
+            $days = max(7, min(180, $days));
             $whereSql = "DATE(k.verified_at) >= DATE_SUB(CURDATE(), INTERVAL {$days} DAY)";
             $params = [];
+        }
+
+        // Push result filter into SQL so we don't over-fetch.
+        if ($resultFilter === 'FAIL') {
+            $whereSql .= " AND UPPER(TRIM(COALESCE(k.result, ''))) = 'FAIL'";
+        } elseif ($resultFilter === 'PASS') {
+            $whereSql .= " AND UPPER(TRIM(COALESCE(k.result, ''))) <> 'FAIL'";
         }
 
         $isNewExpr = "CASE WHEN EXISTS (
@@ -1141,6 +1381,8 @@ class FreezerLifecycle {
                           )
                     ) THEN 1 ELSE 0 END";
 
+        // Hard page cap — Activity never loads unbounded KYC history.
+        $maxRows = 500;
         $stmt = $pdo->prepare(
             "SELECT k.id, k.freezer_id, k.store_id, k.verified_at, k.result, k.notes, k.verified_by,
                     f.unique_freezer_id, f.deleted_at AS freezer_deleted,
@@ -1152,10 +1394,12 @@ class FreezerLifecycle {
              LEFT JOIN `stores` s ON s.id = k.store_id
              LEFT JOIN `users` u ON u.id = k.verified_by
              WHERE {$whereSql}
-             ORDER BY k.verified_at DESC, k.id DESC"
+             ORDER BY k.verified_at DESC, k.id DESC
+             LIMIT {$maxRows}"
         );
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $truncated = count($rows) >= $maxRows;
 
         $groups = [];
         foreach ($rows as $r) {
@@ -1166,6 +1410,7 @@ class FreezerLifecycle {
             if ($location === 'new' && !$isNew) {
                 continue;
             }
+            $rowResult = strtoupper(trim((string)($r['result'] ?? 'PASS')));
 
             $date = substr((string)($r['verified_at'] ?? ''), 0, 10);
             if ($date === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
@@ -1191,35 +1436,43 @@ class FreezerLifecycle {
                 ];
             }
 
-            $result = strtoupper(trim((string)($r['result'] ?? 'PASS')));
             $groups[$date]['total']++;
             if ($isNew) {
                 $groups[$date]['new_store']++;
             } else {
                 $groups[$date]['same_store']++;
             }
-            if ($result === 'FAIL') {
+            if ($rowResult === 'FAIL') {
                 $groups[$date]['fail']++;
             } else {
                 $groups[$date]['pass']++;
             }
 
-            $groups[$date]['items'][] = [
-                'id' => (int)$r['id'],
-                'freezer_id' => (int)$r['freezer_id'],
-                'unique_freezer_id' => (string)($r['unique_freezer_id'] ?? ''),
-                'store_name' => (string)($r['store_name'] ?? ''),
-                'outlet_id' => (string)($r['outlet_id'] ?? ''),
-                'city' => (string)($r['city'] ?? ''),
-                'zone' => (string)($r['zone'] ?? ''),
-                'result' => $result,
-                'notes' => (string)($r['notes'] ?? ''),
-                'technician_name' => (string)($r['technician_name'] ?? ''),
-                'is_new_store' => $isNew,
-                'verified_at' => (string)($r['verified_at'] ?? ''),
-            ];
+            // Cap items per day so one busy day cannot explode the page.
+            if (count($groups[$date]['items']) < 100) {
+                $groups[$date]['items'][] = [
+                    'id' => (int)$r['id'],
+                    'freezer_id' => (int)$r['freezer_id'],
+                    'unique_freezer_id' => (string)($r['unique_freezer_id'] ?? ''),
+                    'store_name' => (string)($r['store_name'] ?? ''),
+                    'outlet_id' => (string)($r['outlet_id'] ?? ''),
+                    'city' => (string)($r['city'] ?? ''),
+                    'zone' => (string)($r['zone'] ?? ''),
+                    'result' => $rowResult,
+                    'notes' => (string)($r['notes'] ?? ''),
+                    'technician_name' => (string)($r['technician_name'] ?? ''),
+                    'is_new_store' => $isNew,
+                    'verified_at' => (string)($r['verified_at'] ?? ''),
+                ];
+            }
         }
 
-        return array_values($groups);
+        $out = array_values($groups);
+        // Attach truncation flag on first group for UI notice (non-breaking for callers).
+        if ($truncated && $out !== []) {
+            $out[0]['_truncated'] = true;
+            $out[0]['_max_rows'] = $maxRows;
+        }
+        return $out;
     }
 }

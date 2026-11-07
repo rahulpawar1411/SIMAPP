@@ -12,12 +12,16 @@ CREATE TABLE IF NOT EXISTS `users` (
     `password` VARCHAR(255) NOT NULL,
     `role` ENUM('super_admin','technician','viewer') NOT NULL DEFAULT 'super_admin',
     `phone` VARCHAR(30) NULL,
+    `zone` VARCHAR(20) NULL COMMENT 'Assigned zone — empty = all zones',
+    `city` VARCHAR(100) NULL COMMENT 'Assigned city — empty = all cities in zone',
     `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
     `last_login` DATETIME NULL,
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_users_role` (`role`),
-    INDEX `idx_users_status` (`status`)
+    INDEX `idx_users_status` (`status`),
+    INDEX `idx_users_zone` (`zone`),
+    INDEX `idx_users_city` (`city`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 2. Freezer Types Master Table
@@ -173,7 +177,7 @@ CREATE TABLE IF NOT EXISTS `kyc_verifications` (
     `store_id` INT NOT NULL,
     `cycle_year` SMALLINT NOT NULL,
     `cycle_half` TINYINT NOT NULL COMMENT '1=Jan-Jun, 2=Jul-Dec',
-    `verified_at` DATE NOT NULL,
+    `verified_at` DATETIME NOT NULL,
     `result` ENUM('PASS','FAIL','PENDING') DEFAULT 'PASS',
     `notes` TEXT NULL,
     `image_store_front` VARCHAR(255) NULL,

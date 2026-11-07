@@ -212,21 +212,29 @@ class AppLogger {
         if ($path === null) {
             return [];
         }
-        $raw = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        if ($raw === false || $raw === []) {
-            return [];
-        }
+        $limit = max(1, min(1000, $limit));
         $level = strtoupper(trim($level));
         $q = trim($q);
+
+        // Tail-read only — never load the whole log into memory.
+        $chunk = self::tailFileLines($path, max($limit * 8, 800));
+        if ($chunk === []) {
+            return [];
+        }
+
         $out = [];
-        for ($i = count($raw) - 1; $i >= 0; $i--) {
-            $decoded = json_decode((string)$raw[$i], true);
+        for ($i = count($chunk) - 1; $i >= 0; $i--) {
+            $line = trim((string)$chunk[$i]);
+            if ($line === '') {
+                continue;
+            }
+            $decoded = json_decode($line, true);
             if (!is_array($decoded)) {
                 $decoded = [
                     'ts' => '',
                     'level' => 'INFO',
                     'event' => 'raw',
-                    'message' => (string)$raw[$i],
+                    'message' => $line,
                 ];
             }
             if ($level !== '' && strtoupper((string)($decoded['level'] ?? '')) !== $level) {
@@ -244,5 +252,41 @@ class AppLogger {
             }
         }
         return $out;
+    }
+
+    /** Read last ~$maxLines from a text file without loading the entire file. */
+    private static function tailFileLines(string $path, int $maxLines = 800): array {
+        $maxLines = max(50, min(5000, $maxLines));
+        $size = @filesize($path);
+        if ($size === false || $size === 0) {
+            return [];
+        }
+
+        $fp = @fopen($path, 'rb');
+        if ($fp === false) {
+            return [];
+        }
+
+        $readBytes = (int)min($size, max(65536, $maxLines * 512));
+        if ($size > $readBytes) {
+            fseek($fp, -$readBytes, SEEK_END);
+            // Discard partial first line
+            fgets($fp);
+        } else {
+            rewind($fp);
+        }
+
+        $buf = stream_get_contents($fp);
+        fclose($fp);
+        if ($buf === false || $buf === '') {
+            return [];
+        }
+
+        $lines = preg_split("/\r\n|\n|\r/", $buf) ?: [];
+        $lines = array_values(array_filter($lines, static fn($l) => trim((string)$l) !== ''));
+        if (count($lines) > $maxLines) {
+            $lines = array_slice($lines, -$maxLines);
+        }
+        return $lines;
     }
 }

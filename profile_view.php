@@ -32,6 +32,11 @@ if (!$freezer) {
     die("<h1>Profile Not Found</h1><p>The requested freezer profile could not be found.</p><p><a href='profiles.php'>Back to Profiles</a></p>");
 }
 
+if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? null, $freezer['store_city'] ?? null)) {
+    http_response_code(403);
+    die("<h1>403 Forbidden</h1><p>This store is outside your assigned zone/city.</p><p><a href='profiles.php'>Back to Assets</a></p>");
+}
+
 // Generate QR Code if file doesn't exist
 $qrPath = $freezer['qr_code_path'];
 if (!$qrPath || !file_exists(__DIR__ . '/' . $qrPath)) {
@@ -160,14 +165,32 @@ if (!in_array($activeTab, ['overview', 'freezers', 'history'], true)) {
     $activeTab = 'overview';
 }
 
+$isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
 $pageTitle = 'Store Profile: ' . ($freezer['outlet_id'] ?? $freezer['store_name']);
+$bodyClass = $isTechnician ? 'field-app-page field-shell-page' : 'app-profile-page';
 require_once __DIR__ . '/includes/header.php';
+
+$homeHref = $isTechnician ? 'field_home.php' : ($isAdminUser ? 'index.php' : 'profiles.php');
+$galleryPhotos = [
+    ['path' => $freezer['image_store_front'] ?? '', 'label' => 'Store front'],
+    ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer left'],
+    ['path' => $freezer['image_right_side'] ?? '', 'label' => 'Freezer right'],
+    ['path' => $freezer['image_aadhar_card'] ?? '', 'label' => 'Aadhaar front'],
+    ['path' => $freezer['image_aadhar_back'] ?? '', 'label' => 'Aadhaar back'],
+    ['path' => $freezer['image_sim'] ?? '', 'label' => 'SIM photo'],
+];
+if (!empty($kycHistory[0]['image_store_front'])) {
+    $galleryPhotos[] = ['path' => $kycHistory[0]['image_store_front'], 'label' => 'Latest KYC store'];
+}
+if (!empty($kycHistory[0]['image_freezer'])) {
+    $galleryPhotos[] = ['path' => $kycHistory[0]['image_freezer'], 'label' => 'Latest KYC freezer'];
+}
 ?>
 
 <nav class="sp-breadcrumb" aria-label="Breadcrumb">
-    <a href="index.php">Home</a>
+    <a href="<?= htmlspecialchars($homeHref) ?>">Home</a>
     <span>/</span>
-    <a href="profiles.php">Store Profile</a>
+    <a href="profiles.php">Assets</a>
     <span>/</span>
     <strong><?= htmlspecialchars($freezer['outlet_id'] ?? '—') ?></strong>
 </nav>
@@ -176,9 +199,9 @@ require_once __DIR__ . '/includes/header.php';
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Edit</a>
-    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= $kycStatus['due'] ? 'btn-primary' : 'btn-outline' ?>" title="<?= $kycStatus['due'] ? 'KYC due' : 'KYC verify' ?>">
-        <span class="btn-label-full">KYC <?= $kycStatus['due'] ? '(due)' : 'verify' ?></span>
-        <span class="btn-label-short">KYC<?= $kycStatus['due'] ? '*' : '' ?></span>
+    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= !empty($kycStatus['due']) ? 'btn-primary' : 'btn-outline' ?>" title="<?= !empty($kycStatus['due']) ? 'KYC due' : 'KYC verify' ?>">
+        <span class="btn-label-full">KYC <?= !empty($kycStatus['due']) ? '(due)' : 'verify' ?></span>
+        <span class="btn-label-short">KYC<?= !empty($kycStatus['due']) ? '*' : '' ?></span>
     </a>
     <?php if (AuthService::hasRole('super_admin')): ?>
         <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm sp-actions-delete" title="Password required">
@@ -186,6 +209,13 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     <?php endif; ?>
 </div>
+
+<?php if ($isTechnician): ?>
+<div class="tech-sticky-bar no-print" aria-label="Technician actions">
+    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary"><?= !empty($kycStatus['due']) ? 'Do KYC now' : 'KYC verify' ?></a>
+    <a href="field_home.php" class="btn btn-secondary">Home</a>
+</div>
+<?php endif; ?>
 
 <?php if (!empty($_GET['created'])): ?>
     <div class="card" style="margin-bottom: 1.5rem; border: 1px solid #86efac; background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 55%);">
@@ -238,10 +268,30 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 <?php if (!empty($_GET['kyc'])): ?>
-    <div class="alert alert-success" style="margin-bottom:1rem;">
-        KYC verification saved for this cycle.
-        <?php if (!empty($_GET['new_outlet'])): ?>
-            New outlet created with Store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
+    <?php if (strtoupper((string)($_GET['kyc_result'] ?? '')) === 'FAIL'): ?>
+        <div class="alert alert-danger" style="margin-bottom:1rem;">
+            KYC saved as <strong>FAIL</strong> for this cycle. Admin can find this profile under Freezer Assets → Filter → KYC failed.
+        </div>
+    <?php else: ?>
+        <div class="alert alert-success" style="margin-bottom:1rem;">
+            KYC verification saved for this cycle.
+            <?php if (!empty($_GET['new_outlet'])): ?>
+                New outlet created with Store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
+            <?php endif; ?>
+        </div>
+    <?php endif; ?>
+<?php endif; ?>
+<?php
+$kycLastResult = strtoupper(trim((string)(($kycStatus['last_at_store']['result'] ?? $kycStatus['current']['result'] ?? ''))));
+if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
+?>
+    <div class="alert alert-danger" style="margin-bottom:1rem;">
+        Latest KYC result is <strong>FAIL</strong>
+        <?php if (!empty($kycStatus['last_at_store']['verified_at'] ?? $kycStatus['current']['verified_at'] ?? null)): ?>
+            on <?= htmlspecialchars((string)($kycStatus['last_at_store']['verified_at'] ?? $kycStatus['current']['verified_at'])) ?>.
+        <?php endif; ?>
+        <?php if (!empty($kycStatus['last_at_store']['notes'] ?? $kycStatus['current']['notes'] ?? null)): ?>
+            Note: <?= htmlspecialchars((string)($kycStatus['last_at_store']['notes'] ?? $kycStatus['current']['notes'])) ?>
         <?php endif; ?>
     </div>
 <?php endif; ?>
@@ -515,24 +565,14 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
-    <div class="card">
-        <div class="card-header"><div class="card-title"><span>Store photos</span></div></div>
+    <div class="card tech-gallery-card">
+        <div class="card-header"><div class="card-title"><span>Photo gallery</span></div></div>
         <div class="card-body">
-            <?php
-            $allPhotos = [
-                ['path' => $freezer['image_store_front'] ?? '', 'label' => 'Store front'],
-                ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer left'],
-                ['path' => $freezer['image_right_side'] ?? '', 'label' => 'Freezer right'],
-                ['path' => $freezer['image_aadhar_card'] ?? '', 'label' => 'Aadhaar front'],
-                ['path' => $freezer['image_aadhar_back'] ?? '', 'label' => 'Aadhaar back'],
-                ['path' => $freezer['image_sim'] ?? '', 'label' => 'SIM photo'],
-            ];
-            ?>
-            <div class="sp-photo-row sp-photo-row-all">
-                <?php foreach ($allPhotos as $ph):
+            <div class="sp-photo-row sp-photo-row-all tech-photo-gallery">
+                <?php foreach ($galleryPhotos as $ph):
                     $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
                 ?>
-                    <div class="sp-photo-tile">
+                    <div class="sp-photo-tile <?= $ok ? 'has-photo' : '' ?>">
                         <?php if ($ok): ?>
                             <img src="<?= htmlspecialchars($ph['path']) ?>" alt="<?= htmlspecialchars($ph['label']) ?>" class="lightbox-trigger" loading="lazy" decoding="async" data-caption="<?= htmlspecialchars($ph['label']) ?>">
                             <div class="sp-photo-caption"><?= htmlspecialchars($ph['label']) ?></div>
@@ -542,6 +582,48 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 <?php endforeach; ?>
             </div>
+        </div>
+    </div>
+
+    <div class="card tech-kyc-timeline-card">
+        <div class="card-header">
+            <div class="card-title"><span>KYC timeline</span></div>
+            <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="adash-link">Verify</a>
+        </div>
+        <div class="card-body">
+            <?php if (empty($kycHistory)): ?>
+                <p class="mapp-empty" style="margin:0;">No KYC recorded yet for this freezer.</p>
+            <?php else: ?>
+                <ul class="tech-kyc-timeline">
+                    <?php foreach (array_slice($kycHistory, 0, 8) as $kh): ?>
+                        <?php
+                        $res = strtoupper(trim((string)($kh['result'] ?? 'PASS')));
+                        $kind = $res === 'FAIL' ? 'issue' : 'success';
+                        ?>
+                        <li class="tech-kyc-item tech-kyc-<?= $kind ?>">
+                            <span class="mapp-dot mapp-dot-<?= $kind ?>"></span>
+                            <div class="tech-kyc-body">
+                                <div class="tech-kyc-top">
+                                    <strong><?= htmlspecialchars($res) ?></strong>
+                                    <span class="mapp-pill mapp-pill-<?= $kind ?>"><?= $res === 'FAIL' ? 'Issue' : 'Success' ?></span>
+                                </div>
+                                <div class="tech-kyc-meta">
+                                    <?= htmlspecialchars((string)($kh['verified_at'] ?? '')) ?>
+                                    <?php if (!empty($kh['verified_by_name'])): ?>
+                                        · <?= htmlspecialchars((string)$kh['verified_by_name']) ?>
+                                    <?php endif; ?>
+                                    <?php if (!empty($kh['store_name'])): ?>
+                                        · <?= htmlspecialchars((string)$kh['store_name']) ?>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if (!empty($kh['notes'])): ?>
+                                    <div class="tech-kyc-notes"><?= htmlspecialchars((string)$kh['notes']) ?></div>
+                                <?php endif; ?>
+                            </div>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
         </div>
     </div>
         </div>

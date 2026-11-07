@@ -20,28 +20,93 @@ class User {
         } catch (\Throwable $e) {
             // column already updated or DB unavailable
         }
+        self::ensureAreaColumns();
+    }
+
+    /** Ensure users.zone / users.city for area-scoped field users. */
+    public static function ensureAreaColumns(): void {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $pdo = Database::getConnection();
+            $cols = $pdo->query('SHOW COLUMNS FROM `users`')->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            if (!in_array('zone', $cols, true)) {
+                $pdo->exec("ALTER TABLE `users` ADD COLUMN `zone` VARCHAR(20) NULL AFTER `phone`");
+            }
+            if (!in_array('city', $cols, true)) {
+                $pdo->exec("ALTER TABLE `users` ADD COLUMN `city` VARCHAR(100) NULL AFTER `zone`");
+            }
+        } catch (\Throwable $e) {
+            // columns already present or DB unavailable
+        }
+    }
+
+    /** Normalize assigned zone/city. Empty = no restriction. */
+    public static function normalizeArea(?string $zone, ?string $city): array {
+        $zone = strtoupper(trim((string)$zone));
+        $city = trim((string)$city);
+        if ($zone === '' || $zone === 'ALL' || !in_array($zone, AppConfig::zones(), true)) {
+            $zone = '';
+        }
+        if ($city === '' || strcasecmp($city, 'All') === 0) {
+            $city = '';
+        }
+        return ['zone' => $zone, 'city' => $city];
+    }
+
+    private static function selectCols(): string {
+        return '`id`, `name`, `email`, `role`, `phone`, `zone`, `city`, `status`, `last_login`, `created_at`';
     }
 
     public static function all(): array {
         self::ensureRoleColumn();
         $pdo = Database::getConnection();
-        $stmt = $pdo->query("SELECT `id`, `name`, `email`, `role`, `phone`, `status`, `last_login`, `created_at`
-            FROM `users` ORDER BY `id` ASC");
+        $stmt = $pdo->query('SELECT ' . self::selectCols() . ' FROM `users` ORDER BY `id` ASC');
         return $stmt->fetchAll();
     }
 
-    public static function findByEmail(string $email): ?array {
+    public static function countAll(): int {
+        self::ensureRoleColumn();
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("SELECT * FROM `users` WHERE `email` = :email LIMIT 1");
+        return (int)$pdo->query('SELECT COUNT(*) FROM `users`')->fetchColumn();
+    }
+
+    /** @return list<array> */
+    public static function listPaged(int $limit = 20, int $offset = 0): array {
+        self::ensureRoleColumn();
+        $pdo = Database::getConnection();
+        $limit = max(1, min(100, $limit));
+        $offset = max(0, $offset);
+        $stmt = $pdo->prepare(
+            'SELECT ' . self::selectCols() . '
+             FROM `users`
+             ORDER BY `id` ASC
+             LIMIT :lim OFFSET :off'
+        );
+        $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
+        $stmt->bindValue(':off', $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll() ?: [];
+    }
+
+    public static function findByEmail(string $email): ?array {
+        self::ensureAreaColumns();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare('SELECT * FROM `users` WHERE `email` = :email LIMIT 1');
         $stmt->execute(['email' => trim($email)]);
         $row = $stmt->fetch();
         return $row ?: null;
     }
 
     public static function findById(int $id): ?array {
+        self::ensureRoleColumn();
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("SELECT `id`, `name`, `email`, `role`, `phone`, `status`, `last_login`, `created_at`
-            FROM `users` WHERE `id` = :id LIMIT 1");
+        $stmt = $pdo->prepare(
+            'SELECT ' . self::selectCols() . ' FROM `users` WHERE `id` = :id LIMIT 1'
+        );
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch();
         return $row ?: null;
@@ -63,6 +128,11 @@ class User {
         $role = trim((string)($data['role'] ?? $existing['role'] ?? AppConfig::ROLE_SUPER_ADMIN));
         $status = trim($data['status'] ?? $existing['status']);
         $allowedRoles = AppConfig::allowedRoles();
+        // Zone/city only for Technician at create/edit — Viewer & Super Admin always All areas
+        $area = ['zone' => '', 'city' => ''];
+        if ($role === AppConfig::ROLE_TECHNICIAN) {
+            $area = self::normalizeArea($data['zone'] ?? null, $data['city'] ?? null);
+        }
 
         if ($name === '' || $email === '') {
             return ['success' => false, 'error' => 'Name and email are required.'];
@@ -101,10 +171,10 @@ class User {
 
         $pdo = Database::getConnection();
         if ($password !== '') {
-            $stmt = $pdo->prepare("UPDATE `users` SET
+            $stmt = $pdo->prepare('UPDATE `users` SET
                 `name` = :name, `email` = :email, `password` = :password,
-                `role` = :role, `phone` = :phone, `status` = :status
-                WHERE `id` = :id");
+                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city, `status` = :status
+                WHERE `id` = :id');
             $ok = $stmt->execute([
                 'id' => $id,
                 'name' => $name,
@@ -112,19 +182,23 @@ class User {
                 'password' => password_hash($password, PASSWORD_DEFAULT),
                 'role' => $role,
                 'phone' => $phone,
+                'zone' => $area['zone'] !== '' ? $area['zone'] : null,
+                'city' => $area['city'] !== '' ? $area['city'] : null,
                 'status' => $status,
             ]);
         } else {
-            $stmt = $pdo->prepare("UPDATE `users` SET
+            $stmt = $pdo->prepare('UPDATE `users` SET
                 `name` = :name, `email` = :email,
-                `role` = :role, `phone` = :phone, `status` = :status
-                WHERE `id` = :id");
+                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city, `status` = :status
+                WHERE `id` = :id');
             $ok = $stmt->execute([
                 'id' => $id,
                 'name' => $name,
                 'email' => $email,
                 'role' => $role,
                 'phone' => $phone,
+                'zone' => $area['zone'] !== '' ? $area['zone'] : null,
+                'city' => $area['city'] !== '' ? $area['city'] : null,
                 'status' => $status,
             ]);
         }
@@ -176,6 +250,11 @@ class User {
         $role = trim((string)($data['role'] ?? AppConfig::ROLE_SUPER_ADMIN));
         $status = trim($data['status'] ?? 'active');
         $allowedRoles = AppConfig::allowedRoles();
+        // Zone/city only for Technician — Viewer & Super Admin always All areas
+        $area = ['zone' => '', 'city' => ''];
+        if ($role === AppConfig::ROLE_TECHNICIAN) {
+            $area = self::normalizeArea($data['zone'] ?? null, $data['city'] ?? null);
+        }
 
         if ($name === '' || $email === '' || $password === '') {
             return ['success' => false, 'error' => 'Name, email and password are required.'];
@@ -213,14 +292,18 @@ class User {
         }
 
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `status`)
-            VALUES (:name, :email, :password, :role, :phone, :status)");
+        $stmt = $pdo->prepare(
+            'INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `zone`, `city`, `status`)
+            VALUES (:name, :email, :password, :role, :phone, :zone, :city, :status)'
+        );
         $stmt->execute([
             'name' => $name,
             'email' => $email,
             'password' => password_hash($password, PASSWORD_DEFAULT),
             'role' => $role,
             'phone' => $phone,
+            'zone' => $area['zone'] !== '' ? $area['zone'] : null,
+            'city' => $area['city'] !== '' ? $area['city'] : null,
             'status' => $status,
         ]);
 
@@ -235,7 +318,7 @@ class User {
             return false;
         }
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("UPDATE `users` SET `status` = :status WHERE `id` = :id");
+        $stmt = $pdo->prepare('UPDATE `users` SET `status` = :status WHERE `id` = :id');
         return $stmt->execute(['status' => $status, 'id' => $id]);
     }
 }

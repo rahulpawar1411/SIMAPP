@@ -4,6 +4,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Services\FileUploadService;
 use App\Services\KycScanGate;
+use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\AssetTag;
 use App\Models\FreezerLifecycle;
@@ -11,11 +12,18 @@ use App\Models\MasterData;
 
 AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
+$areaScope = AuthService::areaScope();
+$lockZone = $areaScope['zone'] !== '';
+$lockCity = $areaScope['city'] !== '';
 
 $id = (int)($_GET['id'] ?? $_POST['freezer_id'] ?? 0);
 $freezer = $id ? Freezer::findById($id) : null;
 if (!$freezer) {
     die('<h1>Freezer not found</h1><p><a href="profiles.php">Back</a></p>');
+}
+if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? null, $freezer['store_city'] ?? null)) {
+    http_response_code(403);
+    die('<h1>403 Forbidden</h1><p>This store is outside your assigned zone/city.</p><p><a href="profiles.php">Back</a></p>');
 }
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
@@ -90,10 +98,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $locationMode = $_POST['location_mode'] ?? 'same';
             $result = strtoupper(trim($_POST['result'] ?? 'PASS'));
-            $verifiedAt = trim($_POST['verified_at'] ?? '') ?: date('Y-m-d');
+            // Always stamp submit time — no manual verification date on the form.
+            $verifiedAt = date('Y-m-d H:i:s');
+            $verifiedDay = date('Y-m-d');
 
             if (!in_array($result, ['PASS', 'FAIL'], true)) {
                 throw new Exception('Select PASS or FAIL.');
+            }
+
+            $notesText = trim((string)($_POST['notes'] ?? ''));
+            if ($result === 'FAIL' && $notesText === '') {
+                throw new Exception('FAIL requires a note — explain why (not found, wrong store, damaged, access denied, etc.).');
+            }
+            if ($result === 'FAIL' && $locationMode === 'new') {
+                throw new Exception('FAIL cannot create a new store. Keep “Same store” and record why verification failed.');
             }
 
             $kycTag = AssetTag::findByFreezerId((int)$freezer['id']);
@@ -138,7 +156,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception('PASS requires both New store front photo and Freezer photo.');
                 }
 
-                $created = FreezerLifecycle::createNewOutlet([
+                $newOutlet = AuthService::applyAreaToStoreData([
                     'store_name' => trim((string)$_POST['store_name']),
                     'address' => trim((string)($_POST['address'] ?? '')),
                     'city' => trim((string)($_POST['city'] ?? '')),
@@ -155,15 +173,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'gps_captured_at' => $_POST['gps_captured_at'] ?? null,
                     'location_link' => $_POST['location_link'] ?? null,
                     'image_store_front' => $imgNewStore,
-                ], (int)$currentUser['id']);
+                ]);
+                if (!AuthService::canAccessArea($newOutlet['zone'] ?? null, $newOutlet['city'] ?? null)) {
+                    throw new Exception('New outlet zone/city is outside your assigned area.');
+                }
+                $created = FreezerLifecycle::createNewOutlet($newOutlet, (int)$currentUser['id']);
 
                 FreezerLifecycle::transfer(
                     (int)$freezer['id'],
                     (int)$created['store_id'],
                     'KYC — moved to new outlet (auto ID ' . $created['outlet_id'] . ')',
-                    trim($_POST['notes'] ?? '') ?: null,
+                    $notesText !== '' ? $notesText : null,
                     (int)$currentUser['id'],
-                    $verifiedAt
+                    $verifiedDay
                 );
 
                 FreezerLifecycle::recordKyc([
@@ -172,7 +194,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'cycle_year' => (int)($_POST['cycle_year'] ?? $cycle['year']),
                     'cycle_half' => (int)($_POST['cycle_half'] ?? $cycle['half']),
                     'result' => $result,
-                    'notes' => trim($_POST['notes'] ?? '') ?: null,
+                    'notes' => $notesText !== '' ? $notesText : null,
                     'image_store_front' => $imgNewStore,
                     'image_freezer' => $imgFrz,
                     'latitude' => $_POST['latitude'] ?? null,
@@ -188,8 +210,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'store_id' => $created['store_id'] ?? null,
                 ]);
                 header(
-                    'Location: profile_view.php?id=' . urlencode($freezer['unique_freezer_id'])
-                    . '&kyc=1&new_outlet=' . urlencode((string)($created['outlet_id'] ?? ''))
+                    'Location: kyc_done.php?id=' . urlencode($freezer['unique_freezer_id'])
+                    . '&result=' . urlencode($result)
+                    . '&new_outlet=' . urlencode((string)($created['outlet_id'] ?? ''))
                 );
                 exit;
             }
@@ -223,7 +246,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'cycle_year' => (int)($_POST['cycle_year'] ?? $cycle['year']),
                 'cycle_half' => (int)($_POST['cycle_half'] ?? $cycle['half']),
                 'result' => $result,
-                'notes' => trim($_POST['notes'] ?? '') ?: null,
+                'notes' => $notesText !== '' ? $notesText : null,
                 'image_store_front' => $imgStore,
                 'image_freezer' => $imgFrz,
                 'latitude' => $_POST['latitude'] ?? null,
@@ -237,7 +260,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
                 'result' => $result,
             ]);
-            header('Location: profile_view.php?id=' . urlencode($freezer['unique_freezer_id']) . '&kyc=1');
+            header(
+                'Location: kyc_done.php?id=' . urlencode($freezer['unique_freezer_id'])
+                . '&result=' . urlencode($result)
+            );
             exit;
         } catch (Throwable $e) {
             $error = $e->getMessage();
@@ -307,36 +333,47 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     <input type="hidden" name="gps_captured_at" id="gps_captured_at" value="<?= htmlspecialchars($_POST['gps_captured_at'] ?? '') ?>">
                     <input type="hidden" name="location_link" id="location_link" value="<?= htmlspecialchars($_POST['location_link'] ?? '') ?>">
 
-                    <div class="alert alert-info" style="font-size:0.82rem; margin-bottom:1rem;">
-                        KYC is saved on the profile immediately for both <strong>same store</strong> and <strong>new store location</strong>.
-                        A new store creates a Store ID and updates the freezer profile on submit.
-                    </div>
                     <fieldset class="form-subsection kyc-options-top">
                         <legend>Verification options</legend>
                         <div class="form-grid" style="margin-bottom:0;">
-                            <div class="col-6 form-group">
+                            <div class="col-12 form-group">
                                 <label class="form-label required" for="result">Result</label>
-                                <select name="result" id="result" class="form-select" required onchange="togglePhotoReq()">
+                                <select name="result" id="result" class="form-select" required onchange="togglePhotoReq(); updateResultRule();">
                                     <option value="PASS" <?= $resultVal === 'PASS' ? 'selected' : '' ?>>PASS — unit found &amp; verified</option>
                                     <option value="FAIL" <?= $resultVal === 'FAIL' ? 'selected' : '' ?>>FAIL — not found / mismatch</option>
                                 </select>
-                            </div>
-                            <div class="col-6 form-group">
-                                <label class="form-label required" for="verified_at">Verification date</label>
-                                <input type="date" name="verified_at" id="verified_at" class="form-control"
-                                       value="<?= htmlspecialchars($_POST['verified_at'] ?? date('Y-m-d')) ?>" required>
+                                <div id="result-mode-rule" class="kyc-loc-rule" role="note">
+                                    <?php if (strtoupper((string)$resultVal) === 'FAIL'): ?>
+                                        <strong>If FAIL — technician must:</strong>
+                                        1) Keep location as Same store.
+                                        2) Write a clear note (why failed).
+                                        3) Photos optional.
+                                        4) Submit — KYC is saved as FAIL on the profile (no new store).
+                                    <?php else: ?>
+                                        <strong>If PASS — technician must:</strong>
+                                        1) Choose same store or new store.
+                                        2) Take store front + freezer photos.
+                                        3) Submit — KYC is saved on the profile immediately.
+                                    <?php endif; ?>
+                                </div>
+                                <p class="form-hint" style="margin-top:0.5rem;">Verification date &amp; time is saved automatically on submit.</p>
                             </div>
                             <div class="col-12 form-group" style="margin-bottom:0;">
-                                <label class="form-label required">Where is the freezer today?</label>
-                                <div class="kyc-loc-options">
-                                    <label class="kyc-loc-option">
-                                        <input type="radio" name="location_mode" value="same" <?= $locMode !== 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
-                                        <span><strong>Same store</strong> — still at <?= htmlspecialchars($freezer['outlet_id'] ?? '') ?></span>
-                                    </label>
-                                    <label class="kyc-loc-option">
-                                        <input type="radio" name="location_mode" value="new" <?= $locMode === 'new' ? 'checked' : '' ?> onchange="toggleLoc()">
-                                        <span><strong>Moved to new outlet</strong> — create store + auto Store ID</span>
-                                    </label>
+                                <label class="form-label required" for="location_mode">Where is the freezer today?</label>
+                                <select name="location_mode" id="location_mode" class="form-select" required onchange="toggleLoc()">
+                                    <option value="same" <?= $locMode !== 'new' ? 'selected' : '' ?>>
+                                        Same store — still at <?= htmlspecialchars($freezer['outlet_id'] ?? 'current outlet') ?>
+                                    </option>
+                                    <option value="new" <?= $locMode === 'new' ? 'selected' : '' ?>>
+                                        New store location — create store + auto Store ID
+                                    </option>
+                                </select>
+                                <div id="location-mode-rule" class="kyc-loc-rule" role="note">
+                                    <?php if ($locMode === 'new'): ?>
+                                        <strong>Rule:</strong> KYC is saved on the profile immediately. A new Store ID is created and the freezer profile updates on submit. Unique Freezer ID stays the same.
+                                    <?php else: ?>
+                                        <strong>Rule:</strong> KYC is saved on the profile immediately for the same store. No new Store ID is created.
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </div>
@@ -383,11 +420,6 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     </div>
 
                     <div id="loc-new" style="<?= $locMode === 'new' ? '' : 'display:none; margin-top:1.15rem;' ?>">
-                        <div class="alert alert-info" style="font-size:0.8rem; margin-bottom:0.85rem;">
-                            On submit, a new Store ID is created and this freezer moves to the new store immediately.
-                            The Unique Freezer ID stays the same.
-                        </div>
-
                         <div class="loc-save-panel gps-capture-widget" role="region" aria-label="New store location" style="margin-bottom:1rem;">
                             <div class="loc-save-panel-main">
                                 <div class="loc-save-panel-icon" aria-hidden="true">
@@ -473,16 +505,24 @@ $resultVal = $_POST['result'] ?? 'PASS';
                             </div>
                             <div class="col-4 form-group">
                                 <label class="form-label" for="zone">Zone</label>
-                                <select name="zone" id="zone" class="form-select">
-                                    <?php foreach (['WEST','EAST','NORTH','SOUTH','CENTRAL'] as $z): ?>
-                                        <option value="<?= $z ?>" <?= (($_POST['zone'] ?? 'WEST') === $z) ? 'selected' : '' ?>><?= $z ?></option>
+                                <?php
+                                $kycZoneVal = $lockZone ? $areaScope['zone'] : ($_POST['zone'] ?? 'WEST');
+                                $kycZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
+                                ?>
+                                <select name="zone" id="zone" class="form-select" <?= $lockZone ? 'disabled' : '' ?>>
+                                    <?php foreach ($kycZones as $z): ?>
+                                        <option value="<?= htmlspecialchars($z) ?>" <?= $kycZoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
                                     <?php endforeach; ?>
                                 </select>
+                                <?php if ($lockZone): ?>
+                                    <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
+                                <?php endif; ?>
                             </div>
                             <div class="col-4 form-group">
                                 <label class="form-label required" for="city">City</label>
-                                <input type="text" name="city" id="city" class="form-control" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" placeholder="Select zone, then type city…" autocomplete="off">
-                                <datalist id="city-list"></datalist>
+                                <?php $kycCityVal = $lockCity ? $areaScope['city'] : ($_POST['city'] ?? ''); ?>
+                                <input type="text" name="city" id="city" class="form-control" value="<?= htmlspecialchars($kycCityVal) ?>" placeholder="Select zone, then type city…" autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
+                                <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
                             </div>
                             <div class="col-4 form-group">
                                 <label class="form-label" for="state">State</label>
@@ -509,7 +549,7 @@ $resultVal = $_POST['result'] ?? 'PASS';
 
                     <div style="margin-top:1.25rem; margin-bottom:0.5rem;">
                         <label class="form-label required" style="margin-bottom:0;">Photo evidence</label>
-                        <p style="font-size:0.8rem; color:#64748b; margin:0.25rem 0 0.75rem;">Required for <strong>PASS</strong>. Use phone camera on site.</p>
+                        <p id="kyc-photo-hint" style="font-size:0.8rem; color:#64748b; margin:0.25rem 0 0.75rem;">Required for <strong>PASS</strong>. Use phone camera on site.</p>
                     </div>
                     <div class="form-grid">
                         <div class="col-6 form-group" id="kyc-same-store-photo-wrap">
@@ -546,20 +586,90 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     </div>
 
                     <div class="form-group" style="margin-top:1rem;">
-                        <label class="form-label" for="notes">Notes / remarks</label>
-                        <textarea name="notes" id="notes" class="form-control" rows="2" placeholder="Condition, access issues, operator remarks…"><?= htmlspecialchars($_POST['notes'] ?? '') ?></textarea>
+                        <label class="form-label" for="notes" id="notes-label">Notes / remarks</label>
+                        <textarea name="notes" id="notes" class="form-control" rows="2"
+                                  placeholder="Condition, access issues, operator remarks…"
+                                  <?= strtoupper((string)$resultVal) === 'FAIL' ? 'required' : '' ?>><?= htmlspecialchars($_POST['notes'] ?? '') ?></textarea>
+                        <p id="notes-hint" class="form-hint" style="margin:0.35rem 0 0; font-size:0.78rem; color:#64748b;">
+                            <?= strtoupper((string)$resultVal) === 'FAIL'
+                                ? 'Required for FAIL — e.g. freezer not found, wrong outlet, access denied, unit damaged.'
+                                : 'Optional for PASS — site remarks, condition, access notes.' ?>
+                        </p>
                     </div>
 
                     <p id="kyc-gps-status" style="font-size:0.8rem; color:#64748b; margin-bottom:0.85rem;">Capturing GPS…</p>
-                    <button type="submit" class="btn btn-primary">
-                        Save KYC for <?= htmlspecialchars($cycle['label'] ?? '') ?>
-                    </button>
+                    <div class="mapp-sticky-actions">
+                        <button type="submit" class="btn btn-primary mapp-btn">
+                            Submit KYC
+                        </button>
+                    </div>
                 </form>
 
                 <script>
+                function getLocationMode() {
+                    var sel = document.getElementById('location_mode');
+                    return sel ? sel.value : 'same';
+                }
+                function getResultMode() {
+                    var sel = document.getElementById('result');
+                    return sel ? sel.value : 'PASS';
+                }
+                function updateLocationRule() {
+                    var rule = document.getElementById('location-mode-rule');
+                    if (!rule) return;
+                    if (getLocationMode() === 'new') {
+                        rule.innerHTML = '<strong>Rule:</strong> KYC is saved on the profile immediately. A new Store ID is created and the freezer profile updates on submit. Unique Freezer ID stays the same.';
+                    } else {
+                        rule.innerHTML = '<strong>Rule:</strong> KYC is saved on the profile immediately for the same store. No new Store ID is created.';
+                    }
+                }
+                function updateResultRule() {
+                    var rule = document.getElementById('result-mode-rule');
+                    var isFail = getResultMode() === 'FAIL';
+                    if (rule) {
+                        rule.innerHTML = isFail
+                            ? '<strong>If FAIL — technician must:</strong> 1) Keep location as Same store. 2) Write a clear note (why failed). 3) Photos optional. 4) Submit — KYC is saved as FAIL on the profile (no new store).'
+                            : '<strong>If PASS — technician must:</strong> 1) Choose same store or new store. 2) Take store front + freezer photos. 3) Submit — KYC is saved on the profile immediately.';
+                    }
+                    var photoHint = document.getElementById('kyc-photo-hint');
+                    if (photoHint) {
+                        photoHint.innerHTML = isFail
+                            ? 'Optional for <strong>FAIL</strong>. Add photos if available.'
+                            : 'Required for <strong>PASS</strong>. Use phone camera on site.';
+                    }
+                    var notes = document.getElementById('notes');
+                    var notesLabel = document.getElementById('notes-label');
+                    var notesHint = document.getElementById('notes-hint');
+                    if (notes) {
+                        notes.required = isFail;
+                        notes.placeholder = isFail
+                            ? 'Required: why FAIL? (not found / wrong outlet / access denied / damaged…)'
+                            : 'Condition, access issues, operator remarks…';
+                    }
+                    if (notesLabel) {
+                        notesLabel.textContent = isFail ? 'Notes / remarks (required for FAIL)' : 'Notes / remarks';
+                        notesLabel.classList.toggle('required', isFail);
+                    }
+                    if (notesHint) {
+                        notesHint.textContent = isFail
+                            ? 'Required for FAIL — e.g. freezer not found, wrong outlet, access denied, unit damaged.'
+                            : 'Optional for PASS — site remarks, condition, access notes.';
+                    }
+                    // FAIL cannot move to a new store
+                    var locSel = document.getElementById('location_mode');
+                    if (locSel) {
+                        var newOpt = locSel.querySelector('option[value="new"]');
+                        if (newOpt) newOpt.disabled = isFail;
+                        if (isFail && locSel.value === 'new') {
+                            locSel.value = 'same';
+                            toggleLoc();
+                            return;
+                        }
+                    }
+                }
                 function toggleLoc() {
-                    const m = document.querySelector('input[name="location_mode"]:checked').value;
-                    const isNew = m === 'new';
+                    const isNew = getLocationMode() === 'new';
+                    updateLocationRule();
                     const locNew = document.getElementById('loc-new');
                     locNew.style.display = isNew ? '' : 'none';
                     if (!isNew) locNew.style.marginTop = '1.15rem';
@@ -583,8 +693,8 @@ $resultVal = $_POST['result'] ?? 'PASS';
                     togglePhotoReq();
                 }
                 function togglePhotoReq() {
-                    const pass = document.getElementById('result').value === 'PASS';
-                    const isNew = document.querySelector('input[name="location_mode"]:checked').value === 'new';
+                    const pass = getResultMode() === 'PASS';
+                    const isNew = getLocationMode() === 'new';
                     const sameInput = document.getElementById('image_store_front');
                     const newInput = document.getElementById('image_new_store_front');
                     const frz = document.getElementById('image_freezer');
@@ -594,6 +704,7 @@ $resultVal = $_POST['result'] ?? 'PASS';
                 }
                 toggleLoc();
                 togglePhotoReq();
+                updateResultRule();
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition(function (pos) {
                         const latEl = document.getElementById('latitude');
