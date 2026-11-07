@@ -4,13 +4,55 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\FreezerLifecycle;
+use App\Models\AppNotification;
 
 // Admin only — menu + page
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 $currentUser = AuthService::currentUser();
+$csrfToken = AuthService::generateCsrfToken();
 
 $flash = null;
 $error = null;
+
+// Approve / reject technician edit (and leftover KYC move) requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['notif_action'])) {
+    if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        $error = 'Invalid security token. Please try again.';
+    } else {
+        $notifId = (int)($_POST['notif_id'] ?? 0);
+        $action = strtolower(trim((string)($_POST['notif_action'] ?? '')));
+        $notes = trim((string)($_POST['review_notes'] ?? ''));
+        $adminId = (int)($currentUser['id'] ?? 0);
+        try {
+            if ($action === 'approve') {
+                $result = AppNotification::approve($notifId, $adminId, $notes !== '' ? $notes : null);
+                if (($result['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT) {
+                    $flash = 'Edit access approved. Technician can now edit this profile (one save / 24 hours).';
+                } elseif (!empty($result['outlet_id'])) {
+                    $flash = 'Approved. New Store ID ' . $result['outlet_id'] . ' linked to freezer profile.';
+                } else {
+                    $flash = 'Request approved.';
+                }
+            } elseif ($action === 'reject') {
+                AppNotification::reject($notifId, $adminId, $notes !== '' ? $notes : null);
+                $flash = 'Request rejected.';
+            } else {
+                $error = 'Unknown action.';
+            }
+        } catch (Throwable $e) {
+            $error = $e->getMessage();
+        }
+    }
+}
+
+$pendingApprovals = [];
+$pendingCount = 0;
+try {
+    $pendingCount = AppNotification::countPendingApprovals();
+    $pendingApprovals = AppNotification::listPendingApprovals(50);
+} catch (Throwable $e) {
+    $pendingApprovals = [];
+}
 
 $today = date('Y-m-d');
 $fromDate = trim((string)($_GET['from'] ?? ''));
@@ -95,18 +137,194 @@ foreach ($history as $day) {
     }
 }
 
-$pageTitle = 'Activity';
+$pageTitle = 'Notifications';
 require_once __DIR__ . '/includes/header.php';
+
+$diffFields = [
+    'store_name' => 'Store name',
+    'customer_name' => 'Customer',
+    'distributor_name' => 'Distributor',
+    'contact_person' => 'Contact',
+    'phone_number' => 'Phone',
+    'email' => 'Email',
+    'aadhar_number' => 'Aadhaar',
+    'fssai_number' => 'FSSAI',
+    'gst_number' => 'GST',
+    'address' => 'Address',
+    'city' => 'City',
+    'state' => 'State',
+    'pincode' => 'Pincode',
+    'zone' => 'Zone',
+    'location_type' => 'Location type',
+    'latitude' => 'Latitude',
+    'longitude' => 'Longitude',
+    'freezer_type' => 'Freezer type',
+    'company_code' => 'Brand',
+    'model_number' => 'Model',
+    'capacity_litres' => 'Capacity',
+    'freezer_condition' => 'Condition',
+    'location_code' => 'Location code',
+    'installation_date' => 'Install date',
+    'sim_number' => 'SIM number',
+    'sim_company' => 'SIM company',
+    'status' => 'Status',
+    'notes' => 'Notes',
+];
+$imageFields = [
+    'image_store_front' => 'Store front',
+    'image_aadhar_card' => 'Aadhaar front',
+    'image_aadhar_back' => 'Aadhaar back',
+    'image_left_side' => 'Left side',
+    'image_right_side' => 'Right side',
+    'image_sim' => 'SIM photo',
+    'image_iot_device' => 'IoT photo',
+];
+$fmtVal = static function ($v): string {
+    if ($v === null || $v === '') {
+        return '—';
+    }
+    if (is_bool($v)) {
+        return $v ? 'Yes' : 'No';
+    }
+    return (string)$v;
+};
 ?>
 
 <div class="users-page notif-page">
     <div class="cfg-toolbar">
         <div class="cfg-toolbar-left">
-            <h1 class="cfg-toolbar-title">Activity</h1>
+            <h1 class="cfg-toolbar-title">Notifications</h1>
+            <?php if ($pendingCount > 0): ?>
+                <span class="badge badge-warning"><?= number_format($pendingCount) ?> pending approval</span>
+            <?php endif; ?>
             <span class="badge badge-success"><?= number_format($grandTotal) ?> KYC in range</span>
             <?php if ($historyTruncated): ?>
                 <span class="badge badge-warning" title="Latest 500 matching records shown">Showing latest 500</span>
             <?php endif; ?>
+        </div>
+    </div>
+
+    <?php if ($flash): ?>
+        <div class="alert alert-success" style="margin-bottom:1rem;"><?= htmlspecialchars($flash) ?></div>
+    <?php endif; ?>
+    <?php if ($error): ?>
+        <div class="alert alert-danger" style="margin-bottom:1rem;"><?= htmlspecialchars($error) ?></div>
+    <?php endif; ?>
+
+    <section class="card notif-card" style="margin-bottom:1.25rem;">
+        <div class="card-header">
+            <div class="card-title">Pending approvals</div>
+            <span class="badge <?= $pendingCount > 0 ? 'badge-warning' : 'badge-secondary' ?>">
+                <?= number_format($pendingCount) ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <?php if (empty($pendingApprovals)): ?>
+                <p style="margin:0;color:#64748b;">No technician edit requests waiting for Super Admin.</p>
+            <?php else: ?>
+                <?php foreach ($pendingApprovals as $n):
+                    $payload = AppNotification::decodePayload($n);
+                    $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
+                    $editRemark = trim((string)($payload['remark'] ?? ''));
+                    $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
+                    $beforeStore = is_array($payload['before']['store'] ?? null) ? $payload['before']['store'] : [];
+                    $beforeFreezer = is_array($payload['before']['freezer'] ?? null) ? $payload['before']['freezer'] : [];
+                    $afterStore = is_array($payload['store'] ?? null) ? $payload['store'] : [];
+                    $afterFreezer = is_array($payload['freezer'] ?? null) ? $payload['freezer'] : [];
+                    $beforeAll = array_merge($beforeStore, $beforeFreezer);
+                    $afterAll = array_merge($afterStore, $afterFreezer);
+                    ?>
+                    <article class="notif-card" style="border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem;">
+                        <div class="notif-card-head">
+                            <div>
+                                <strong><?= htmlspecialchars((string)($n['title'] ?? 'Request')) ?></strong>
+                                <div class="notif-card-meta">
+                                    <span class="badge badge-primary"><?= $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move') ?></span>
+                                    <span><?= htmlspecialchars((string)($n['unique_freezer_id'] ?? '')) ?></span>
+                                    <span>·</span>
+                                    <span>By <?= htmlspecialchars((string)($n['created_by_name'] ?? 'Technician')) ?></span>
+                                    <span>·</span>
+                                    <span><?= htmlspecialchars((string)($n['created_at'] ?? '')) ?></span>
+                                </div>
+                                <?php if (!empty($n['message'])): ?>
+                                    <p style="margin:0.4rem 0 0;color:#475569;font-size:0.9rem;"><?= htmlspecialchars((string)$n['message']) ?></p>
+                                <?php endif; ?>
+                            </div>
+                            <a class="btn btn-sm btn-secondary" href="profile_view.php?id=<?= (int)$n['freezer_id'] ?>">View profile</a>
+                        </div>
+
+                        <?php if ($isAccessRequest): ?>
+                            <div style="margin-top:0.85rem;padding:0.85rem 1rem;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;">
+                                <div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;color:#92400e;margin-bottom:0.35rem;">Technician remark</div>
+                                <div style="white-space:pre-wrap;color:#0f172a;font-size:0.95rem;"><?= htmlspecialchars($editRemark !== '' ? $editRemark : '—') ?></div>
+                            </div>
+                        <?php elseif ($isEdit): ?>
+                            <div class="notif-diff" style="margin-top:0.85rem;">
+                                <div class="notif-diff-head">
+                                    <div class="notif-diff-label">Field</div>
+                                    <div class="notif-diff-label notif-diff-old">Current</div>
+                                    <div class="notif-diff-label notif-diff-new">Requested</div>
+                                </div>
+                                <?php
+                                $shown = 0;
+                                foreach ($diffFields as $key => $label):
+                                    $old = $fmtVal($beforeAll[$key] ?? null);
+                                    $new = $fmtVal($afterAll[$key] ?? null);
+                                    if ($old === $new) {
+                                        continue;
+                                    }
+                                    $shown++;
+                                    ?>
+                                    <div class="notif-diff-row is-changed">
+                                        <div class="notif-diff-field"><?= htmlspecialchars($label) ?></div>
+                                        <div class="notif-diff-old"><?= htmlspecialchars($old) ?></div>
+                                        <div class="notif-diff-new"><?= htmlspecialchars($new) ?></div>
+                                    </div>
+                                <?php endforeach; ?>
+                                <?php if ($shown === 0): ?>
+                                    <div class="notif-diff-row">
+                                        <div class="notif-diff-field">Changes</div>
+                                        <div class="notif-diff-old">—</div>
+                                        <div class="notif-diff-new">Images / minor updates only</div>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                            <?php
+                            $media = [];
+                            foreach ($imageFields as $ikey => $ilabel) {
+                                $path = trim((string)($afterAll[$ikey] ?? ''));
+                                if ($path !== '') {
+                                    $media[] = [$ilabel, $path];
+                                }
+                            }
+                            if ($media): ?>
+                                <div class="notif-diff-media">
+                                    <?php foreach ($media as [$ilabel, $path]): ?>
+                                        <a href="<?= htmlspecialchars($path) ?>" target="_blank" rel="noopener">
+                                            <img src="<?= htmlspecialchars($path) ?>" alt="<?= htmlspecialchars($ilabel) ?>">
+                                            <span><?= htmlspecialchars($ilabel) ?></span>
+                                        </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
+
+                        <form method="POST" class="notif-actions" style="margin-top:0.75rem;">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                            <input type="hidden" name="notif_id" value="<?= (int)$n['id'] ?>">
+                            <input type="text" name="review_notes" class="form-control" placeholder="Optional note">
+                            <button type="submit" name="notif_action" value="approve" class="btn btn-primary">Approve</button>
+                            <button type="submit" name="notif_action" value="reject" class="btn btn-secondary">Reject</button>
+                        </form>
+                    </article>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </section>
+
+    <div class="cfg-toolbar" style="margin-top:0.5rem;">
+        <div class="cfg-toolbar-left">
+            <h2 class="cfg-toolbar-title" style="font-size:1.1rem;">KYC Activity</h2>
         </div>
     </div>
 
@@ -238,13 +456,6 @@ require_once __DIR__ . '/includes/header.php';
             </footer>
         </form>
     </aside>
-
-    <?php if ($flash): ?>
-        <div class="alert alert-success" style="margin-bottom:1rem;"><?= htmlspecialchars($flash) ?></div>
-    <?php endif; ?>
-    <?php if ($error): ?>
-        <div class="alert alert-danger" style="margin-bottom:1rem;"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
 
     <div class="notif-summary-grid">
         <div class="notif-summary-card">

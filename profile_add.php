@@ -269,6 +269,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $pageTitle = $requireScanFirst ? 'Scan QR to Register' : 'Fill Store & Freezer Details';
+$bodyClass = 'field-app-page field-shell-page profile-add-page';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
@@ -354,20 +355,22 @@ require_once __DIR__ . '/includes/header.php';
             <!-- Top: Save live location first -->
             <div class="loc-save-panel gps-capture-widget" role="region" aria-label="Store location">
                 <div class="loc-save-panel-main">
-                    <div class="loc-save-panel-icon" aria-hidden="true">
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                            <circle cx="12" cy="10" r="3"/>
-                        </svg>
-                    </div>
-                    <div class="loc-save-panel-copy">
-                        <div class="loc-save-panel-title-row">
-                            <h3 class="loc-save-panel-title">Store location</h3>
-                            <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                    <div class="loc-save-panel-head">
+                        <div class="loc-save-panel-icon" aria-hidden="true">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                                <circle cx="12" cy="10" r="3"/>
+                            </svg>
                         </div>
-                        <p class="loc-save-panel-desc">
-                            Save your live GPS location first — address, city, and PIN will auto-fill.
-                        </p>
+                        <div class="loc-save-panel-copy">
+                            <div class="loc-save-panel-title-row">
+                                <h3 class="loc-save-panel-title">Store location</h3>
+                                <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                            </div>
+                            <p class="loc-save-panel-desc">
+                                Save live GPS first — address, city &amp; PIN auto-fill.
+                            </p>
+                        </div>
                     </div>
                     <div class="loc-save-panel-actions">
                         <button type="button" class="btn btn-success loc-save-btn" data-save-current-location
@@ -380,7 +383,7 @@ require_once __DIR__ . '/includes/header.php';
                                 <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
                                 <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
                             </svg>
-                            <span>Share location</span>
+                            <span>Share</span>
                         </button>
                     </div>
                 </div>

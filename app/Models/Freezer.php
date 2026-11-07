@@ -659,7 +659,8 @@ class Freezer {
             }
         }
 
-        // KYC filter — pending / done (window) / failed (latest result at current store)
+        // KYC filter — exclusive meanings for Assets tabs:
+        // pending = due date passed; done/OK = within window & not FAIL; failed/Issue = latest FAIL
         $kycList = self::normalizeFilterList($filters['kyc'] ?? null);
         $kycList = array_values(array_intersect($kycList, ['pending', 'done', 'failed']));
         $lastKycResultExpr = "(SELECT k2.result FROM `kyc_verifications` k2
@@ -672,19 +673,18 @@ class Freezer {
             }
             $dueExpr = FreezerLifecycle::kycDueSqlExpr('f', $gapMonths);
             $kycParts = [];
-            $needsToday = in_array('pending', $kycList, true) || in_array('done', $kycList, true);
-            if ($needsToday) {
-                // Quote once in SQL — avoid unused / duplicate named PDO binds.
-                $todaySql = Database::getConnection()->quote(date('Y-m-d'));
-                if (in_array('pending', $kycList, true)) {
-                    $kycParts[] = "{$dueExpr} <= {$todaySql}";
-                }
-                if (in_array('done', $kycList, true)) {
-                    $kycParts[] = "{$dueExpr} > {$todaySql}";
-                }
+            $todaySql = Database::getConnection()->quote(date('Y-m-d'));
+            $notFail = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) <> 'FAIL'";
+            $isFail = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) = 'FAIL'";
+            if (in_array('pending', $kycList, true)) {
+                // Due, and not counted only as Issue when exclusive tab (still include due+fail in pending)
+                $kycParts[] = "{$dueExpr} <= {$todaySql}";
+            }
+            if (in_array('done', $kycList, true)) {
+                $kycParts[] = "({$dueExpr} > {$todaySql} AND {$notFail})";
             }
             if (in_array('failed', $kycList, true)) {
-                $kycParts[] = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) = 'FAIL'";
+                $kycParts[] = $isFail;
             }
             if ($kycParts) {
                 $where[] = '(' . implode(' OR ', $kycParts) . ')';

@@ -10,10 +10,12 @@ use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
 use App\Models\AssetTag;
+use App\Models\AppNotification;
 
 AuthService::requireRole(['super_admin', 'technician']);
 Freezer::ensureSimColumns();
 $currentUser = AuthService::currentUser();
+$isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
 $areaScope = AuthService::areaScope();
 $lockZone = $areaScope['zone'] !== '';
 $lockCity = $areaScope['city'] !== '';
@@ -33,6 +35,18 @@ if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? nu
 $error = null;
 $success = null;
 $csrfToken = AuthService::generateCsrfToken();
+$pendingEdit = null;
+$editUnlock = null;
+try {
+    $pendingEdit = AppNotification::findPendingProfileEdit((int)$freezer['id']);
+    if ($isTechnician && !empty($currentUser['id'])) {
+        $editUnlock = AppNotification::findActiveEditUnlock((int)$freezer['id'], (int)$currentUser['id']);
+    }
+} catch (Throwable $e) {
+    $pendingEdit = null;
+    $editUnlock = null;
+}
+$canEditNow = !$isTechnician || ($editUnlock !== null);
 
 $freezerTypes = MasterData::getFreezerTypes();
 $brands = MasterData::getBrands();
@@ -41,8 +55,51 @@ $conditions = MasterData::getConditions();
 $capacities = MasterData::getCapacities();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $postAction = trim((string)($_POST['form_action'] ?? 'save'));
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security CSRF token.';
+    } elseif ($isTechnician && $postAction === 'request_edit') {
+        // Step 1: technician submits remark → Super Admin notification
+        try {
+            if ($pendingEdit) {
+                throw new Exception('An edit request is already waiting for Super Admin approval.');
+            }
+            if ($editUnlock) {
+                throw new Exception('Edit access is already approved. You can edit the profile now.');
+            }
+            $remark = trim((string)($_POST['edit_remark'] ?? ''));
+            if ($remark === '' || mb_strlen($remark) < 5) {
+                throw new Exception('Please enter a remark (at least 5 characters) explaining why you need to edit.');
+            }
+            if (mb_strlen($remark) > 1000) {
+                throw new Exception('Remark is too long (max 1000 characters).');
+            }
+            $techName = trim((string)($currentUser['name'] ?? 'Technician'));
+            AppNotification::create([
+                'type' => AppNotification::TYPE_PROFILE_EDIT,
+                'status' => AppNotification::STATUS_PENDING,
+                'freezer_id' => $id,
+                'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
+                'title' => 'Edit access — ' . ($freezer['unique_freezer_id'] ?? ('#' . $id)),
+                'message' => $techName . ' requested permission to edit this profile.',
+                'created_by' => (int)($currentUser['id'] ?? 0) ?: null,
+                'created_by_name' => $techName,
+                'payload' => [
+                    'request_kind' => 'edit_access',
+                    'remark' => $remark,
+                    'unlocked' => false,
+                    'consumed' => false,
+                ],
+            ]);
+            header('Location: profile_view.php?id=' . $id . '&edit_pending=1');
+            exit;
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    } elseif ($isTechnician && !$canEditNow) {
+        $error = $pendingEdit
+            ? 'Your remark is waiting for Super Admin approval. You can edit only after approval.'
+            : 'Submit a remark first. After Super Admin approval you can edit.';
     } else {
         try {
             $undoSnapshot = UndoService::captureProfileSnapshot($freezer);
@@ -140,7 +197,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
                 throw new Exception('Zone/city is outside your assigned area.');
             }
-            Store::update((int)$freezer['store_id'], $storePayload);
 
             // Update Freezer Profile — Unique Freezer ID never changes after create
             $candidateId = $freezer['unique_freezer_id'];
@@ -181,7 +237,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updatePayload['iot_owner'] = $_POST['iot_owner'] ?? $freezer['device_owner'];
             }
 
+            if ($isTechnician && !$editUnlock) {
+                throw new Exception('Edit access is not approved yet. Submit a remark and wait for Super Admin approval.');
+            }
+
+            Store::update((int)$freezer['store_id'], $storePayload);
             Freezer::update($id, $updatePayload);
+
+            if ($isTechnician && $editUnlock) {
+                AppNotification::consumeEditUnlock((int)$editUnlock['id']);
+            }
 
             $undoToken = UndoService::remember('edit', $undoSnapshot);
             header('Location: profile_view.php?id=' . $id . '&updated=1&undo=' . urlencode($undoToken));
@@ -194,17 +259,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$pageTitle = 'Edit Freezer: ' . $freezer['unique_freezer_id'];
+$pageTitle = $canEditNow
+    ? ('Edit Freezer: ' . $freezer['unique_freezer_id'])
+    : ('Request edit: ' . $freezer['unique_freezer_id']);
 require_once __DIR__ . '/includes/header.php';
+
+$pendingRemark = '';
+if ($pendingEdit) {
+    $pendingPayload = AppNotification::decodePayload($pendingEdit);
+    $pendingRemark = trim((string)($pendingPayload['remark'] ?? ''));
+}
 ?>
 
 <div class="cfg-toolbar">
     <div class="cfg-toolbar-left">
-        <h1 class="cfg-toolbar-title">Edit Freezer Configuration</h1>
+        <h1 class="cfg-toolbar-title">
+            <?= $canEditNow ? 'Edit Freezer Configuration' : 'Request edit access' ?>
+        </h1>
     </div>
     <div style="display:flex; gap:0.5rem; flex-shrink:0;">
         <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary">Cancel</a>
-        <button type="submit" form="edit-freezer-form" class="btn btn-primary cfg-done-btn">Done</button>
+        <?php if ($canEditNow): ?>
+            <button type="submit" form="edit-freezer-form" class="btn btn-primary cfg-done-btn">Done</button>
+        <?php elseif (!$pendingEdit): ?>
+            <button type="submit" form="edit-request-form" class="btn btn-primary cfg-done-btn">Send remark</button>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -217,8 +296,59 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
+<?php if ($isTechnician && !$canEditNow): ?>
+    <?php if ($pendingEdit): ?>
+        <div class="card" style="max-width:720px;">
+            <div class="card-body">
+                <div class="alert alert-warning" style="margin-bottom:1rem;">
+                    Your remark was sent. Waiting for Super Admin approval. After approval you can edit this profile.
+                </div>
+                <?php if ($pendingRemark !== ''): ?>
+                    <label class="form-label">Your remark</label>
+                    <div class="form-control" style="min-height:88px;background:#f8fafc;white-space:pre-wrap;"><?= htmlspecialchars($pendingRemark) ?></div>
+                <?php endif; ?>
+                <p style="margin:0.85rem 0 0;color:#64748b;font-size:0.9rem;">
+                    Requested <?= htmlspecialchars((string)($pendingEdit['created_at'] ?? '')) ?>
+                </p>
+                <div style="margin-top:1rem;">
+                    <a href="profile_view.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary">Back to profile</a>
+                </div>
+            </div>
+        </div>
+    <?php else: ?>
+        <div class="card" style="max-width:720px;">
+            <div class="card-header">
+                <div class="card-title">Why do you need to edit?</div>
+            </div>
+            <div class="card-body">
+                <p style="margin:0 0 1rem;color:#64748b;font-size:0.92rem;">
+                    First send a remark to Super Admin. After approval, you will be able to edit this freezer profile.
+                </p>
+                <form method="POST" action="" id="edit-request-form" class="cfg-form">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                    <input type="hidden" name="form_action" value="request_edit">
+                    <div class="form-group">
+                        <label class="form-label required" for="edit_remark">Remark</label>
+                        <textarea id="edit_remark" name="edit_remark" class="form-control" rows="5" required
+                                  minlength="5" maxlength="1000"
+                                  placeholder="Example: Wrong store phone / address correction / SIM details update"><?= htmlspecialchars((string)($_POST['edit_remark'] ?? '')) ?></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Send for approval</button>
+                </form>
+            </div>
+        </div>
+    <?php endif; ?>
+<?php else: ?>
+
+<?php if ($isTechnician && $editUnlock): ?>
+    <div class="alert alert-success" style="margin-bottom:1rem;">
+        Edit access approved. Make your changes and tap Done. This unlock is for one save (expires in 24 hours).
+    </div>
+<?php endif; ?>
+
 <form method="POST" action="" enctype="multipart/form-data" class="cfg-form" id="edit-freezer-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+    <input type="hidden" name="form_action" value="save">
     <input type="hidden" id="exclude_freezer_id" value="<?= (int)$freezer['id'] ?>">
 
     <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="<?= htmlspecialchars($freezer['unique_freezer_id']) ?>">
@@ -627,6 +757,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 </script>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
 

@@ -42,16 +42,30 @@ if (!in_array($statusFilter, ['unused', 'assigned', 'all'], true)) {
 $perPage = 15;
 $page = max(1, (int)($_GET['page'] ?? 1));
 $listStatus = $statusFilter === 'all' ? '' : $statusFilter;
-$totalTags = AssetTag::countTags($listStatus);
-$totalPages = max(1, (int)ceil($totalTags / $perPage));
+$stats = AssetTag::getStats();
+// Counts must match list + pagination (same rules as stats cards)
+$countUnused = (int)$stats['unused'];
+$countAssigned = (int)$stats['assigned'];
+$countAll = (int)$stats['total'];
+$totalTags = $statusFilter === 'unused'
+    ? $countUnused
+    : ($statusFilter === 'assigned' ? $countAssigned : $countAll);
+$totalPages = max(1, (int)ceil($totalTags / max(1, $perPage)));
 if ($page > $totalPages) {
     $page = $totalPages;
 }
 $offset = ($page - 1) * $perPage;
-$stats = AssetTag::getStats();
-$tags = AssetTag::listTags($listStatus, $perPage, $offset);
+$tags = $totalTags > 0 ? AssetTag::listTags($listStatus, $perPage, $offset) : [];
 $fromRow = $totalTags === 0 ? 0 : $offset + 1;
-$toRow = min($offset + $perPage, $totalTags);
+$toRow = min($offset + count($tags), $totalTags);
+
+$blankQrPageUrl = static function (int $p) use ($statusFilter): string {
+    $params = ['status' => $statusFilter];
+    if ($p > 1) {
+        $params['page'] = $p;
+    }
+    return 'blank_qr.php?' . http_build_query($params);
+};
 
 $pageTitle = 'Blank QR Tags';
 require_once __DIR__ . '/includes/header.php';
@@ -179,9 +193,9 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card-header tag-inventory-head">
         <div class="card-title"><span>Tag inventory</span></div>
         <div class="tag-inventory-filters">
-            <a href="blank_qr.php?status=unused" class="btn btn-sm <?= $statusFilter === 'unused' ? 'btn-primary' : 'btn-secondary' ?>">Unused</a>
-            <a href="blank_qr.php?status=assigned" class="btn btn-sm <?= $statusFilter === 'assigned' ? 'btn-primary' : 'btn-secondary' ?>">Assigned</a>
-            <a href="blank_qr.php?status=all" class="btn btn-sm <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-secondary' ?>">All</a>
+            <a href="blank_qr.php?status=unused" class="btn btn-sm <?= $statusFilter === 'unused' ? 'btn-primary' : 'btn-secondary' ?>">Unused · <?= number_format($countUnused) ?></a>
+            <a href="blank_qr.php?status=assigned" class="btn btn-sm <?= $statusFilter === 'assigned' ? 'btn-primary' : 'btn-secondary' ?>">Assigned · <?= number_format($countAssigned) ?></a>
+            <a href="blank_qr.php?status=all" class="btn btn-sm <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-secondary' ?>">All · <?= number_format($countAll) ?></a>
         </div>
     </div>
 
@@ -269,43 +283,52 @@ require_once __DIR__ . '/includes/header.php';
             </ul>
         <?php endif; ?>
     </div>
-    <?php if ($totalTags > 0): ?>
     <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
         <div style="font-size:0.85rem; color:#64748b;">
-            Showing <strong><?= (int)$fromRow ?>–<?= (int)$toRow ?></strong> of <strong><?= (int)$totalTags ?></strong>
-            · 15 per page
+            <?php if ($totalTags === 0): ?>
+                <strong>0</strong> tags
+            <?php else: ?>
+                Showing <strong><?= (int)$fromRow ?>–<?= (int)$toRow ?></strong> of <strong><?= number_format($totalTags) ?></strong>
+                · <?= (int)$perPage ?> per page
+                <?php if ($totalPages > 1): ?>
+                    · Page <strong><?= (int)$page ?></strong> of <strong><?= (int)$totalPages ?></strong>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
+        <?php if ($totalPages > 1): ?>
         <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
             <?php
-            $baseQs = 'status=' . urlencode($statusFilter);
             $prevPage = max(1, $page - 1);
             $nextPage = min($totalPages, $page + 1);
-            ?>
-            <a class="btn btn-sm btn-secondary <?= $page <= 1 ? 'disabled' : '' ?>"
-               href="blank_qr.php?<?= $baseQs ?>&page=<?= $prevPage ?>"
-               <?= $page <= 1 ? 'aria-disabled="true" onclick="return false;"' : '' ?>>Prev</a>
-            <?php
             $window = 2;
             $startP = max(1, $page - $window);
             $endP = min($totalPages, $page + $window);
-            if ($startP > 1): ?>
-                <a class="btn btn-sm btn-secondary" href="blank_qr.php?<?= $baseQs ?>&page=1">1</a>
+            ?>
+            <?php if ($page > 1): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($blankQrPageUrl($prevPage)) ?>">Prev</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
+            <?php endif; ?>
+            <?php if ($startP > 1): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($blankQrPageUrl(1)) ?>">1</a>
                 <?php if ($startP > 2): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
             <?php endif; ?>
             <?php for ($p = $startP; $p <= $endP; $p++): ?>
                 <a class="btn btn-sm <?= $p === $page ? 'btn-primary' : 'btn-secondary' ?>"
-                   href="blank_qr.php?<?= $baseQs ?>&page=<?= $p ?>"><?= $p ?></a>
+                   href="<?= htmlspecialchars($blankQrPageUrl($p)) ?>"><?= $p ?></a>
             <?php endfor; ?>
             <?php if ($endP < $totalPages): ?>
                 <?php if ($endP < $totalPages - 1): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
-                <a class="btn btn-sm btn-secondary" href="blank_qr.php?<?= $baseQs ?>&page=<?= $totalPages ?>"><?= $totalPages ?></a>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($blankQrPageUrl($totalPages)) ?>"><?= (int)$totalPages ?></a>
             <?php endif; ?>
-            <a class="btn btn-sm btn-secondary <?= $page >= $totalPages ? 'disabled' : '' ?>"
-               href="blank_qr.php?<?= $baseQs ?>&page=<?= $nextPage ?>"
-               <?= $page >= $totalPages ? 'aria-disabled="true" onclick="return false;"' : '' ?>>Next</a>
+            <?php if ($page < $totalPages): ?>
+                <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($blankQrPageUrl($nextPage)) ?>">Next</a>
+            <?php else: ?>
+                <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
+            <?php endif; ?>
         </div>
+        <?php endif; ?>
     </div>
-    <?php endif; ?>
 </div>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

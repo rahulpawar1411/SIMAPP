@@ -7,6 +7,7 @@ use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
 use App\Models\AssetTag;
+use App\Models\AppNotification;
 use App\Models\IoTDevice;
 use App\Services\QRCodeService;
 
@@ -166,6 +167,17 @@ if (!in_array($activeTab, ['overview', 'freezers', 'history'], true)) {
 }
 
 $isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
+$pendingEdit = null;
+$editUnlock = null;
+try {
+    $pendingEdit = AppNotification::findPendingProfileEdit((int)$freezer['id']);
+    if ($isTechnician && !empty($currentUser['id'])) {
+        $editUnlock = AppNotification::findActiveEditUnlock((int)$freezer['id'], (int)$currentUser['id']);
+    }
+} catch (Throwable $e) {
+    $pendingEdit = null;
+    $editUnlock = null;
+}
 $pageTitle = 'Store Profile: ' . ($freezer['outlet_id'] ?? $freezer['store_name']);
 $bodyClass = $isTechnician ? 'field-app-page field-shell-page' : 'app-profile-page';
 require_once __DIR__ . '/includes/header.php';
@@ -198,7 +210,7 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 <div class="sp-actions field-actions-row">
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
-    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm">Edit</a>
+    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= ($isTechnician && !$editUnlock) ? ($pendingEdit ? 'Edit pending' : 'Request edit') : 'Edit' ?></a>
     <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= !empty($kycStatus['due']) ? 'btn-primary' : 'btn-outline' ?>" title="<?= !empty($kycStatus['due']) ? 'KYC due' : 'KYC verify' ?>">
         <span class="btn-label-full">KYC <?= !empty($kycStatus['due']) ? '(due)' : 'verify' ?></span>
         <span class="btn-label-short">KYC<?= !empty($kycStatus['due']) ? '*' : '' ?></span>
@@ -217,6 +229,27 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 </div>
 <?php endif; ?>
 
+<?php if (!empty($_GET['edit_pending'])): ?>
+    <div class="alert alert-warning" style="margin-bottom:1rem;">
+        Remark sent for Super Admin approval. After approval you can edit this profile.
+    </div>
+<?php endif; ?>
+<?php if ($editUnlock && empty($_GET['edit_pending'])): ?>
+    <div class="alert alert-success" style="margin-bottom:1rem;">
+        Edit access approved.
+        <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>">Open edit form</a>
+    </div>
+<?php elseif ($pendingEdit && empty($_GET['edit_pending'])): ?>
+    <div class="alert alert-warning" style="margin-bottom:1rem;">
+        Edit remark pending Super Admin approval
+        <?php if (!empty($pendingEdit['created_by_name'])): ?>
+            (by <?= htmlspecialchars((string)$pendingEdit['created_by_name']) ?>)
+        <?php endif; ?>
+        <?php if ($isAdminUser): ?>
+            — <a href="notifications.php">Review now</a>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
 <?php if (!empty($_GET['created'])): ?>
     <div class="card" style="margin-bottom: 1.5rem; border: 1px solid #86efac; background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 55%);">
         <div class="card-body" style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center;">
@@ -399,7 +432,7 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
     <div class="card">
         <div class="card-header">
             <div class="card-title"><span>Store details</span></div>
-            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline">Edit</a>
+            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline"><?= ($isTechnician && !$editUnlock) ? ($pendingEdit ? 'Edit pending' : 'Request edit') : 'Edit' ?></a>
                     </div>
         <div class="card-body">
             <div class="profile-kv-grid">

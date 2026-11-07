@@ -240,15 +240,26 @@ class AssetTag {
         }
     }
 
+    /**
+     * Counts aligned with getStats():
+     * unused = status unused; assigned = linked to a live freezer; all = unused + assigned.
+     */
     public static function countTags(string $status = ''): int {
         self::ensureTable();
         $pdo = Database::getConnection();
-        if ($status === 'unused' || $status === 'assigned') {
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = :st");
-            $stmt->execute(['st' => $status]);
-            return (int)$stmt->fetchColumn();
+        if ($status === 'unused') {
+            return (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = 'unused'")->fetchColumn();
         }
-        return (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags`")->fetchColumn();
+        if ($status === 'assigned') {
+            return (int)$pdo->query(
+                "SELECT COUNT(*) FROM `asset_tags` t
+                 INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
+                 WHERE t.`status` = 'assigned'"
+            )->fetchColumn();
+        }
+        // all — same as stats total (exclude orphan assigned with no live freezer)
+        $stats = self::getStats();
+        return (int)$stats['total'];
     }
 
     /**
@@ -259,18 +270,39 @@ class AssetTag {
         $pdo = Database::getConnection();
         $limit = max(1, min(500, $limit));
         $offset = max(0, $offset);
+        Freezer::ensureSimColumns();
+
+        if ($status === 'unused') {
+            $sql = "SELECT t.*, NULL AS unique_freezer_id
+                    FROM `asset_tags` t
+                    WHERE t.status = 'unused'
+                    ORDER BY t.id DESC
+                    LIMIT {$limit} OFFSET {$offset}";
+            $stmt = $pdo->query($sql);
+            return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        }
+
+        if ($status === 'assigned') {
+            $sql = "SELECT t.*, f.unique_freezer_id
+                    FROM `asset_tags` t
+                    INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
+                    WHERE t.status = 'assigned'
+                    ORDER BY t.id DESC
+                    LIMIT {$limit} OFFSET {$offset}";
+            $stmt = $pdo->query($sql);
+            return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        }
+
+        // all = unused + assigned-to-live-freezer (same universe as counts)
         $sql = "SELECT t.*, f.unique_freezer_id
                 FROM `asset_tags` t
-                LEFT JOIN `freezers` f ON f.id = t.freezer_id";
-        $params = [];
-        if ($status === 'unused' || $status === 'assigned') {
-            $sql .= " WHERE t.status = :st";
-            $params['st'] = $status;
-        }
-        $sql .= " ORDER BY t.id DESC LIMIT {$limit} OFFSET {$offset}";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                LEFT JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
+                WHERE t.status = 'unused'
+                   OR (t.status = 'assigned' AND f.id IS NOT NULL)
+                ORDER BY t.id DESC
+                LIMIT {$limit} OFFSET {$offset}";
+        $stmt = $pdo->query($sql);
+        return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
     }
 
     /**

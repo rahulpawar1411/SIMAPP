@@ -2114,6 +2114,14 @@ input.form-control[readonly].form-control-display {
     gap: 0.85rem 1rem;
 }
 
+.loc-save-panel-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
 .loc-save-panel-icon {
     width: 48px;
     height: 48px;
@@ -2127,7 +2135,7 @@ input.form-control[readonly].form-control-display {
 }
 
 .loc-save-panel-copy {
-    flex: 1 1 180px;
+    flex: 1 1 auto;
     min-width: 0;
 }
 
@@ -2222,6 +2230,139 @@ input.form-control[readonly].form-control-display {
     margin-top: 0.15rem;
 }
 
+@media (max-width: 992px) {
+    /* New Freezer Configuration — Store location mobile */
+    body.profile-add-page .cfg-toolbar {
+        margin-bottom: 0.65rem;
+        padding: 0;
+    }
+    body.profile-add-page .cfg-toolbar-title {
+        font-size: 1.05rem;
+        line-height: 1.3;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.2rem;
+        word-break: break-word;
+    }
+    body.profile-add-page .cfg-tag-plain {
+        margin-left: 0;
+        font-size: 0.78rem;
+        color: #64748b;
+        word-break: break-all;
+    }
+    body.profile-add-page .checkout-card.onboard-card,
+    body.profile-add-page .cfg-panel {
+        margin: 0;
+        border-radius: 12px;
+        overflow: hidden;
+        max-width: 100%;
+    }
+    body.profile-add-page .onboard-steps {
+        gap: 0.15rem;
+        padding: 0.45rem 0.4rem;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    body.profile-add-page .onboard-step {
+        min-width: 0;
+        flex: 1;
+        padding: 0.4rem 0.25rem;
+    }
+    body.profile-add-page .onboard-step-label {
+        font-size: 0.68rem;
+    }
+    body.profile-add-page .onboard-step-divider {
+        display: none;
+    }
+    body.profile-add-page .checkout-card .card-body {
+        padding: 0.75rem 0.7rem 1rem;
+    }
+    body.profile-add-page .form-subsection {
+        margin-top: 0.85rem;
+        padding-top: 0.65rem;
+    }
+    body.profile-add-page .form-subsection legend {
+        font-size: 0.9rem;
+    }
+    body.profile-add-page .form-subsection legend span {
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 500;
+        color: #64748b;
+        margin-top: 0.15rem;
+    }
+
+    .loc-save-panel {
+        margin: 0 0 1rem;
+        padding: 0.85rem 0.8rem;
+        border-radius: 12px;
+    }
+    .loc-save-panel-main {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+    }
+    .loc-save-panel-head {
+        flex: none;
+        width: 100%;
+    }
+    .loc-save-panel-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+    }
+    .loc-save-panel-title {
+        font-size: 0.95rem;
+    }
+    .loc-save-panel-desc {
+        font-size: 0.75rem;
+        line-height: 1.35;
+    }
+    .loc-save-panel-actions {
+        margin-left: 0;
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.45rem;
+    }
+    .loc-save-panel-actions .btn,
+    .loc-save-panel-actions .loc-share-trigger,
+    .loc-save-btn {
+        width: 100%;
+        min-height: 48px;
+        justify-content: center;
+        box-sizing: border-box;
+    }
+    .loc-save-panel .sp-location-link-box {
+        margin-top: 0.55rem;
+        padding: 0.65rem 0.7rem;
+    }
+    .loc-save-panel .sp-location-link {
+        font-size: 0.78rem;
+        word-break: break-all;
+    }
+    .loc-save-panel .sp-location-link-box .btn {
+        width: 100%;
+        min-height: 40px;
+        margin-top: 0.25rem;
+    }
+    .loc-save-panel .sp-latlng {
+        font-size: 0.72rem;
+        word-break: break-all;
+        margin-top: 0.35rem;
+    }
+    .gps-status-pill {
+        font-size: 0.68rem;
+        padding: 0.15rem 0.5rem;
+        white-space: nowrap;
+    }
+    .gps-process-loading {
+        width: 100%;
+        box-sizing: border-box;
+    }
+}
+
 @media (max-width: 640px) {
     .loc-save-panel-main {
         flex-direction: column;
@@ -2238,8 +2379,8 @@ input.form-control[readonly].form-control-display {
         width: 100%;
     }
     .loc-save-panel-icon {
-        width: 42px;
-        height: 42px;
+        width: 40px;
+        height: 40px;
     }
 }
 
@@ -4627,7 +4768,7 @@ input.form-control[readonly].form-control-display {
 
 @media (max-width: 992px) {
     body {
-        padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     }
 
     .main-content {
@@ -4640,17 +4781,17 @@ input.form-control[readonly].form-control-display {
     .field-bottom-nav {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        align-items: end;
+        align-items: center;
         position: fixed;
         left: 0;
         right: 0;
         bottom: 0;
         z-index: 50;
         background: #ffffff;
-        border-top: 1px solid var(--border-color);
-        box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.08);
-        padding: 0.35rem 0.35rem calc(0.35rem + env(safe-area-inset-bottom, 0px));
-        min-height: calc(56px + env(safe-area-inset-bottom, 0px));
+        border-top: 1px solid #e2e8f0;
+        box-shadow: none;
+        padding: 0.2rem 0.25rem calc(0.2rem + env(safe-area-inset-bottom, 0px));
+        min-height: calc(52px + env(safe-area-inset-bottom, 0px));
     }
     .field-bottom-nav.field-nav-cols-3 {
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4659,18 +4800,19 @@ input.form-control[readonly].form-control-display {
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: flex-end;
-        gap: 0.15rem;
-        min-height: 48px;
+        justify-content: center;
+        gap: 0.12rem;
+        min-height: 44px;
         min-width: 0;
-        padding: 0.2rem 0.15rem;
+        padding: 0.15rem;
         text-decoration: none;
         color: #64748b;
         font-size: 0.65rem;
-        font-weight: 700;
-        border-radius: 10px;
+        font-weight: 600;
+        border-radius: 8px;
         -webkit-tap-highlight-color: transparent;
         line-height: 1.1;
+        background: transparent;
     }
     .field-bottom-nav a span {
         max-width: 100%;
@@ -4685,8 +4827,9 @@ input.form-control[readonly].form-control-display {
     }
     .field-bottom-nav a.active,
     .field-bottom-nav a:active {
-        color: var(--primary);
-        background: var(--primary-light);
+        color: #2563eb;
+        background: transparent;
+        font-weight: 700;
     }
 
     .topbar {
@@ -5703,10 +5846,10 @@ body.filter-drawer-open {
 
 .field-bottom-nav {
     border-top: 1px solid #e2e8f0;
-    box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.06);
+    box-shadow: none;
 }
 .field-bottom-nav a.active {
-    color: var(--primary);
+    color: #2563eb;
 }
 
 .dash-kyc-panel.is-due {
@@ -7687,75 +7830,77 @@ body.admin-dash-page .page-title {
         border-bottom: 1px solid #e8eef8;
     }
 
-    /* Bottom nav — 4 tabs (Home · Assets · Scan · More); 3 for viewer */
+    /* Bottom nav — simple flat tabs */
     .field-bottom-nav {
         grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-        align-items: end !important;
-        padding: 0.4rem 0.4rem calc(0.4rem + env(safe-area-inset-bottom, 0px)) !important;
+        align-items: center !important;
+        padding: 0.2rem 0.25rem calc(0.2rem + env(safe-area-inset-bottom, 0px)) !important;
         background: #ffffff !important;
-        border-top: 1px solid #e8eef8 !important;
-        box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.08) !important;
-        min-height: calc(58px + env(safe-area-inset-bottom, 0px)) !important;
+        border-top: 1px solid #e2e8f0 !important;
+        box-shadow: none !important;
+        min-height: calc(52px + env(safe-area-inset-bottom, 0px)) !important;
     }
     .field-bottom-nav.field-nav-cols-3 {
         grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     }
     .field-bottom-nav a {
-        font-size: 0.62rem !important;
-        color: #94a3b8 !important;
+        font-size: 0.65rem !important;
+        color: #64748b !important;
         gap: 0.12rem !important;
-        min-height: 50px !important;
+        min-height: 44px !important;
         background: transparent !important;
-        justify-content: flex-end !important;
-        padding-bottom: 0.15rem !important;
+        justify-content: center !important;
+        padding: 0.15rem !important;
+        font-weight: 600 !important;
     }
     .field-bottom-nav a svg {
-        width: 22px !important;
-        height: 22px !important;
+        width: 20px !important;
+        height: 20px !important;
     }
     .field-bottom-nav a.active {
         color: #2563eb !important;
         background: transparent !important;
-        font-weight: 800 !important;
+        font-weight: 700 !important;
     }
+    /* Scan = same simple icon as other tabs (no floating circle) */
     .field-nav-scan {
-        position: relative;
-        top: -14px;
-        z-index: 2;
+        position: static;
+        top: auto;
+        z-index: auto;
     }
     .field-nav-scan-ico {
-        width: 52px;
-        height: 52px;
-        border-radius: 50%;
-        background: linear-gradient(135deg, #2563eb, #3b82f6);
-        color: #fff;
+        width: auto;
+        height: auto;
+        border-radius: 0;
+        background: none;
+        color: inherit;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.35);
-        border: 3px solid #fff;
-        margin-bottom: 0.05rem;
+        box-shadow: none;
+        border: 0;
+        margin: 0;
     }
     .field-nav-scan-ico svg {
-        width: 22px !important;
-        height: 22px !important;
-        stroke: #fff !important;
+        width: 20px !important;
+        height: 20px !important;
+        stroke: currentColor !important;
     }
     .field-nav-scan.active .field-nav-scan-ico,
     .field-nav-scan:active .field-nav-scan-ico {
-        background: linear-gradient(135deg, #1d4ed8, #2563eb);
+        background: none;
     }
     .field-nav-scan.active {
         color: #2563eb !important;
     }
 
     body {
-        padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px)) !important;
+        padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
     }
     body.field-app-page .main-content,
     body.field-shell-page .main-content,
     body.field-home-page .main-content {
-        padding-bottom: calc(1.25rem + 78px + env(safe-area-inset-bottom, 0px)) !important;
+        padding-bottom: calc(1rem + 56px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
     /* Primary buttons ? reference blue on mobile */
@@ -7822,7 +7967,7 @@ body.admin-dash-page .page-title {
     /* Sticky form submit */
     .mapp-sticky-actions {
         position: sticky;
-        bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+        bottom: calc(56px + env(safe-area-inset-bottom, 0px));
         z-index: 20;
         padding: 0.65rem 0 0.25rem;
         background: linear-gradient(180deg, rgba(245,247,251,0), #f5f7fb 35%);
@@ -8148,6 +8293,15 @@ body.admin-dash-page .page-title {
 .assets-status-tabs a.is-active.is-ok { background: #16a34a; }
 .assets-status-tabs a.is-active.is-pending { background: #d97706; }
 .assets-status-tabs a.is-active.is-issue { background: #dc2626; }
+.assets-status-tabs a em {
+    font-style: normal;
+    font-weight: 800;
+    opacity: 0.85;
+    margin-left: 0.2rem;
+}
+.assets-status-tabs a.is-active em {
+    opacity: 1;
+}
 
 /* KYC due list on Home */
 .mapp-due-list {

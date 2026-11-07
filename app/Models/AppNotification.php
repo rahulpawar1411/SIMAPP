@@ -9,6 +9,7 @@ class AppNotification {
 
     public const TYPE_KYC_STORE_MOVE = 'kyc_store_move';
     public const TYPE_KYC_SAME_STORE = 'kyc_same_store';
+    public const TYPE_PROFILE_EDIT = 'profile_edit';
     public const STATUS_PENDING = 'pending';
     public const STATUS_APPROVED = 'approved';
     public const STATUS_REJECTED = 'rejected';
@@ -93,6 +94,72 @@ class AppNotification {
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    public static function findPendingProfileEdit(int $freezerId): ?array {
+        return self::findPendingForFreezer($freezerId, self::TYPE_PROFILE_EDIT);
+    }
+
+    /**
+     * Approved edit-access unlock for this technician on this freezer (not yet used / not expired).
+     * Unlock lasts 24 hours after approval, or until the technician saves an edit.
+     */
+    public static function findActiveEditUnlock(int $freezerId, int $userId): ?array {
+        if ($freezerId <= 0 || $userId <= 0) {
+            return null;
+        }
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT * FROM `app_notifications`
+            WHERE `freezer_id` = :fid
+              AND `type` = :t
+              AND `status` = :st
+              AND `created_by` = :uid
+            ORDER BY `id` DESC LIMIT 10");
+        $stmt->execute([
+            'fid' => $freezerId,
+            't' => self::TYPE_PROFILE_EDIT,
+            'st' => self::STATUS_APPROVED,
+            'uid' => $userId,
+        ]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $row) {
+            $payload = self::decodePayload($row);
+            if (empty($payload['unlocked'])) {
+                continue;
+            }
+            if (!empty($payload['consumed'])) {
+                continue;
+            }
+            $unlockedAt = strtotime((string)($payload['unlocked_at'] ?? $row['reviewed_at'] ?? ''));
+            if ($unlockedAt && (time() - $unlockedAt) > 86400) {
+                continue; // expired
+            }
+            return $row;
+        }
+        return null;
+    }
+
+    public static function updatePayload(int $id, array $payload): void {
+        self::ensureTable();
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            throw new Exception('Could not encode notification payload.');
+        }
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("UPDATE `app_notifications` SET `payload` = :p WHERE `id` = :id");
+        $stmt->execute(['p' => $json, 'id' => $id]);
+    }
+
+    public static function consumeEditUnlock(int $id): void {
+        $row = self::findById($id);
+        if (!$row) {
+            return;
+        }
+        $payload = self::decodePayload($row);
+        $payload['consumed'] = true;
+        $payload['consumed_at'] = date('Y-m-d H:i:s');
+        self::updatePayload($id, $payload);
     }
 
     public static function findPendingForFreezer(int $freezerId, string $type): ?array {
@@ -186,13 +253,16 @@ class AppNotification {
             $city = '';
         }
 
-        // Only new-store moves require admin approval (same-store KYC completes immediately)
+        // Technician profile edits (and any leftover KYC move requests)
         $sql = "SELECT n.*
                 FROM `app_notifications` n
                 LEFT JOIN `freezers` f ON f.id = n.freezer_id
                 LEFT JOIN `stores` s ON s.id = f.store_id
-                WHERE n.status = 'pending' AND n.type = :type";
-        $params = ['type' => self::TYPE_KYC_STORE_MOVE];
+                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)";
+        $params = [
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ];
         if ($zone !== '') {
             $sql .= " AND UPPER(TRIM(s.zone)) = :zone";
             $params['zone'] = $zone;
@@ -225,15 +295,24 @@ class AppNotification {
         }
 
         if ($zone === '' && $city === '') {
-            return self::countPending(self::TYPE_KYC_STORE_MOVE);
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM `app_notifications`
+                WHERE `status` = 'pending' AND `type` IN (:t1, :t2)");
+            $stmt->execute([
+                't1' => self::TYPE_PROFILE_EDIT,
+                't2' => self::TYPE_KYC_STORE_MOVE,
+            ]);
+            return (int)$stmt->fetchColumn();
         }
 
         $sql = "SELECT COUNT(*)
                 FROM `app_notifications` n
                 LEFT JOIN `freezers` f ON f.id = n.freezer_id
                 LEFT JOIN `stores` s ON s.id = f.store_id
-                WHERE n.status = 'pending' AND n.type = :type";
-        $params = ['type' => self::TYPE_KYC_STORE_MOVE];
+                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)";
+        $params = [
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ];
         if ($zone !== '') {
             $sql .= " AND UPPER(TRIM(s.zone)) = :zone";
             $params['zone'] = $zone;
@@ -291,8 +370,8 @@ class AppNotification {
     }
 
     /**
-     * Approve any pending KYC notification (same-store or new-store move).
-     * @return array{type:string,outlet_id?:string,store_id?:int}
+     * Approve any pending notification (profile edit / KYC).
+     * @return array{type:string,outlet_id?:string,store_id?:int,freezer_id?:int}
      */
     public static function approve(int $id, int $adminId, ?string $notes = null): array {
         $row = self::findById($id);
@@ -300,6 +379,10 @@ class AppNotification {
             throw new Exception('Notification not found.');
         }
         $type = (string)($row['type'] ?? '');
+        if ($type === self::TYPE_PROFILE_EDIT) {
+            self::approveProfileEdit($id, $adminId, $notes);
+            return ['type' => $type, 'freezer_id' => (int)$row['freezer_id']];
+        }
         if ($type === self::TYPE_KYC_STORE_MOVE) {
             $created = self::approveKycStoreMove($id, $adminId, $notes);
             return array_merge(['type' => $type], $created);
@@ -309,6 +392,57 @@ class AppNotification {
             return ['type' => $type];
         }
         throw new Exception('Unsupported notification type.');
+    }
+
+    /**
+     * Approve technician edit-access request (remark first).
+     * Grants a one-time unlock so the technician can open the edit form and save.
+     * Legacy payloads that already include store/freezer changes are still applied.
+     */
+    public static function approveProfileEdit(int $id, int $adminId, ?string $notes = null): void {
+        $row = self::findById($id);
+        if (!$row) {
+            throw new Exception('Notification not found.');
+        }
+        if (($row['type'] ?? '') !== self::TYPE_PROFILE_EDIT) {
+            throw new Exception('Not a profile edit notification.');
+        }
+        if (($row['status'] ?? '') !== self::STATUS_PENDING) {
+            throw new Exception('This request is already ' . ($row['status'] ?? 'closed') . '.');
+        }
+
+        $payload = self::decodePayload($row);
+        $storeData = is_array($payload['store'] ?? null) ? $payload['store'] : [];
+        $freezerData = is_array($payload['freezer'] ?? null) ? $payload['freezer'] : [];
+        $freezerId = (int)$row['freezer_id'];
+
+        // Legacy queued field changes (if any)
+        if ($storeData !== [] || $freezerData !== []) {
+            $freezer = Freezer::findById($freezerId);
+            if (!$freezer) {
+                throw new Exception('Freezer no longer exists.');
+            }
+            $storeId = (int)($freezer['store_id'] ?? 0);
+            if ($storeId > 0 && $storeData !== []) {
+                Store::update($storeId, $storeData);
+            }
+            if ($freezerData !== []) {
+                $freezerData['store_id'] = $storeId;
+                Freezer::update($freezerId, $freezerData);
+                $payload['consumed'] = true;
+                $payload['consumed_at'] = date('Y-m-d H:i:s');
+            }
+        }
+
+        $payload['unlocked'] = true;
+        $payload['unlocked_at'] = date('Y-m-d H:i:s');
+        if (!array_key_exists('consumed', $payload)) {
+            $payload['consumed'] = false;
+        }
+        $payload['request_kind'] = $payload['request_kind'] ?? 'edit_access';
+
+        self::updatePayload($id, $payload);
+        self::setStatus($id, self::STATUS_APPROVED, $adminId, $notes);
     }
 
     /** Approve same-store KYC — record verification on current profile only. */

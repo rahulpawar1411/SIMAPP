@@ -12,6 +12,14 @@ $fieldDashActive = ($fieldNavPage === 'index.php');
 $fieldAssetsActive = in_array($fieldNavPage, ['profiles.php', 'profile_view.php', 'profile_edit.php', 'freezer_kyc.php'], true);
 $fieldScanActive = in_array($fieldNavPage, ['qr_scanner.php', 'profile_add.php', 'tag.php'], true);
 $fieldMoreActive = in_array($fieldNavPage, ['more.php', 'users.php', 'notifications.php', 'admin_logs.php', 'import_export.php', 'blank_qr.php', 'blank_qr_print.php', 'kyc_map.php'], true);
+$fieldPendingApprovals = 0;
+if ($fieldIsAdmin) {
+    try {
+        $fieldPendingApprovals = \App\Models\AppNotification::countPendingApprovals();
+    } catch (Throwable $e) {
+        $fieldPendingApprovals = 0;
+    }
+}
 // 4 tabs (Home/Dash + Assets + Scan + More) or 3 for viewer
 $fieldNavCols = ($fieldIsTech || $fieldIsAdmin) ? 4 : 3;
 ?>
@@ -49,11 +57,14 @@ $fieldNavCols = ($fieldIsTech || $fieldIsAdmin) ? 4 : 3;
         </span>
         <span>Scan</span>
     </a>
-    <a href="more.php" class="<?= $fieldMoreActive ? 'active' : '' ?>">
+    <a href="more.php" class="<?= $fieldMoreActive ? 'active' : '' ?>" style="position:relative;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>
         </svg>
         <span>More</span>
+        <?php if ($fieldPendingApprovals > 0): ?>
+            <span class="nav-notif-dot" aria-label="<?= (int)$fieldPendingApprovals ?> pending"></span>
+        <?php endif; ?>
     </a>
 </nav>
 

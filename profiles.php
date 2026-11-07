@@ -91,28 +91,54 @@ if (!empty($_GET['export'])) {
 
 $isAdmin = AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN);
 
+// Base filters for tab counts (same search/area/mine, without KYC tab)
+$baseFilters = $filters;
+$baseFilters['kyc'] = [];
+$tabCountAll = 0;
+$tabCountOk = 0;
+$tabCountPending = 0;
+$tabCountIssue = 0;
+try {
+    $tabCountAll = Freezer::countFiltered($baseFilters);
+    $tabCountOk = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['done']]));
+    $tabCountPending = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['pending']]));
+    $tabCountIssue = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['failed']]));
+} catch (Throwable $e) {
+    $tabCountAll = 0;
+}
+
 $totalCount = Freezer::countFiltered($filters);
-$totalPages = max(1, (int)ceil($totalCount / $limit));
+$totalPages = max(1, (int)ceil($totalCount / max(1, $limit)));
 if ($page > $totalPages) {
     $page = $totalPages;
-    $offset = ($page - 1) * $limit;
 }
-$freezers = Freezer::getFiltered($filters, $limit, $offset);
+$offset = ($page - 1) * $limit;
+$freezers = $totalCount > 0 ? Freezer::getFiltered($filters, $limit, $offset) : [];
 $rangeFrom = $totalCount === 0 ? 0 : ($offset + 1);
 $rangeTo = min($offset + $limit, $totalCount);
 
-/** Build page URL keeping current filters */
-$profilesPageUrl = static function (int $p) use ($search, $typeList, $brandList, $statusList, $cityList, $missingList, $kycList): string {
-    $params = array_filter([
+/** Shared query extras preserved across tabs / pagination */
+$profilesKeepParams = static function () use ($search, $typeList, $brandList, $statusList, $cityList, $missingList, $mineOnly): array {
+    return array_filter([
         'q' => $search !== '' ? $search : null,
         'type' => $typeList ?: null,
         'brand' => $brandList ?: null,
         'status' => $statusList ?: null,
         'city' => $cityList ?: null,
         'missing' => $missingList ?: null,
-        'kyc' => $kycList ?: null,
-        'page' => $p > 1 ? $p : null,
+        'mine' => $mineOnly ? '1' : null,
     ], static fn($v) => $v !== null && $v !== '' && $v !== []);
+};
+
+/** Build page URL keeping current filters + active KYC tab */
+$profilesPageUrl = static function (int $p) use ($profilesKeepParams, $kycList): string {
+    $params = $profilesKeepParams();
+    if ($kycList) {
+        $params['kyc'] = $kycList;
+    }
+    if ($p > 1) {
+        $params['page'] = $p;
+    }
     $qs = http_build_query($params);
     return 'profiles.php' . ($qs !== '' ? '?' . $qs : '');
 };
@@ -146,16 +172,9 @@ if (AppConfig::IOT_ENABLED) {
     $missingOptions['iot'] = 'Missing IoT';
 }
 
-/** Build Assets tab URL keeping search + non-KYC filters */
-$profilesTabUrl = static function (string $tab) use ($search, $typeList, $brandList, $statusList, $cityList, $missingList): string {
-    $params = array_filter([
-        'q' => $search !== '' ? $search : null,
-        'type' => $typeList ?: null,
-        'brand' => $brandList ?: null,
-        'status' => $statusList ?: null,
-        'city' => $cityList ?: null,
-        'missing' => $missingList ?: null,
-    ], static fn($v) => $v !== null && $v !== '' && $v !== []);
+/** Build Assets tab URL keeping search + non-KYC filters (+ mine) */
+$profilesTabUrl = static function (string $tab) use ($profilesKeepParams): string {
+    $params = $profilesKeepParams();
     if ($tab === 'pending') {
         $params['kyc'] = ['pending'];
     } elseif ($tab === 'done') {
@@ -163,6 +182,7 @@ $profilesTabUrl = static function (string $tab) use ($search, $typeList, $brandL
     } elseif ($tab === 'failed') {
         $params['kyc'] = ['failed'];
     }
+    // page resets to 1 when switching tabs
     $qs = http_build_query($params);
     return 'profiles.php' . ($qs !== '' ? '?' . $qs : '');
 };
@@ -206,18 +226,32 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Status tabs: All / OK / Pending / Issue -->
+<!-- Status tabs: All / OK / Pending / Issue — counts match list + pagination -->
 <nav class="assets-status-tabs" id="assets-status-tabs" aria-label="KYC status">
-    <a href="<?= htmlspecialchars($profilesTabUrl('all')) ?>" data-profiles-loading data-assets-tab="all" class="<?= $activeTab === 'all' ? 'is-active' : '' ?>">All</a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('done')) ?>" data-profiles-loading data-assets-tab="done" class="<?= $activeTab === 'done' ? 'is-active is-ok' : '' ?>">OK</a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('pending')) ?>" data-profiles-loading data-assets-tab="pending" class="<?= $activeTab === 'pending' ? 'is-active is-pending' : '' ?>">Pending</a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('failed')) ?>" data-profiles-loading data-assets-tab="failed" class="<?= $activeTab === 'failed' ? 'is-active is-issue' : '' ?>">Issue</a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('all')) ?>" data-profiles-loading data-assets-tab="all" class="<?= $activeTab === 'all' ? 'is-active' : '' ?>">
+        All <em><?= number_format($tabCountAll) ?></em>
+    </a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('done')) ?>" data-profiles-loading data-assets-tab="done" class="<?= $activeTab === 'done' ? 'is-active is-ok' : '' ?>">
+        OK <em><?= number_format($tabCountOk) ?></em>
+    </a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('pending')) ?>" data-profiles-loading data-assets-tab="pending" class="<?= $activeTab === 'pending' ? 'is-active is-pending' : '' ?>">
+        Pending <em><?= number_format($tabCountPending) ?></em>
+    </a>
+    <a href="<?= htmlspecialchars($profilesTabUrl('failed')) ?>" data-profiles-loading data-assets-tab="failed" class="<?= $activeTab === 'failed' ? 'is-active is-issue' : '' ?>">
+        Issue <em><?= number_format($tabCountIssue) ?></em>
+    </a>
 </nav>
 
 <!-- Search + Filter button (Flipkart-style drawer) -->
 <div class="card profiles-filter-bar">
     <div class="card-body">
         <form method="GET" action="" class="profiles-search-row" id="profiles-search-form">
+            <?php foreach ($kycList as $kv): ?>
+                <input type="hidden" name="kyc[]" value="<?= htmlspecialchars($kv) ?>">
+            <?php endforeach; ?>
+            <?php if ($mineOnly): ?>
+                <input type="hidden" name="mine" value="1">
+            <?php endif; ?>
             <div class="profiles-search-field">
                 <label class="form-label" for="profiles-q">Search</label>
                 <input type="text" id="profiles-q" name="q" class="form-control"
@@ -271,6 +305,9 @@ require_once __DIR__ . '/includes/header.php';
 <aside class="filter-drawer" id="profiles-filter-drawer" role="dialog" aria-modal="true" aria-labelledby="profiles-filter-title" hidden>
     <form method="GET" action="" id="profiles-filter-form" class="filter-drawer-form">
         <input type="hidden" name="q" value="<?= htmlspecialchars($search) ?>">
+        <?php if ($mineOnly): ?>
+            <input type="hidden" name="mine" value="1">
+        <?php endif; ?>
         <header class="filter-drawer-head">
             <h2 id="profiles-filter-title">Filters</h2>
             <button type="button" class="filter-drawer-close" id="profiles-filter-close" aria-label="Close filters">&times;</button>
@@ -382,7 +419,10 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card-header">
         <div class="card-title">
             <span><?= $kyc === 'pending' ? 'KYC pending freezers' : ($kyc === 'done' ? 'KYC within window' : ($kyc === 'failed' ? 'KYC failed freezers' : 'Registered Freezers')) ?></span>
-            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : ($kyc === 'failed' ? 'badge-danger' : 'badge-neutral') ?>" style="margin-left: 0.5rem;"><?= $totalCount ?> Total Records</span>
+            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : ($kyc === 'failed' ? 'badge-danger' : 'badge-neutral') ?>" style="margin-left: 0.5rem;"><?= number_format($totalCount) ?> record<?= $totalCount === 1 ? '' : 's' ?></span>
+            <?php if ($totalPages > 1): ?>
+                <span class="badge badge-neutral" style="margin-left:0.35rem;">Page <?= (int)$page ?> / <?= (int)$totalPages ?></span>
+            <?php endif; ?>
         </div>
         <span class="profiles-page-size">20 per page</span>
     </div>
@@ -574,30 +614,36 @@ require_once __DIR__ . '/includes/header.php';
         <?php endif; ?>
     </div>
 
-    <!-- Pagination — same pattern as Tag inventory -->
-    <?php if ($totalCount > 0): ?>
-    <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+    <!-- Pagination — count matches active tab filter -->
+    <div class="card-footer profiles-pagination" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
         <div style="font-size:0.85rem; color:#64748b;">
-            Showing <strong><?= (int)$rangeFrom ?>–<?= (int)$rangeTo ?></strong> of <strong><?= (int)$totalCount ?></strong>
-            · 20 per page
+            <?php if ($totalCount === 0): ?>
+                <strong>0</strong> records
+            <?php else: ?>
+                Showing <strong><?= (int)$rangeFrom ?>–<?= (int)$rangeTo ?></strong> of <strong><?= number_format($totalCount) ?></strong>
+                · <?= (int)$limit ?> per page
+                <?php if ($totalPages > 1): ?>
+                    · Page <strong><?= (int)$page ?></strong> of <strong><?= (int)$totalPages ?></strong>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
+        <?php if ($totalPages > 1): ?>
         <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
             <?php
             $prevPage = max(1, $page - 1);
             $nextPage = min($totalPages, $page + 1);
-            $canPrev = $page > 1 && $totalCount > 0;
-            $canNext = $page < $totalPages && $totalCount > 0;
+            $canPrev = $page > 1;
+            $canNext = $page < $totalPages;
+            $window = 2;
+            $startP = max(1, $page - $window);
+            $endP = min($totalPages, $page + $window);
             ?>
             <?php if ($canPrev): ?>
                 <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl($prevPage)) ?>" data-profiles-loading>Prev</a>
             <?php else: ?>
-                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true" title="No previous page">Prev</button>
+                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true">Prev</button>
             <?php endif; ?>
-            <?php
-            $window = 2;
-            $startP = max(1, $page - $window);
-            $endP = min($totalPages, $page + $window);
-            if ($startP > 1): ?>
+            <?php if ($startP > 1): ?>
                 <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl(1)) ?>" data-profiles-loading>1</a>
                 <?php if ($startP > 2): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
             <?php endif; ?>
@@ -613,11 +659,11 @@ require_once __DIR__ . '/includes/header.php';
             <?php if ($canNext): ?>
                 <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($profilesPageUrl($nextPage)) ?>" data-profiles-loading>Next</a>
             <?php else: ?>
-                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true" title="No next page">Next</button>
+                <button type="button" class="btn btn-sm btn-secondary" disabled aria-disabled="true">Next</button>
             <?php endif; ?>
         </div>
+        <?php endif; ?>
     </div>
-    <?php endif; ?>
 </div>
 
 <script>
