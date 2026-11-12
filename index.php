@@ -26,36 +26,40 @@ if ($filterZone === 'ALL') {
 if (strcasecmp($filterCity, 'All') === 0) {
     $filterCity = '';
 }
-$trendPeriod = strtolower(trim((string)($_GET['trend'] ?? '6months')));
-if (!in_array($trendPeriod, ['month', '6months', 'year', 'custom'], true)) {
-    $trendPeriod = '6months';
-}
-$trendFrom = trim((string)($_GET['trend_from'] ?? ''));
-$trendTo = trim((string)($_GET['trend_to'] ?? ''));
-if ($trendPeriod === 'custom') {
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $trendFrom)) {
-        $trendFrom = date('Y-m-d', strtotime('-29 days'));
-    }
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $trendTo)) {
-        $trendTo = date('Y-m-d');
-    }
-}
-
 $dashFilters = [
     'zone' => $filterZone,
     'city' => $filterCity,
-    'trend_period' => $trendPeriod,
-    'trend_from' => $trendFrom,
-    'trend_to' => $trendTo,
 ];
-$zoneOptions = Freezer::dashboardZones();
-$cityOptions = Freezer::dashboardCities($filterZone !== '' ? $filterZone : null);
+$zoneOptions = [];
+$cityOptions = [];
+$dashLoadError = null;
+try {
+    $zoneOptions = Freezer::dashboardZones();
+    $cityOptions = Freezer::dashboardCities($filterZone !== '' ? $filterZone : null);
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'dashboard.filters');
+}
 if ($filterCity !== '' && !in_array($filterCity, $cityOptions, true)) {
     $filterCity = '';
     $dashFilters['city'] = '';
 }
 
-$stats = Freezer::getDashboardStats($dashFilters);
+$stats = [
+    'total_freezers' => 0,
+    'active_stores' => 0,
+    'by_zone' => [],
+    'top_stores' => [],
+    'activities' => [],
+];
+try {
+    $stats = Freezer::getDashboardStats($dashFilters);
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'dashboard.stats');
+    $dashLoadError = \App\Services\AppLogger::friendlyMessage(
+        $e,
+        'Could not load dashboard numbers. Please refresh the page.'
+    );
+}
 
 $kycDone = 0;
 $kycPending = 0;
@@ -67,6 +71,7 @@ try {
     $kycPending = (int)$kycDash['pending'];
     $kycPendingList = $kycDash['pending_list'] ?? [];
 } catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'dashboard.kyc_stats');
     $kycPending = (int)$stats['total_freezers'];
 }
 $hasDashFilter = ($filterZone !== '' || $filterCity !== '');
@@ -81,28 +86,50 @@ try {
     }
     $kycFailedCount = Freezer::countFiltered($failFilters);
 } catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'dashboard.kyc_failed');
     $kycFailedCount = 0;
 }
 
-$trend = $stats['trend'] ?? [];
-$trendMeta = $stats['trend_meta'] ?? Freezer::resolveTrendRange($dashFilters);
 $byZone = $stats['by_zone'] ?? [];
 $topStores = $stats['top_stores'] ?? [];
 $activities = $stats['activities'] ?? [];
 
 $zoneColors = ['#2563eb', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
-$trendPeriodLabels = [
-    'month' => 'This month',
-    '6months' => 'Last 6 months',
-    'year' => 'Last 1 year',
-    'custom' => 'Custom dates',
-];
+// Always show all zones for clear comparison (even if count is 0)
+$zoneOrder = ['SOUTH', 'NORTH', 'WEST', 'EAST'];
+$zoneCountMap = [];
+foreach ($byZone as $zRow) {
+    $zk = strtoupper(trim((string)($zRow['zone'] ?? 'OTHER')));
+    $zoneCountMap[$zk] = (int)($zRow['cnt'] ?? 0);
+}
+$byZoneCompare = [];
+foreach ($zoneOrder as $zk) {
+    $byZoneCompare[] = ['zone' => $zk, 'cnt' => (int)($zoneCountMap[$zk] ?? 0)];
+    unset($zoneCountMap[$zk]);
+}
+foreach ($zoneCountMap as $zk => $cnt) {
+    $byZoneCompare[] = ['zone' => $zk, 'cnt' => (int)$cnt];
+}
+$zoneMax = 0;
+$zoneTotalCompare = 0;
+foreach ($byZoneCompare as $zRow) {
+    $zoneTotalCompare += (int)$zRow['cnt'];
+    if ((int)$zRow['cnt'] > $zoneMax) {
+        $zoneMax = (int)$zRow['cnt'];
+    }
+}
 
 $pageTitle = 'Dashboard';
 $bodyClass = 'admin-dash-page';
 $adminDashLayout = true;
 require_once __DIR__ . '/includes/header.php';
 ?>
+
+<?php if (!empty($dashLoadError)): ?>
+<div class="alert alert-danger" role="alert" style="margin:0.75rem 1rem 0;">
+    <?= htmlspecialchars($dashLoadError) ?>
+</div>
+<?php endif; ?>
 
 <div class="adash">
     <div class="adash-welcome">
@@ -111,9 +138,6 @@ require_once __DIR__ . '/includes/header.php';
             <p class="adash-welcome-sub">Overview of freezers, outlets, and KYC verification status.</p>
         </div>
         <form method="GET" action="index.php" class="adash-filters" id="dash-filter-form">
-            <input type="hidden" name="trend" id="dash-trend-keep" value="<?= htmlspecialchars($trendPeriod) ?>">
-            <input type="hidden" name="trend_from" id="dash-trend-from-keep" value="<?= htmlspecialchars($trendFrom) ?>">
-            <input type="hidden" name="trend_to" id="dash-trend-to-keep" value="<?= htmlspecialchars($trendTo) ?>">
             <select id="dash-zone" name="zone" class="adash-select" onchange="document.getElementById('dash-city').value=''; this.form.submit();" aria-label="Zone">
                 <option value="">All zones</option>
                 <?php foreach ($zoneOptions as $z): ?>
@@ -127,7 +151,7 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endforeach; ?>
             </select>
             <?php if ($hasDashFilter): ?>
-                <a href="index.php?trend=<?= urlencode($trendPeriod) ?><?= $trendPeriod === 'custom' ? '&trend_from=' . urlencode($trendFrom) . '&trend_to=' . urlencode($trendTo) : '' ?>" class="adash-clear">Clear</a>
+                <a href="index.php" class="adash-clear">Clear</a>
             <?php endif; ?>
         </form>
     </div>
@@ -175,75 +199,7 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     </div>
 
-    <div class="adash-mid-grid">
-        <div class="adash-card adash-chart-card">
-            <div class="adash-card-head adash-trend-head">
-                <div>
-                    <h2>Installation Trends</h2>
-                    <span class="adash-chip"><?= htmlspecialchars((string)($trendMeta['label'] ?? $trendPeriodLabels[$trendPeriod] ?? 'Last 6 months')) ?></span>
-                </div>
-                <form method="GET" action="index.php" class="adash-trend-filters" id="adash-trend-form">
-                    <?php if ($filterZone !== ''): ?>
-                        <input type="hidden" name="zone" value="<?= htmlspecialchars($filterZone) ?>">
-                    <?php endif; ?>
-                    <?php if ($filterCity !== ''): ?>
-                        <input type="hidden" name="city" value="<?= htmlspecialchars($filterCity) ?>">
-                    <?php endif; ?>
-                    <select name="trend" id="adash-trend-period" class="adash-select adash-select-sm" aria-label="Trend period">
-                        <option value="month" <?= $trendPeriod === 'month' ? 'selected' : '' ?>>Month</option>
-                        <option value="6months" <?= $trendPeriod === '6months' ? 'selected' : '' ?>>6 months</option>
-                        <option value="year" <?= $trendPeriod === 'year' ? 'selected' : '' ?>>1 year</option>
-                        <option value="custom" <?= $trendPeriod === 'custom' ? 'selected' : '' ?>>Custom dates</option>
-                    </select>
-                    <div class="adash-trend-custom<?= $trendPeriod === 'custom' ? ' is-open' : '' ?>" id="adash-trend-custom">
-                        <input type="date" name="trend_from" class="adash-date" <?= $trendPeriod !== 'custom' ? 'disabled' : '' ?> value="<?= htmlspecialchars($trendPeriod === 'custom' ? $trendFrom : ($trendMeta['from'] ?? '')) ?>" aria-label="From date">
-                        <span class="adash-trend-sep">to</span>
-                        <input type="date" name="trend_to" class="adash-date" <?= $trendPeriod !== 'custom' ? 'disabled' : '' ?> value="<?= htmlspecialchars($trendPeriod === 'custom' ? $trendTo : ($trendMeta['to'] ?? date('Y-m-d'))) ?>" aria-label="To date">
-                        <button type="submit" class="adash-trend-apply">Apply</button>
-                    </div>
-                </form>
-            </div>
-            <div class="adash-chart-wrap">
-                <canvas id="adash-trend-chart" height="220" aria-label="Installation trends chart"></canvas>
-            </div>
-            <div class="adash-legend">
-                <span><i style="background:#2563eb"></i> Installed</span>
-                <span><i style="background:#93c5fd"></i> Target</span>
-            </div>
-        </div>
-
-        <div class="adash-card adash-donut-card">
-            <div class="adash-card-head">
-                <h2>By Zone</h2>
-            </div>
-            <div class="adash-donut-wrap">
-                <canvas id="adash-zone-chart" width="180" height="180" aria-label="Zone distribution"></canvas>
-                <div class="adash-donut-center">
-                    <strong><?= number_format($stats['total_freezers']) ?></strong>
-                    <span>Total</span>
-                </div>
-            </div>
-            <ul class="adash-zone-list">
-                <?php if (empty($byZone)): ?>
-                    <li>No zone data yet</li>
-                <?php else: ?>
-                    <?php foreach ($byZone as $i => $z): ?>
-                        <?php
-                        $cnt = (int)($z['cnt'] ?? 0);
-                        $color = $zoneColors[$i % count($zoneColors)];
-                        ?>
-                        <li>
-                            <span class="adash-zone-dot" style="background:<?= htmlspecialchars($color) ?>"></span>
-                            <span class="adash-zone-name"><?= htmlspecialchars((string)($z['zone'] ?? 'OTHER')) ?></span>
-                            <strong><?= number_format($cnt) ?></strong>
-                        </li>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </ul>
-        </div>
-    </div>
-
-    <div class="adash-lower-grid">
+    <div class="adash-lower-grid adash-lower-grid-3">
         <div class="adash-card">
             <div class="adash-card-head">
                 <h2>Nearby KYC Due</h2>
@@ -292,7 +248,7 @@ require_once __DIR__ . '/includes/header.php';
         <div class="adash-card">
             <div class="adash-card-head">
                 <h2>Recent Activities</h2>
-                <a href="notifications.php" class="adash-link">Activity</a>
+                <a href="kyc_activity.php" class="adash-link">KYC Activity</a>
             </div>
             <ul class="adash-activity">
                 <?php if (empty($activities)): ?>
@@ -314,115 +270,39 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endif; ?>
             </ul>
         </div>
+
+        <div class="adash-card adash-zone-compare-card">
+            <div class="adash-card-head">
+                <h2>By Zone</h2>
+                <span class="adash-chip"><?= number_format($zoneTotalCompare) ?> freezers</span>
+            </div>
+            <p class="adash-zone-compare-hint">Freezer count per zone — compare South / North / West / East</p>
+            <ul class="adash-zone-compare">
+                <?php foreach ($byZoneCompare as $i => $z): ?>
+                    <?php
+                    $cnt = (int)($z['cnt'] ?? 0);
+                    $color = $zoneColors[$i % count($zoneColors)];
+                    $pct = $zoneTotalCompare > 0 ? round(($cnt / $zoneTotalCompare) * 100) : 0;
+                    $bar = $zoneMax > 0 ? round(($cnt / $zoneMax) * 100) : 0;
+                    $zoneLabel = ucfirst(strtolower((string)($z['zone'] ?? 'Other')));
+                    ?>
+                    <li>
+                        <div class="adash-zone-compare-top">
+                            <span class="adash-zone-compare-name">
+                                <span class="adash-zone-dot" style="background:<?= htmlspecialchars($color) ?>"></span>
+                                <?= htmlspecialchars($zoneLabel) ?>
+                            </span>
+                            <strong class="adash-zone-compare-count"><?= number_format($cnt) ?></strong>
+                        </div>
+                        <div class="adash-zone-compare-track" aria-hidden="true">
+                            <span class="adash-zone-compare-fill" style="width:<?= (int)$bar ?>%;background:<?= htmlspecialchars($color) ?>"></span>
+                        </div>
+                        <div class="adash-zone-compare-meta"><?= (int)$pct ?>% of total</div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
     </div>
 </div>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script>
-(function () {
-    var trend = <?= json_encode(array_values($trend), JSON_UNESCAPED_UNICODE) ?>;
-    var zones = <?= json_encode(array_values($byZone), JSON_UNESCAPED_UNICODE) ?>;
-    var colors = <?= json_encode($zoneColors) ?>;
-    var trendBucket = <?= json_encode((string)($trendMeta['bucket'] ?? 'month')) ?>;
-
-    var periodSel = document.getElementById('adash-trend-period');
-    var customBox = document.getElementById('adash-trend-custom');
-    var trendForm = document.getElementById('adash-trend-form');
-    if (periodSel && trendForm) {
-        periodSel.addEventListener('change', function () {
-            var isCustom = periodSel.value === 'custom';
-            if (customBox) {
-                customBox.classList.toggle('is-open', isCustom);
-            }
-            if (!isCustom) {
-                trendForm.querySelectorAll('input[name="trend_from"], input[name="trend_to"]').forEach(function (el) {
-                    el.disabled = true;
-                });
-                trendForm.submit();
-            } else {
-                trendForm.querySelectorAll('input[name="trend_from"], input[name="trend_to"]').forEach(function (el) {
-                    el.disabled = false;
-                });
-            }
-        });
-    }
-
-    if (window.Chart && document.getElementById('adash-trend-chart')) {
-        var labels = trend.map(function (t) { return t.label; });
-        var installed = trend.map(function (t) { return t.count || 0; });
-        var target = trend.map(function (t) { return t.target || 0; });
-        var dense = trendBucket === 'day' && labels.length > 14;
-        new Chart(document.getElementById('adash-trend-chart'), {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: 'Installed',
-                        data: installed,
-                        borderColor: '#2563eb',
-                        backgroundColor: 'rgba(37,99,235,0.12)',
-                        fill: true,
-                        tension: 0.35,
-                        pointRadius: dense ? 2 : 4,
-                        pointBackgroundColor: '#2563eb'
-                    },
-                    {
-                        label: 'Target',
-                        data: target,
-                        borderColor: '#93c5fd',
-                        borderDash: [6, 4],
-                        fill: false,
-                        tension: 0.35,
-                        pointRadius: 0
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    y: { beginAtZero: true, grid: { color: '#eef2f7' }, ticks: { precision: 0 } },
-                    x: {
-                        grid: { display: false },
-                        ticks: {
-                            maxRotation: dense ? 45 : 0,
-                            autoSkip: true,
-                            maxTicksLimit: dense ? 10 : 12
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    if (window.Chart && document.getElementById('adash-zone-chart')) {
-        var zLabels = zones.map(function (z) { return z.zone || 'OTHER'; });
-        var zData = zones.map(function (z) { return parseInt(z.cnt, 10) || 0; });
-        if (!zData.length) {
-            zLabels = ['No data'];
-            zData = [1];
-            colors = ['#e2e8f0'];
-        }
-        new Chart(document.getElementById('adash-zone-chart'), {
-            type: 'doughnut',
-            data: {
-                labels: zLabels,
-                datasets: [{
-                    data: zData,
-                    backgroundColor: colors.slice(0, zData.length),
-                    borderWidth: 0,
-                    cutout: '68%'
-                }]
-            },
-            options: {
-                responsive: false,
-                plugins: { legend: { display: false }, tooltip: { enabled: zLabels[0] !== 'No data' } }
-            }
-        });
-    }
-})();
-</script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

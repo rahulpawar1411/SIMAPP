@@ -35,18 +35,49 @@ if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? nu
 $error = null;
 $success = null;
 $csrfToken = AuthService::generateCsrfToken();
-$pendingEdit = null;
+$pendingEdit = null;      // any pending on this freezer
+$myPendingEdit = null;    // this technician's pending
 $editUnlock = null;
+$adminEditSessionKey = 'admin_edit_unlock_' . (int)$freezer['id'];
+$adminEditTtlSec = 30 * 60; // 30 minutes after password
+$adminUnlocked = false;
+$adminUnlockLeftSec = 0;
+if (!$isTechnician) {
+    $unlockMeta = $_SESSION[$adminEditSessionKey] ?? null;
+    $unlockedAt = 0;
+    $unlockUid = 0;
+    if (is_array($unlockMeta)) {
+        $unlockedAt = (int)($unlockMeta['at'] ?? 0);
+        $unlockUid = (int)($unlockMeta['uid'] ?? 0);
+    } elseif (is_numeric($unlockMeta)) {
+        $unlockedAt = (int)$unlockMeta; // legacy
+        $unlockUid = (int)($currentUser['id'] ?? 0);
+    }
+    if (
+        $unlockedAt > 0
+        && $unlockUid === (int)($currentUser['id'] ?? 0)
+        && (time() - $unlockedAt) < $adminEditTtlSec
+    ) {
+        $adminUnlocked = true;
+        $adminUnlockLeftSec = max(0, $adminEditTtlSec - (time() - $unlockedAt));
+    } else {
+        unset($_SESSION[$adminEditSessionKey]);
+    }
+}
 try {
     $pendingEdit = AppNotification::findPendingProfileEdit((int)$freezer['id']);
     if ($isTechnician && !empty($currentUser['id'])) {
+        $myPendingEdit = AppNotification::findPendingProfileEditForUser((int)$freezer['id'], (int)$currentUser['id']);
         $editUnlock = AppNotification::findActiveEditUnlock((int)$freezer['id'], (int)$currentUser['id']);
     }
 } catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'profile_edit.load_notifications');
     $pendingEdit = null;
+    $myPendingEdit = null;
     $editUnlock = null;
 }
-$canEditNow = !$isTechnician || ($editUnlock !== null);
+// Technician: needs Super Admin approval unlock. Admin: needs password unlock first.
+$canEditNow = $isTechnician ? ($editUnlock !== null) : $adminUnlocked;
 
 $freezerTypes = MasterData::getFreezerTypes();
 $brands = MasterData::getBrands();
@@ -58,11 +89,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $postAction = trim((string)($_POST['form_action'] ?? 'save'));
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security CSRF token.';
+    } elseif (!$isTechnician && $postAction === 'unlock_edit') {
+        // Admin must enter password before edit page opens
+        $adminPassword = (string)($_POST['admin_password'] ?? '');
+        if ($adminPassword === '') {
+            $error = 'Enter your admin password to open edit.';
+        } elseif (!AuthService::verifyCurrentUserPassword($adminPassword)) {
+            $error = 'Incorrect admin password. Edit page was not opened.';
+        } else {
+            $_SESSION[$adminEditSessionKey] = [
+                'at' => time(),
+                'uid' => (int)($currentUser['id'] ?? 0),
+            ];
+            header('Location: profile_edit.php?id=' . $id);
+            exit;
+        }
+    } elseif (!$isTechnician && $postAction === 'lock_edit') {
+        $prevUnlock = $_SESSION[$adminEditSessionKey] ?? null;
+        unset($_SESSION[$adminEditSessionKey]);
+        $loc = 'profile_view.php?id=' . $id . '&edit_locked=1';
+        if (is_array($prevUnlock) && !empty($prevUnlock['uid'])) {
+            $undoToken = UndoService::remember('admin_lock', [
+                'freezer_id' => $id,
+                'session_key' => $adminEditSessionKey,
+                'unlock_meta' => $prevUnlock,
+                'label' => (string)($freezer['unique_freezer_id'] ?? ('#' . $id)),
+            ]);
+            $loc .= '&undo=' . urlencode($undoToken);
+        }
+        header('Location: ' . $loc);
+        exit;
+    } elseif ($isTechnician && $postAction === 'cancel_edit_request') {
+        try {
+            $cancelId = (int)($_POST['notif_id'] ?? 0);
+            if ($cancelId <= 0 || !$myPendingEdit || (int)$myPendingEdit['id'] !== $cancelId) {
+                throw new Exception('No pending request of yours to cancel.');
+            }
+            AppNotification::cancelOwnPendingEdit($cancelId, (int)($currentUser['id'] ?? 0));
+            header('Location: profile_view.php?id=' . $id . '&edit_cancelled=1');
+            exit;
+        } catch (Throwable $e) {
+            \App\Services\AppLogger::exception($e, 'profile_edit.cancel_request');
+            $error = \App\Services\AppLogger::friendlyMessage($e, 'Could not cancel the edit request.');
+        }
     } elseif ($isTechnician && $postAction === 'request_edit') {
         // Step 1: technician submits remark → Super Admin notification
         try {
-            if ($pendingEdit) {
-                throw new Exception('An edit request is already waiting for Super Admin approval.');
+            if ($myPendingEdit) {
+                throw new Exception('Your edit request is already waiting for Super Admin approval.');
+            }
+            if ($pendingEdit && (int)($pendingEdit['created_by'] ?? 0) !== (int)($currentUser['id'] ?? 0)) {
+                $by = trim((string)($pendingEdit['created_by_name'] ?? 'another technician'));
+                throw new Exception('An edit request by ' . $by . ' is already pending. Wait until it is approved or rejected.');
             }
             if ($editUnlock) {
                 throw new Exception('Edit access is already approved. You can edit the profile now.');
@@ -93,13 +171,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             header('Location: profile_view.php?id=' . $id . '&edit_pending=1');
             exit;
-        } catch (Exception $e) {
-            $error = $e->getMessage();
+        } catch (Throwable $e) {
+            \App\Services\AppLogger::exception($e, 'profile_edit.request');
+            $error = \App\Services\AppLogger::friendlyMessage($e, 'Could not send the edit request. Please try again.');
         }
-    } elseif ($isTechnician && !$canEditNow) {
-        $error = $pendingEdit
-            ? 'Your remark is waiting for Super Admin approval. You can edit only after approval.'
-            : 'Submit a remark first. After Super Admin approval you can edit.';
+    } elseif (!$canEditNow) {
+        $error = $isTechnician
+            ? ($pendingEdit
+                ? 'Your remark is waiting for Super Admin approval. You can edit only after approval.'
+                : 'Submit a remark first. After Super Admin approval you can edit.')
+            : 'Enter your admin password first to open the edit page.';
     } else {
         try {
             $undoSnapshot = UndoService::captureProfileSnapshot($freezer);
@@ -240,49 +321,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($isTechnician && !$editUnlock) {
                 throw new Exception('Edit access is not approved yet. Submit a remark and wait for Super Admin approval.');
             }
+            if (!$isTechnician && !$adminUnlocked) {
+                throw new Exception('Enter your admin password first to open the edit page.');
+            }
 
             Store::update((int)$freezer['store_id'], $storePayload);
             Freezer::update($id, $updatePayload);
 
+            // Audit: who changed what
+            $changeLines = array_merge(
+                Freezer::describeFieldChanges(
+                    is_array($undoSnapshot['store'] ?? null) ? $undoSnapshot['store'] : [],
+                    $storePayload,
+                    'store',
+                    ['outlet_id', 'status']
+                ),
+                Freezer::describeFieldChanges(
+                    is_array($undoSnapshot['freezer'] ?? null) ? $undoSnapshot['freezer'] : [],
+                    $updatePayload,
+                    'freezer',
+                    ['unique_freezer_id', 'store_id', 'unit_sequence', 'qr_code_path', 'qr_code_data']
+                )
+            );
+            $roleTag = $isTechnician ? 'technician' : 'admin';
+            $detail = $changeLines !== []
+                ? ('Profile edited (' . $roleTag . '): ' . implode('; ', array_slice($changeLines, 0, 40)))
+                : ('Profile saved (' . $roleTag . ') — no field value changes detected');
+            Freezer::logAudit('UPDATE', $id, (string)($freezer['unique_freezer_id'] ?? ''), $detail);
+
             if ($isTechnician && $editUnlock) {
                 AppNotification::consumeEditUnlock((int)$editUnlock['id']);
+            }
+            if (!$isTechnician) {
+                unset($_SESSION[$adminEditSessionKey]);
             }
 
             $undoToken = UndoService::remember('edit', $undoSnapshot);
             header('Location: profile_view.php?id=' . $id . '&updated=1&undo=' . urlencode($undoToken));
             exit;
 
-        } catch (Exception $e) {
-            $error = $e->getMessage();
-            $freezer = Freezer::findById($id); // refresh
+        } catch (Throwable $e) {
+            \App\Services\AppLogger::exception($e, 'profile_edit.save', ['freezer_id' => $id]);
+            $error = \App\Services\AppLogger::friendlyMessage(
+                $e,
+                'Could not save profile changes. Please check the form and try again.'
+            );
+            try {
+                $freezer = Freezer::findById($id); // refresh form data
+            } catch (Throwable $e2) {
+                \App\Services\AppLogger::exception($e2, 'profile_edit.refresh');
+            }
         }
     }
 }
 
 $pageTitle = $canEditNow
     ? ('Edit Freezer: ' . $freezer['unique_freezer_id'])
-    : ('Request edit: ' . $freezer['unique_freezer_id']);
+    : (!$isTechnician
+        ? ('Confirm edit: ' . $freezer['unique_freezer_id'])
+        : ('Request edit: ' . $freezer['unique_freezer_id']));
 require_once __DIR__ . '/includes/header.php';
 
-$pendingRemark = '';
-if ($pendingEdit) {
-    $pendingPayload = AppNotification::decodePayload($pendingEdit);
-    $pendingRemark = trim((string)($pendingPayload['remark'] ?? ''));
-}
 ?>
 
 <div class="cfg-toolbar">
     <div class="cfg-toolbar-left">
         <h1 class="cfg-toolbar-title">
-            <?= $canEditNow ? 'Edit Freezer Configuration' : 'Request edit access' ?>
+            <?php if ($canEditNow): ?>
+                Edit Freezer Configuration
+            <?php elseif (!$isTechnician): ?>
+                Password required
+            <?php else: ?>
+                Request edit access
+            <?php endif; ?>
         </h1>
     </div>
     <div style="display:flex; gap:0.5rem; flex-shrink:0;">
         <a href="profile_view.php?id=<?= $freezer['id'] ?>" class="btn btn-secondary">Cancel</a>
         <?php if ($canEditNow): ?>
             <button type="submit" form="edit-freezer-form" class="btn btn-primary cfg-done-btn">Done</button>
-        <?php elseif (!$pendingEdit): ?>
+        <?php elseif ($isTechnician && !$myPendingEdit && !$pendingEdit): ?>
             <button type="submit" form="edit-request-form" class="btn btn-primary cfg-done-btn">Send remark</button>
+        <?php elseif (!$isTechnician): ?>
+            <button type="submit" form="admin-unlock-form" class="btn btn-primary cfg-done-btn">Continue</button>
         <?php endif; ?>
     </div>
 </div>
@@ -296,8 +417,62 @@ if ($pendingEdit) {
     </div>
 <?php endif; ?>
 
-<?php if ($isTechnician && !$canEditNow): ?>
-    <?php if ($pendingEdit): ?>
+<?php if (!$canEditNow && !$isTechnician): ?>
+    <div class="card" style="max-width:520px;">
+        <div class="card-header">
+            <div class="card-title"><span>Enter admin password</span></div>
+        </div>
+        <div class="card-body">
+            <p style="font-size:0.875rem;color:var(--text-secondary);margin:0 0 1rem;line-height:1.45;">
+                Password confirm for
+                <strong><?= htmlspecialchars((string)($currentUser['email'] ?? $currentUser['name'] ?? 'admin')) ?></strong>
+                is required before the edit page opens.
+            </p>
+            <div style="padding:0.85rem 1rem;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;margin-bottom:1rem;">
+                <div style="font-size:0.75rem;color:#64748b;font-weight:600;margin-bottom:0.25rem;">Editing</div>
+                <div style="font-weight:700;color:#0f172a;word-break:break-all;"><?= htmlspecialchars((string)$freezer['unique_freezer_id']) ?></div>
+                <div style="font-size:0.85rem;color:#475569;margin-top:0.25rem;">
+                    <?= htmlspecialchars((string)($freezer['store_name'] ?? '')) ?>
+                    · <?= htmlspecialchars((string)($freezer['outlet_id'] ?? '')) ?>
+                </div>
+            </div>
+            <form method="POST" action="" id="admin-unlock-form" class="cfg-form" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                <input type="hidden" name="form_action" value="unlock_edit">
+                <div class="form-group">
+                    <label class="form-label required" for="admin_password">Admin password</label>
+                    <div class="password-field">
+                        <input type="password" id="admin_password" name="admin_password" class="form-control"
+                               required autofocus autocomplete="current-password"
+                               placeholder="Enter your admin password">
+                        <button type="button" class="password-toggle" aria-label="Show password" aria-pressed="false" title="Show password">
+                            <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                            </svg>
+                            <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                                <line x1="1" y1="1" x2="23" y2="23"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem;">
+                    <button type="submit" class="btn btn-primary">Open edit page</button>
+                    <a href="profile_view.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+<?php elseif ($isTechnician && !$canEditNow): ?>
+    <?php if ($myPendingEdit): ?>
+        <?php
+        $pendingRemark = '';
+        $myPendingPayload = AppNotification::decodePayload($myPendingEdit);
+        $pendingRemark = trim((string)($myPendingPayload['remark'] ?? ''));
+        ?>
         <div class="card" style="max-width:720px;">
             <div class="card-body">
                 <div class="alert alert-warning" style="margin-bottom:1rem;">
@@ -308,11 +483,30 @@ if ($pendingEdit) {
                     <div class="form-control" style="min-height:88px;background:#f8fafc;white-space:pre-wrap;"><?= htmlspecialchars($pendingRemark) ?></div>
                 <?php endif; ?>
                 <p style="margin:0.85rem 0 0;color:#64748b;font-size:0.9rem;">
-                    Requested <?= htmlspecialchars((string)($pendingEdit['created_at'] ?? '')) ?>
+                    Requested <?= htmlspecialchars((string)($myPendingEdit['created_at'] ?? '')) ?>
                 </p>
-                <div style="margin-top:1rem;">
+                <div style="margin-top:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
                     <a href="profile_view.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary">Back to profile</a>
+                    <form method="POST" action="" style="margin:0;" onsubmit="return confirm('Cancel your edit request?');">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                        <input type="hidden" name="form_action" value="cancel_edit_request">
+                        <input type="hidden" name="notif_id" value="<?= (int)$myPendingEdit['id'] ?>">
+                        <button type="submit" class="btn btn-outline">Cancel request</button>
+                    </form>
                 </div>
+            </div>
+        </div>
+    <?php elseif ($pendingEdit): ?>
+        <div class="card" style="max-width:720px;">
+            <div class="card-body">
+                <div class="alert alert-warning" style="margin-bottom:1rem;">
+                    Another technician already sent an edit request for this freezer
+                    <?php if (!empty($pendingEdit['created_by_name'])): ?>
+                        (<?= htmlspecialchars((string)$pendingEdit['created_by_name']) ?>)
+                    <?php endif; ?>.
+                    Wait until Super Admin approves or rejects it.
+                </div>
+                <a href="profile_view.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary">Back to profile</a>
             </div>
         </div>
     <?php else: ?>
@@ -322,7 +516,7 @@ if ($pendingEdit) {
             </div>
             <div class="card-body">
                 <p style="margin:0 0 1rem;color:#64748b;font-size:0.92rem;">
-                    First send a remark to Super Admin. After approval, you will be able to edit this freezer profile.
+                    First send a remark to Super Admin. After approval, you will be able to edit this freezer profile (1 save / 24 hours).
                 </p>
                 <form method="POST" action="" id="edit-request-form" class="cfg-form">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
@@ -343,6 +537,15 @@ if ($pendingEdit) {
 <?php if ($isTechnician && $editUnlock): ?>
     <div class="alert alert-success" style="margin-bottom:1rem;">
         Edit access approved. Make your changes and tap Done. This unlock is for one save (expires in 24 hours).
+    </div>
+<?php elseif (!$isTechnician && $adminUnlocked): ?>
+    <div class="alert alert-warning" style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:0.65rem;align-items:center;justify-content:space-between;">
+        <span>Password verified. Edit unlocked for about <?= max(1, (int)ceil($adminUnlockLeftSec / 60)) ?> min — save when ready.</span>
+        <form method="POST" action="" style="margin:0;">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+            <input type="hidden" name="form_action" value="lock_edit">
+            <button type="submit" class="btn btn-sm btn-secondary">Lock again</button>
+        </form>
     </div>
 <?php endif; ?>
 

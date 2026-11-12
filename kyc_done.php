@@ -13,6 +13,7 @@ if (!in_array($result, ['PASS', 'FAIL'], true)) {
     $result = 'PASS';
 }
 $newOutlet = trim((string)($_GET['new_outlet'] ?? ''));
+$undoToken = trim((string)($_GET['undo'] ?? ''));
 
 if ($uid === '') {
     header('Location: field_home.php');
@@ -40,7 +41,23 @@ $isFail = $result === 'FAIL';
 $pageTitle = $isFail ? 'KYC Failed' : 'KYC Completed';
 $bodyClass = 'field-app-page field-shell-page';
 require_once __DIR__ . '/includes/header.php';
+
+$kycFlashMsg = $isFail ? 'KYC saved as FAIL' : 'KYC completed';
+if ($newOutlet !== '') {
+    $kycFlashMsg .= ' · New store ' . $newOutlet;
+}
 ?>
+
+<?php if ($undoToken !== '' && $newOutlet === ''): ?>
+    <div class="app-flash-toast-only" hidden
+         data-app-flash="<?= htmlspecialchars($kycFlashMsg) ?>"
+         data-app-flash-variant="<?= $isFail ? 'danger' : 'success' ?>"
+         data-app-flash-undo="<?= htmlspecialchars($undoToken) ?>"></div>
+<?php elseif ($newOutlet === ''): ?>
+    <div class="app-flash-toast-only" hidden
+         data-app-flash="<?= htmlspecialchars($kycFlashMsg) ?>"
+         data-app-flash-variant="<?= $isFail ? 'danger' : 'success' ?>"></div>
+<?php endif; ?>
 
 <div class="mapp mapp-dash kyc-done">
     <div class="kyc-done-card">

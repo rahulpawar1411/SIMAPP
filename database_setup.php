@@ -1,6 +1,8 @@
 <?php
 // Database Installer and Migrator for Freezer / Store Profile Management System
 
+require_once __DIR__ . '/vendor/autoload.php';
+
 $host = '127.0.0.1';
 $port = 3306;
 $user = 'root';
@@ -24,8 +26,8 @@ try {
     $sql = file_get_contents($sqlFile);
 
     // Update password hash dynamically for safety
-    $demoPassword = 'Admin@123';
-    $hashedPassword = password_hash($demoPassword, PASSWORD_DEFAULT);
+    $demoPassword = \App\Config\AppConfig::DEFAULT_ADMIN_PASSWORD;
+    $hashedPassword = \App\Services\PasswordService::hash($demoPassword);
 
     // Replace dummy hash in SQL
     $sql = str_replace('$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', $hashedPassword, $sql);

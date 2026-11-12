@@ -1,4 +1,8 @@
 <?php
+/**
+ * System Logs (Super Admin only).
+ * Filter by file, level, and search text. Results are paginated.
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
@@ -14,25 +18,94 @@ if ($file === '' || AppLogger::resolveLogFile($file) === null) {
     $file = $files[0] ?? '';
 }
 
+// Filters from the query string
 $level = strtoupper(trim((string)($_GET['level'] ?? '')));
 $allowedLevels = ['', 'INFO', 'AUDIT', 'WARNING', 'ERROR', 'FAILED'];
 if (!in_array($level, $allowedLevels, true)) {
     $level = '';
 }
 $q = trim((string)($_GET['q'] ?? ''));
-$limit = (int)($_GET['limit'] ?? 200);
-if ($limit < 50) {
-    $limit = 50;
+$perPage = (int)($_GET['per'] ?? 50);
+if (!in_array($perPage, [25, 50, 100], true)) {
+    $perPage = 50;
 }
-if ($limit > 1000) {
-    $limit = 1000;
-}
+$page = max(1, (int)($_GET['page'] ?? 1));
 
-$entries = $file !== '' ? AppLogger::readEntries($file, $limit, $level, $q) : [];
+$logError = null;
+try {
+    $logResult = $file !== ''
+        ? AppLogger::readEntries($file, $perPage, $level, $q, ($page - 1) * $perPage)
+        : ['entries' => [], 'total' => 0, 'capped' => false];
+} catch (Throwable $e) {
+    AppLogger::exception($e, 'admin_logs.read');
+    $logError = AppLogger::friendlyMessage($e, 'Could not read this log file. Please try another file or refresh.');
+    $logResult = ['entries' => [], 'total' => 0, 'capped' => false];
+}
+$entries = $logResult['entries'];
+$logsTotal = (int)$logResult['total'];
+$logsCapped = !empty($logResult['capped']);
+$logsPages = max(1, (int)ceil(max(1, $logsTotal) / $perPage));
+if ($logsTotal === 0) {
+    $logsPages = 1;
+    $page = 1;
+} elseif ($page > $logsPages) {
+    $page = $logsPages;
+    try {
+        $logResult = AppLogger::readEntries($file, $perPage, $level, $q, ($page - 1) * $perPage);
+        $entries = $logResult['entries'];
+        $logsTotal = (int)$logResult['total'];
+        $logsCapped = !empty($logResult['capped']);
+    } catch (Throwable $e) {
+        AppLogger::exception($e, 'admin_logs.read_page');
+        $logError = $logError ?: AppLogger::friendlyMessage($e, 'Could not read this log page.');
+        $entries = [];
+        $logsTotal = 0;
+        $logsCapped = false;
+    }
+}
+$logsOffset = ($page - 1) * $perPage;
+$logsFrom = $logsTotal === 0 ? 0 : ($logsOffset + 1);
+$logsTo = min($logsOffset + count($entries), $logsTotal);
+
+$logsQueryParams = static function (array $extra = []) use ($file, $level, $q, $perPage, $page): array {
+    $params = array_merge([
+        'file' => $file,
+        'level' => $level,
+        'q' => $q,
+        'per' => $perPage,
+        'page' => $page,
+    ], $extra);
+    if (($params['level'] ?? '') === '') {
+        unset($params['level']);
+    }
+    if (($params['q'] ?? '') === '') {
+        unset($params['q']);
+    }
+    if ((int)($params['per'] ?? 50) === 50) {
+        unset($params['per']);
+    }
+    if ((int)($params['page'] ?? 1) <= 1) {
+        unset($params['page']);
+    }
+    if (($params['file'] ?? '') === '') {
+        unset($params['file']);
+    }
+    return $params;
+};
+
+$logsPageUrl = static function (int $p) use ($logsQueryParams): string {
+    return 'admin_logs.php?' . http_build_query($logsQueryParams(['page' => max(1, $p)]));
+};
 
 $pageTitle = 'System Logs';
 require_once __DIR__ . '/includes/header.php';
-
+?>
+<?php if (!empty($logError)): ?>
+<div class="alert alert-danger" role="alert" style="margin:0.75rem 0 0;">
+    <?= htmlspecialchars($logError) ?>
+</div>
+<?php endif; ?>
+<?php
 $levelClass = static function (string $lv): string {
     return match (strtoupper($lv)) {
         'ERROR', 'FAILED' => 'badge-danger',
@@ -73,7 +146,7 @@ $ctxLine = static function (array $row): string {
             <h1 class="cfg-toolbar-title">System Logs</h1>
         </div>
         <div class="logs-toolbar-actions">
-            <a href="admin_logs.php<?= $file !== '' ? ('?file=' . rawurlencode($file)) : '' ?>" class="btn btn-secondary btn-sm">Refresh</a>
+            <a href="admin_logs.php<?= $file !== '' ? ('?' . http_build_query($logsQueryParams(['page' => 1]))) : '' ?>" class="btn btn-secondary btn-sm">Refresh</a>
         </div>
     </div>
 
@@ -104,10 +177,10 @@ $ctxLine = static function (array $row): string {
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="limit">Rows</label>
-                    <select name="limit" id="limit" class="form-select form-select-sm">
-                        <?php foreach ([100, 200, 500, 1000] as $n): ?>
-                            <option value="<?= $n ?>" <?= $limit === $n ? 'selected' : '' ?>><?= $n ?></option>
+                    <label class="form-label" for="per">Per page</label>
+                    <select name="per" id="per" class="form-select form-select-sm">
+                        <?php foreach ([25, 50, 100] as $n): ?>
+                            <option value="<?= $n ?>" <?= $perPage === $n ? 'selected' : '' ?>><?= $n ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -120,7 +193,11 @@ $ctxLine = static function (array $row): string {
                     <button type="submit" class="btn btn-primary btn-sm">Go</button>
                 </div>
             </div>
-            <p class="logs-filters-meta"><?= count($entries) ?> entries<?= $file !== '' ? ' · ' . htmlspecialchars($file) : '' ?> · newest first · scroll sideways for all columns</p>
+            <p class="logs-filters-meta">
+                <?= number_format($logsTotal) ?><?= $logsCapped ? '+' : '' ?> matched
+                <?= $file !== '' ? ' · ' . htmlspecialchars($file) : '' ?>
+                · newest first · scroll sideways for all columns
+            </p>
         </div>
     </form>
 
@@ -173,6 +250,50 @@ $ctxLine = static function (array $row): string {
                 </div>
             <?php endif; ?>
         </div>
+        <?php if ($logsTotal > 0): ?>
+        <div class="card-footer profiles-pagination" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+            <div style="font-size:0.85rem; color:#64748b;">
+                Showing <strong><?= (int)$logsFrom ?>–<?= (int)$logsTo ?></strong> of <strong><?= number_format($logsTotal) ?><?= $logsCapped ? '+' : '' ?></strong>
+                · <?= (int)$perPage ?> per page
+                <?php if ($logsPages > 1): ?>
+                    · Page <strong><?= (int)$page ?></strong> of <strong><?= (int)$logsPages ?></strong>
+                <?php endif; ?>
+            </div>
+            <?php if ($logsPages > 1): ?>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
+                <?php
+                $prevPage = max(1, $page - 1);
+                $nextPage = min($logsPages, $page + 1);
+                $window = 2;
+                $startP = max(1, $page - $window);
+                $endP = min($logsPages, $page + $window);
+                ?>
+                <?php if ($page > 1): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($logsPageUrl($prevPage)) ?>">Prev</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
+                <?php endif; ?>
+                <?php if ($startP > 1): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($logsPageUrl(1)) ?>">1</a>
+                    <?php if ($startP > 2): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+                <?php endif; ?>
+                <?php for ($p = $startP; $p <= $endP; $p++): ?>
+                    <a class="btn btn-sm <?= $p === $page ? 'btn-primary' : 'btn-secondary' ?>"
+                       href="<?= htmlspecialchars($logsPageUrl($p)) ?>"><?= $p ?></a>
+                <?php endfor; ?>
+                <?php if ($endP < $logsPages): ?>
+                    <?php if ($endP < $logsPages - 1): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($logsPageUrl($logsPages)) ?>"><?= (int)$logsPages ?></a>
+                <?php endif; ?>
+                <?php if ($page < $logsPages): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($logsPageUrl($nextPage)) ?>">Next</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
     </div>
 </div>
 

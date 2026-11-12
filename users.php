@@ -1,12 +1,19 @@
 <?php
+/**
+ * Manage Users (Super Admin only).
+ * - Create / update accounts
+ * - Edit, On/Off, Delete require admin password confirmation
+ * - Success actions show a toast with Undo (short time window)
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
 use App\Services\AppLogger;
+use App\Services\UndoService;
 use App\Models\User;
 use App\Config\AppConfig;
 
-// User create / edit / status — Super Admin only
+// Only Super Admin can open this page
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 User::ensureRoleColumn();
 $currentUser = AuthService::currentUser();
@@ -22,6 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         AppLogger::failed('users.csrf', $error);
     } else {
         $action = $_POST['action'] ?? 'create';
+        try {
 
         if ($action === 'create') {
             $result = User::create([
@@ -48,11 +56,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'update') {
             $userId = (int)($_POST['user_id'] ?? 0);
             $editUser = $userId > 0 ? User::findById($userId) : null;
+            $unlockKey = 'users_edit_unlock_' . $userId;
+            $unlockMeta = $_SESSION[$unlockKey] ?? null;
+            $unlockOk = is_array($unlockMeta)
+                && (int)($unlockMeta['admin_id'] ?? 0) === (int)$currentUser['id']
+                && ((int)($unlockMeta['at'] ?? 0) + 1800) >= time();
 
             if (!$editUser) {
                 $error = 'User not found.';
                 AppLogger::failed('users.update', $error, ['user_id' => $userId]);
+            } elseif (!$unlockOk) {
+                unset($_SESSION[$unlockKey]);
+                $error = 'Admin password required before editing this user.';
+                AppLogger::failed('users.update', $error, ['user_id' => $userId]);
+                header('Location: users.php?confirm=edit&id=' . $userId);
+                exit;
             } else {
+                $before = User::findRawById($userId);
                 $result = User::update($userId, [
                     'name' => $_POST['name'] ?? '',
                     'email' => $_POST['email'] ?? '',
@@ -65,10 +85,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
 
                 if ($result['success']) {
-                    $success = 'User updated successfully.';
+                    unset($_SESSION[$unlockKey]);
                     AppLogger::audit('users.update', 'User updated', ['user_id' => $userId]);
                     $editUser = null;
-                    header('Location: users.php?updated=1');
+                    $undo = '';
+                    if (is_array($before)) {
+                        $undo = UndoService::remember('user_edit', [
+                            'user_id' => $userId,
+                            'user' => $before,
+                            'label' => (string)($before['name'] ?? ('#' . $userId)),
+                        ]);
+                    }
+                    $loc = 'users.php?ok=' . rawurlencode('User updated');
+                    if ($undo !== '') {
+                        $loc .= '&undo=' . rawurlencode($undo);
+                    }
+                    header('Location: ' . $loc . '#users-directory');
                     exit;
                 }
 
@@ -76,38 +108,200 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 AppLogger::failed('users.update', $error, ['user_id' => $userId]);
                 $editUser = User::findById($userId) ?: $editUser;
             }
+        } elseif ($action === 'unlock_edit') {
+            $userId = (int)($_POST['user_id'] ?? 0);
+            $adminPassword = trim((string)($_POST['admin_password'] ?? ''));
+            $target = $userId > 0 ? User::findById($userId) : null;
+
+            if (!$target) {
+                $error = 'User not found.';
+                AppLogger::failed('users.unlock_edit', $error, ['user_id' => $userId]);
+            } elseif ($adminPassword === '') {
+                $error = 'Enter your admin password to open edit.';
+                AppLogger::failed('users.unlock_edit', $error, ['user_id' => $userId]);
+            } elseif (!AuthService::verifyCurrentUserPassword($adminPassword)) {
+                $error = 'Incorrect admin password. Edit was not opened.';
+                AppLogger::failed('users.unlock_edit', $error, ['user_id' => $userId]);
+            } else {
+                $_SESSION['users_edit_unlock_' . $userId] = [
+                    'at' => time(),
+                    'admin_id' => (int)$currentUser['id'],
+                ];
+                AppLogger::audit('users.unlock_edit', 'Edit unlocked', ['user_id' => $userId]);
+                header('Location: users.php?edit=' . $userId . '#user-form-card');
+                exit;
+            }
         } elseif ($action === 'toggle_status') {
             $userId = (int)($_POST['user_id'] ?? 0);
             $newStatus = ($_POST['status'] ?? '') === 'active' ? 'inactive' : 'active';
+            $adminPassword = trim((string)($_POST['admin_password'] ?? ''));
 
-            if ($userId === (int)$currentUser['id']) {
-                $error = 'You cannot deactivate your own account.';
+            if ($adminPassword === '') {
+                $error = 'Enter your admin password to confirm On / Off.';
                 AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
-            } elseif ($userId > 0 && User::setStatus($userId, $newStatus)) {
-                $success = $newStatus === 'active' ? 'User activated.' : 'User deactivated.';
-                AppLogger::audit('users.toggle_status', $success, [
-                    'user_id' => $userId,
-                    'status' => $newStatus,
-                ]);
+            } elseif (!AuthService::verifyCurrentUserPassword($adminPassword)) {
+                $error = 'Incorrect admin password. Status was not changed.';
+                AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
             } else {
-                $error = 'Could not update user status.';
-                AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
+                $liveAdmin = AuthService::currentUser();
+                if ($userId === (int)($liveAdmin['id'] ?? 0)) {
+                    $error = 'You cannot deactivate your own account.';
+                    AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
+                } elseif ($userId > 0) {
+                    $before = User::findRawById($userId);
+                    $prevStatus = (string)($before['status'] ?? $_POST['status'] ?? 'active');
+                    if (!User::setStatus($userId, $newStatus)) {
+                        $error = 'Could not update user status.';
+                        AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
+                    } else {
+                        $msg = $newStatus === 'active' ? 'User activated' : 'User deactivated';
+                        AppLogger::audit('users.toggle_status', $msg, [
+                            'user_id' => $userId,
+                            'status' => $newStatus,
+                        ]);
+                        $undo = UndoService::remember('user_status', [
+                            'user_id' => $userId,
+                            'prev_status' => $prevStatus === 'inactive' ? 'inactive' : 'active',
+                            'label' => (string)($before['name'] ?? ('#' . $userId)),
+                        ]);
+                        header(
+                            'Location: users.php?ok=' . rawurlencode($msg)
+                            . '&undo=' . rawurlencode($undo)
+                            . '#users-directory'
+                        );
+                        exit;
+                    }
+                } else {
+                    $error = 'Could not update user status.';
+                    AppLogger::failed('users.toggle_status', $error, ['user_id' => $userId]);
+                }
+            }
+        } elseif ($action === 'delete') {
+            $userId = (int)($_POST['user_id'] ?? 0);
+            $adminPassword = trim((string)($_POST['admin_password'] ?? ''));
+            $target = $userId > 0 ? User::findRawById($userId) : null;
+
+            if (!$target) {
+                $error = 'User not found.';
+                AppLogger::failed('users.delete', $error, ['user_id' => $userId]);
+            } elseif ($adminPassword === '') {
+                $error = 'Enter your admin password to confirm delete.';
+                AppLogger::failed('users.delete', $error, ['user_id' => $userId]);
+            } elseif (!AuthService::verifyCurrentUserPassword($adminPassword)) {
+                $error = 'Incorrect admin password. User was not deleted.';
+                AppLogger::failed('users.delete', $error, ['user_id' => $userId]);
+            } else {
+                $liveAdmin = AuthService::currentUser();
+                if ($userId === (int)($liveAdmin['id'] ?? 0)) {
+                    $error = 'You cannot delete your own account.';
+                    AppLogger::failed('users.delete', $error, ['user_id' => $userId]);
+                } elseif (User::delete($userId)) {
+                    unset($_SESSION['users_edit_unlock_' . $userId]);
+                    AppLogger::audit('users.delete', 'User deleted', [
+                        'user_id' => $userId,
+                        'email' => $target['email'] ?? '',
+                    ]);
+                    $undo = UndoService::remember('user_delete', [
+                        'user' => $target,
+                        'label' => (string)($target['name'] ?? ('#' . $userId)),
+                    ]);
+                    header(
+                        'Location: users.php?ok=' . rawurlencode('User deleted')
+                        . '&undo=' . rawurlencode($undo)
+                        . '#users-directory'
+                    );
+                    exit;
+                } else {
+                    $error = 'Could not delete user.';
+                    AppLogger::failed('users.delete', $error, ['user_id' => $userId]);
+                }
+            }
+        } else {
+            $error = 'Unknown action. Please try again.';
+            AppLogger::failed('users.unknown_action', $error, ['action' => $action]);
+        }
+        } catch (Throwable $e) {
+            // Unexpected DB / system failure — log details, show safe message
+            AppLogger::exception($e, 'users.' . (string)$action);
+            $error = AppLogger::friendlyMessage($e, 'Could not complete this user action. Please try again.');
+        }
+    }
+}
+
+if (isset($_GET['lock_edit'])) {
+    $lockId = (int)$_GET['lock_edit'];
+    if ($lockId > 0) {
+        unset($_SESSION['users_edit_unlock_' . $lockId]);
+    }
+    header('Location: users.php');
+    exit;
+}
+
+// Success feedback for update/status/delete is shown via toast (?ok=&undo=)
+
+$confirmAction = null;
+$confirmUser = null;
+$confirmParam = strtolower(trim((string)($_GET['confirm'] ?? '')));
+if (in_array($confirmParam, ['edit', 'toggle', 'delete'], true)) {
+    $confirmId = (int)($_GET['id'] ?? 0);
+    $confirmUser = $confirmId > 0 ? User::findById($confirmId) : null;
+    if (!$confirmUser) {
+        $error = $error ?: 'User not found for confirmation.';
+    } elseif (
+        in_array($confirmParam, ['toggle', 'delete'], true)
+        && (int)$confirmUser['id'] === (int)$currentUser['id']
+    ) {
+        $error = $error ?: ($confirmParam === 'delete'
+            ? 'You cannot delete your own account.'
+            : 'You cannot deactivate your own account.');
+        $confirmUser = null;
+    } else {
+        $confirmAction = $confirmParam;
+    }
+}
+if ($error && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $failedAction = (string)($_POST['action'] ?? '');
+    $failedMap = [
+        'unlock_edit' => 'edit',
+        'toggle_status' => 'toggle',
+        'delete' => 'delete',
+    ];
+    if (isset($failedMap[$failedAction])) {
+        $confirmId = (int)($_POST['user_id'] ?? 0);
+        $confirmUser = $confirmId > 0 ? User::findById($confirmId) : null;
+        if ($confirmUser) {
+            $mapped = $failedMap[$failedAction];
+            if (
+                in_array($mapped, ['toggle', 'delete'], true)
+                && (int)$confirmUser['id'] === (int)$currentUser['id']
+            ) {
+                $confirmUser = null;
+            } else {
+                $confirmAction = $mapped;
             }
         }
     }
 }
 
-if (isset($_GET['updated']) && $_GET['updated'] === '1' && !$error) {
-    $success = 'User updated successfully.';
-}
-
-// Load user for edit (GET ?edit=id) — Super Admin page only
+// Load user for edit (GET ?edit=id) — password unlock required
 if (!$editUser && isset($_GET['edit'])) {
     $editId = (int)$_GET['edit'];
     if ($editId > 0) {
-        $editUser = User::findById($editId);
-        if (!$editUser) {
+        $candidate = User::findById($editId);
+        if (!$candidate) {
             $error = $error ?: 'User not found for editing.';
+        } else {
+            $unlockKey = 'users_edit_unlock_' . $editId;
+            $unlockMeta = $_SESSION[$unlockKey] ?? null;
+            $unlockOk = is_array($unlockMeta)
+                && (int)($unlockMeta['admin_id'] ?? 0) === (int)$currentUser['id']
+                && ((int)($unlockMeta['at'] ?? 0) + 1800) >= time();
+            if (!$unlockOk) {
+                unset($_SESSION[$unlockKey]);
+                header('Location: users.php?confirm=edit&id=' . $editId);
+                exit;
+            }
+            $editUser = $candidate;
         }
     }
 }
@@ -115,13 +309,25 @@ if (!$editUser && isset($_GET['edit'])) {
 $isEdit = $editUser !== null;
 $usersPage = max(1, (int)($_GET['upage'] ?? 1));
 $usersLimit = 20;
-$usersTotal = User::countAll();
-$usersPages = max(1, (int)ceil($usersTotal / $usersLimit));
-if ($usersPage > $usersPages) {
-    $usersPage = $usersPages;
+$usersTotal = 0;
+$usersPages = 1;
+$usersOffset = 0;
+$users = [];
+try {
+    $usersTotal = User::countAll();
+    $usersPages = max(1, (int)ceil($usersTotal / $usersLimit));
+    if ($usersPage > $usersPages) {
+        $usersPage = $usersPages;
+    }
+    $usersOffset = ($usersPage - 1) * $usersLimit;
+    $users = User::listPaged($usersLimit, $usersOffset);
+} catch (Throwable $e) {
+    AppLogger::exception($e, 'users.list');
+    $error = $error ?: AppLogger::friendlyMessage($e, 'Could not load the user list. Please refresh the page.');
+    $usersPages = 1;
+    $usersPage = 1;
+    $usersOffset = 0;
 }
-$usersOffset = ($usersPage - 1) * $usersLimit;
-$users = User::listPaged($usersLimit, $usersOffset);
 $usersFrom = $usersTotal === 0 ? 0 : ($usersOffset + 1);
 $usersTo = min($usersOffset + $usersLimit, $usersTotal);
 
@@ -132,7 +338,7 @@ $formName = $isEdit
 $formEmail = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['email'] ?? $editUser['email']) : $editUser['email'])
     : ($keepCreate ? ($_POST['email'] ?? '') : '');
-$formPassword = $isEdit ? '' : ($keepCreate ? ($_POST['password'] ?? 'Admin@123') : 'Admin@123');
+$formPassword = $isEdit ? '' : ($keepCreate ? ($_POST['password'] ?? AppConfig::DEFAULT_ADMIN_PASSWORD) : AppConfig::DEFAULT_ADMIN_PASSWORD);
 $formRole = $isEdit
     ? ($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['role'] ?? $editUser['role']) : $editUser['role'])
     : ($keepCreate ? ($_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN) : AppConfig::ROLE_SUPER_ADMIN);
@@ -156,15 +362,62 @@ $formCity = $isEdit
     ? trim((string)($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['city'] ?? ($editUser['city'] ?? '')) : ($editUser['city'] ?? '')))
     : trim((string)($keepCreate ? ($_POST['city'] ?? '') : ''));
 $zoneOptions = AppConfig::zones();
-/** @var array<string, list<string>> cities from store location data, keyed by zone (+ _all) */
+/** @var array<string, list<string>> master cities by zone (+ store cities merged) */
 $citiesByZone = ['_all' => []];
 try {
+    $citiesByZone = \App\Models\MasterData::getCitiesByZone();
+    // Merge any cities already on live stores (custom / extra names)
     foreach ($zoneOptions as $zOpt) {
-        $citiesByZone[$zOpt] = \App\Models\Freezer::dashboardCities($zOpt);
+        $fromStores = \App\Models\Freezer::dashboardCities($zOpt);
+        if ($fromStores === []) {
+            continue;
+        }
+        $base = $citiesByZone[$zOpt] ?? [];
+        foreach ($fromStores as $sc) {
+            $sc = trim((string)$sc);
+            if ($sc === '') {
+                continue;
+            }
+            $exists = false;
+            foreach ($base as $b) {
+                if (strcasecmp($b, $sc) === 0) {
+                    $exists = true;
+                    break;
+                }
+            }
+            if (!$exists) {
+                $base[] = $sc;
+            }
+        }
+        sort($base, SORT_NATURAL | SORT_FLAG_CASE);
+        $citiesByZone[$zOpt] = $base;
     }
-    $citiesByZone['_all'] = \App\Models\Freezer::dashboardCities(null);
+    $allStore = \App\Models\Freezer::dashboardCities(null);
+    foreach ($allStore as $sc) {
+        $sc = trim((string)$sc);
+        if ($sc === '') {
+            continue;
+        }
+        $exists = false;
+        foreach ($citiesByZone['_all'] as $b) {
+            if (strcasecmp($b, $sc) === 0) {
+                $exists = true;
+                break;
+            }
+        }
+        if (!$exists) {
+            $citiesByZone['_all'][] = $sc;
+        }
+    }
+    sort($citiesByZone['_all'], SORT_NATURAL | SORT_FLAG_CASE);
 } catch (Throwable $e) {
-    $citiesByZone = ['_all' => []];
+    AppLogger::exception($e, 'users.cities');
+    try {
+        $citiesByZone = \App\Models\MasterData::getCitiesByZone();
+    } catch (Throwable $e2) {
+        AppLogger::exception($e2, 'users.cities.fallback');
+        $citiesByZone = ['_all' => []];
+    }
 }
 $cityOptions = $formZone !== '' && !empty($citiesByZone[$formZone])
     ? $citiesByZone[$formZone]
@@ -173,9 +426,122 @@ if ($formCity !== '' && !in_array($formCity, $cityOptions, true)) {
     $cityOptions[] = $formCity;
 }
 
-$pageTitle = $isEdit ? 'Edit User' : 'Manage Users';
+// Password-only screen for Edit / On-Off / Delete (same style for all)
+$passwordGateView = ($confirmAction && $confirmUser);
+$gatePageTitle = 'Manage Users';
+$gateHint = '';
+$gateLabel = '';
+$gateAction = '';
+$gateBtn = 'Confirm';
+$gateBtnClass = 'btn-primary';
+$gateDanger = false;
+if ($passwordGateView) {
+    if ($confirmAction === 'edit') {
+        $gatePageTitle = 'Edit User';
+        $gateHint = 'Edit requires your admin password.';
+        $gateLabel = 'Edit user';
+        $gateAction = 'unlock_edit';
+        $gateBtn = 'Open edit';
+        $gateBtnClass = 'btn-primary';
+        $gateDanger = false;
+    } elseif ($confirmAction === 'toggle') {
+        $willBeActive = (($confirmUser['status'] ?? '') !== 'active');
+        $gatePageTitle = $willBeActive ? 'Turn User On' : 'Turn User Off';
+        $gateHint = 'Status change requires your admin password.';
+        $gateLabel = $willBeActive ? 'Turn user On' : 'Turn user Off';
+        $gateAction = 'toggle_status';
+        $gateBtn = $willBeActive ? 'Confirm On' : 'Confirm Off';
+        $gateBtnClass = 'btn-primary';
+        $gateDanger = false;
+    } else {
+        $gatePageTitle = 'Delete User';
+        $gateHint = 'Deletion requires your admin password.';
+        $gateLabel = 'Delete user';
+        $gateAction = 'delete';
+        $gateBtn = 'Delete user';
+        $gateBtnClass = 'btn-danger';
+        $gateDanger = true;
+    }
+}
+
+$pageTitle = $passwordGateView ? $gatePageTitle : ($isEdit ? 'Edit User' : 'Manage Users');
 require_once __DIR__ . '/includes/header.php';
 ?>
+
+<?php if ($passwordGateView): ?>
+<div class="users-page users-password-gate">
+    <div class="cfg-toolbar">
+        <div class="cfg-toolbar-left">
+            <h1 class="cfg-toolbar-title"><?= htmlspecialchars($gatePageTitle) ?></h1>
+        </div>
+        <a href="users.php" class="btn btn-secondary btn-sm">Cancel</a>
+    </div>
+
+    <?php if ($error): ?>
+        <div class="alert alert-danger" style="margin-bottom: 1rem;">
+            <span><?= htmlspecialchars($error) ?></span>
+        </div>
+    <?php endif; ?>
+
+    <div class="card users-confirm-card" id="user-confirm-card" style="max-width:520px;">
+        <div class="card-header">
+            <div class="card-title"><span>Password required</span></div>
+        </div>
+        <div class="card-body">
+            <p style="font-size:0.875rem; color:var(--text-secondary); margin:0 0 1rem; line-height:1.45;">
+                <?= htmlspecialchars($gateHint) ?>
+                Logged in as
+                <strong><?= htmlspecialchars($currentUser['email'] ?? $currentUser['name']) ?></strong>.
+            </p>
+
+            <div class="users-confirm-target<?= $gateDanger ? ' is-danger' : '' ?>">
+                <div class="users-confirm-target-label"><?= htmlspecialchars($gateLabel) ?></div>
+                <div class="users-confirm-target-name"><?= htmlspecialchars((string)$confirmUser['name']) ?></div>
+                <div class="users-confirm-target-meta">
+                    <?= htmlspecialchars((string)$confirmUser['email']) ?>
+                    · <?= htmlspecialchars(str_replace('_', ' ', (string)($confirmUser['role'] ?? ''))) ?>
+                </div>
+            </div>
+
+            <form method="POST" action="users.php?confirm=<?= htmlspecialchars($confirmAction) ?>&amp;id=<?= (int)$confirmUser['id'] ?>" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                <input type="hidden" name="action" value="<?= htmlspecialchars($gateAction) ?>">
+                <input type="hidden" name="user_id" value="<?= (int)$confirmUser['id'] ?>">
+                <?php if ($confirmAction === 'toggle'): ?>
+                    <input type="hidden" name="status" value="<?= htmlspecialchars((string)($confirmUser['status'] ?? 'active')) ?>">
+                <?php endif; ?>
+
+                <div class="form-group">
+                    <label class="form-label required" for="admin_password">Admin password</label>
+                    <div class="password-field">
+                        <input type="password" id="admin_password" name="admin_password" class="form-control"
+                               required autofocus autocomplete="current-password"
+                               placeholder="Enter your admin password">
+                        <button type="button" class="password-toggle" aria-label="Show password" aria-pressed="false" title="Show password">
+                            <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                            </svg>
+                            <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                                <line x1="1" y1="1" x2="23" y2="23"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:1rem;">
+                    <button type="submit" class="btn <?= htmlspecialchars($gateBtnClass) ?>"><?= htmlspecialchars($gateBtn) ?></button>
+                    <a href="users.php" class="btn btn-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<?php return; endif; ?>
 
 <div class="users-page">
     <div class="cfg-toolbar">
@@ -305,7 +671,7 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <div class="col-4 form-group">
-                        <label class="form-label required" for="role">User role</label>
+                        <label class="form-label required" for="role">User type</label>
                         <select id="role" name="role" class="form-select" required>
                             <?php foreach (AppConfig::getUserRoles() as $roleOpt): ?>
                                 <option value="<?= htmlspecialchars($roleOpt['value']) ?>" <?= $formRole === $roleOpt['value'] ? 'selected' : '' ?>>
@@ -351,24 +717,37 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <div class="col-4 form-group" id="user-zone-group">
-                        <label class="form-label" for="zone">Assigned zone</label>
-                        <select id="zone" name="zone" class="form-select">
+                        <label class="form-label" for="user_zone">Assigned zone</label>
+                        <select id="user_zone" name="zone" class="form-select">
                             <option value="">All zones</option>
                             <?php foreach ($zoneOptions as $z): ?>
                                 <option value="<?= htmlspecialchars($z) ?>" <?= $formZone === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <small style="color:#64748b;font-size:0.75rem;">Admin sets access area · Technician pe apply hota hai</small>
+                        <small style="color:#64748b;font-size:0.75rem;">Admin sets the access area. This limits what the technician can see.</small>
                     </div>
 
                     <div class="col-4 form-group" id="user-city-group">
-                        <label class="form-label" for="city">Assigned city</label>
-                        <select id="city" name="city" class="form-select">
-                            <option value="">All cities</option>
-                            <?php foreach ($cityOptions as $cName): ?>
-                                <option value="<?= htmlspecialchars($cName) ?>" <?= $formCity === $cName ? 'selected' : '' ?>><?= htmlspecialchars($cName) ?></option>
-                            <?php endforeach; ?>
-                        </select>
+                        <label class="form-label" for="user_city">Assigned city</label>
+                        <div class="user-city-combo">
+                            <input
+                                type="text"
+                                id="user_city"
+                                name="city"
+                                class="form-control"
+                                list="user-city-datalist"
+                                placeholder="Type or pick city…"
+                                maxlength="100"
+                                autocomplete="off"
+                                value="<?= htmlspecialchars($formCity) ?>"
+                            >
+                            <datalist id="user-city-datalist">
+                                <?php foreach ($cityOptions as $cName): ?>
+                                    <option value="<?= htmlspecialchars($cName) ?>"></option>
+                                <?php endforeach; ?>
+                            </datalist>
+                        </div>
+                        <small style="color:#64748b;font-size:0.75rem;">Pick a zone, then type or search a city. Leave blank for all cities.</small>
                     </div>
                     <script type="application/json" id="user-cities-by-zone"><?= json_encode($citiesByZone, JSON_UNESCAPED_UNICODE) ?></script>
                 </div>
@@ -381,7 +760,7 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
                 <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
                     <?php if ($isEdit): ?>
-                        <a href="users.php" class="btn btn-outline">Cancel Edit</a>
+                        <a href="users.php?lock_edit=<?= (int)$editUser['id'] ?>" class="btn btn-outline">Cancel Edit</a>
                         <button type="submit" class="btn btn-warning" id="user-submit-btn">
                             Update User Account
                         </button>
@@ -398,9 +777,9 @@ require_once __DIR__ . '/includes/header.php';
 </form>
 </div><!-- /users-page -->
 
-<!-- Users directory -->
-<div class="card users-directory" id="users-directory">
-    <div class="card-header users-directory-head">
+<!-- Users directory — Excel / logs-style table -->
+<div class="card users-directory logs-entries-card" id="users-directory">
+    <div class="card-header users-directory-head logs-toolbar-compact">
         <div class="card-title">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -413,154 +792,123 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
-    <!-- Desktop table -->
-    <div class="table-responsive users-directory-desktop">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Area</th>
-                    <th>Status</th>
-                    <th style="text-align:right;">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($users)): ?>
-                    <tr><td colspan="6" style="text-align:center; color:#64748b; padding:1.5rem;">No users found.</td></tr>
-                <?php else: ?>
-                    <?php foreach ($users as $u): ?>
-                        <?php
-                        $uZone = trim((string)($u['zone'] ?? ''));
-                        $uCity = trim((string)($u['city'] ?? ''));
-                        $uArea = $uZone === '' && $uCity === ''
-                            ? 'All areas'
-                            : trim(($uZone !== '' ? $uZone : 'Any zone') . ($uCity !== '' ? ' · ' . $uCity : ''));
-                        ?>
-                        <tr>
-                            <td>
-                                <strong style="color:#0f172a;"><?= htmlspecialchars($u['name']) ?></strong>
-                                <?php if (!empty($u['phone'])): ?>
-                                    <div style="font-size:0.75rem;color:#64748b;"><?= htmlspecialchars($u['phone']) ?></div>
-                                <?php endif; ?>
-                            </td>
-                            <td style="font-size:0.85rem;"><?= htmlspecialchars($u['email']) ?></td>
-                            <td>
-                                <span class="badge badge-primary" style="text-transform: capitalize;">
-                                    <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
-                                </span>
-                            </td>
-                            <td style="font-size:0.8rem;color:#475569;"><?= htmlspecialchars($uArea) ?></td>
-                            <td>
-                                <?php if ($u['status'] === 'active'): ?>
-                                    <span class="badge badge-success">Active</span>
-                                <?php else: ?>
-                                    <span class="badge badge-danger">Inactive</span>
-                                <?php endif; ?>
-                            </td>
-                            <td style="text-align:right; white-space:nowrap;">
-                                <a href="users.php?edit=<?= (int)$u['id'] ?>#user-form-card" class="btn btn-sm btn-secondary" title="Edit user (Super Admin)">Edit</a>
-                                <?php if ((int)$u['id'] !== (int)$currentUser['id']): ?>
-                                    <form method="POST" style="display:inline;">
-                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="toggle_status">
-                                        <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
-                                        <input type="hidden" name="status" value="<?= htmlspecialchars($u['status']) ?>">
-                                        <button type="submit" class="btn btn-sm btn-outline">
-                                            <?= $u['status'] === 'active' ? 'Deactivate' : 'Activate' ?>
-                                        </button>
-                                    </form>
-                                <?php else: ?>
-                                    <span style="font-size:0.75rem;color:#94a3b8; margin-left:0.35rem;">You</span>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- Mobile cards -->
-    <div class="card-body users-directory-mobile">
+    <div class="card-body logs-entries-body">
         <?php if (empty($users)): ?>
             <p class="users-empty">No users found.</p>
         <?php else: ?>
-            <ul class="users-card-list">
-                <?php foreach ($users as $u): ?>
-                    <li class="users-card">
-                        <div class="users-card-top">
-                            <div class="users-card-who">
-                                <div class="users-card-avatar"><?= strtoupper(substr($u['name'] ?? 'U', 0, 1)) ?></div>
-                                <div class="users-card-meta">
-                                    <strong class="users-card-name"><?= htmlspecialchars($u['name']) ?></strong>
-                                    <span class="users-card-email"><?= htmlspecialchars($u['email']) ?></span>
-                                    <?php if (!empty($u['phone'])): ?>
-                                        <span class="users-card-phone"><?= htmlspecialchars($u['phone']) ?></span>
+            <div class="logs-table-wrap">
+                <table class="logs-excel users-excel">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                            <th>Type</th>
+                            <th>Area</th>
+                            <th>Status</th>
+                            <th>Last login</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($users as $u): ?>
+                            <?php
+                            $uZone = trim((string)($u['zone'] ?? ''));
+                            $uCity = trim((string)($u['city'] ?? ''));
+                            $uArea = $uZone === '' && $uCity === ''
+                                ? 'All areas'
+                                : trim(($uZone !== '' ? $uZone : 'Any zone') . ($uCity !== '' ? ' · ' . $uCity : ''));
+                            $uRole = str_replace('_', ' ', (string)($u['role'] ?? ''));
+                            $lastLogin = trim((string)($u['last_login'] ?? ''));
+                            $isYou = (int)$u['id'] === (int)$currentUser['id'];
+                            ?>
+                            <tr>
+                                <td title="<?= (int)$u['id'] ?>"><?= (int)$u['id'] ?></td>
+                                <td title="<?= htmlspecialchars($u['name']) ?>">
+                                    <?= htmlspecialchars($u['name']) ?>
+                                    <?php if ($isYou): ?><span class="users-excel-you">You</span><?php endif; ?>
+                                </td>
+                                <td title="<?= htmlspecialchars($u['email']) ?>"><?= htmlspecialchars($u['email']) ?></td>
+                                <td title="<?= htmlspecialchars((string)($u['phone'] ?? '')) ?>"><?= htmlspecialchars((string)($u['phone'] ?? '—')) ?></td>
+                                <td class="logs-col-level" title="<?= htmlspecialchars($uRole) ?>">
+                                    <span class="badge badge-sm badge-primary" style="text-transform:capitalize;"><?= htmlspecialchars($uRole) ?></span>
+                                </td>
+                                <td title="<?= htmlspecialchars($uArea) ?>"><?= htmlspecialchars($uArea) ?></td>
+                                <td class="logs-col-level">
+                                    <?php if ($u['status'] === 'active'): ?>
+                                        <span class="badge badge-sm badge-success">Active</span>
+                                    <?php else: ?>
+                                        <span class="badge badge-sm badge-danger">Inactive</span>
                                     <?php endif; ?>
-                                </div>
-                            </div>
-                            <?php if ($u['status'] === 'active'): ?>
-                                <span class="badge badge-success">Active</span>
-                            <?php else: ?>
-                                <span class="badge badge-danger">Inactive</span>
-                            <?php endif; ?>
-                        </div>
-                        <?php
-                        $uZoneM = trim((string)($u['zone'] ?? ''));
-                        $uCityM = trim((string)($u['city'] ?? ''));
-                        $uAreaM = $uZoneM === '' && $uCityM === ''
-                            ? 'All areas'
-                            : trim(($uZoneM !== '' ? $uZoneM : 'Any zone') . ($uCityM !== '' ? ' · ' . $uCityM : ''));
-                        ?>
-                        <div class="users-card-role">
-                            <span class="badge badge-primary" style="text-transform: capitalize;">
-                                <?= htmlspecialchars(str_replace('_', ' ', $u['role'])) ?>
-                            </span>
-                            <span style="font-size:0.75rem;color:#64748b;"><?= htmlspecialchars($uAreaM) ?></span>
-                            <?php if ((int)$u['id'] === (int)$currentUser['id']): ?>
-                                <span class="users-card-you">You</span>
-                            <?php endif; ?>
-                        </div>
-                        <div class="users-card-actions">
-                            <a href="users.php?edit=<?= (int)$u['id'] ?>#user-form-card" class="btn btn-sm btn-secondary">Edit</a>
-                            <?php if ((int)$u['id'] !== (int)$currentUser['id']): ?>
-                                <form method="POST">
-                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                                    <input type="hidden" name="action" value="toggle_status">
-                                    <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
-                                    <input type="hidden" name="status" value="<?= htmlspecialchars($u['status']) ?>">
-                                    <button type="submit" class="btn btn-sm btn-outline">
-                                        <?= $u['status'] === 'active' ? 'Deactivate' : 'Activate' ?>
-                                    </button>
-                                </form>
-                            <?php endif; ?>
-                        </div>
-                    </li>
-                <?php endforeach; ?>
-            </ul>
+                                </td>
+                                <td title="<?= htmlspecialchars($lastLogin !== '' ? $lastLogin : 'Never') ?>">
+                                    <?= htmlspecialchars($lastLogin !== '' ? $lastLogin : '—') ?>
+                                </td>
+                                <td class="users-excel-actions">
+                                    <a href="users.php?confirm=edit&amp;id=<?= (int)$u['id'] ?>"
+                                       class="btn btn-sm btn-secondary"
+                                       title="Edit user (password required)">Edit</a>
+                                    <?php if (!$isYou): ?>
+                                        <a href="users.php?confirm=toggle&amp;id=<?= (int)$u['id'] ?>"
+                                           class="btn btn-sm btn-outline"
+                                           title="<?= $u['status'] === 'active' ? 'Turn Off (password required)' : 'Turn On (password required)' ?>">
+                                            <?= $u['status'] === 'active' ? 'Off' : 'On' ?>
+                                        </a>
+                                        <a href="users.php?confirm=delete&amp;id=<?= (int)$u['id'] ?>"
+                                           class="btn btn-sm btn-danger"
+                                           title="Delete user (password required)">Del</a>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php endif; ?>
     </div>
 
-    <?php if ($usersTotal > $usersLimit): ?>
-    <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+    <?php if ($usersTotal > 0): ?>
+    <div class="card-footer profiles-pagination" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
         <div style="font-size:0.85rem; color:#64748b;">
-            Page <strong><?= (int)$usersPage ?></strong> of <strong><?= (int)$usersPages ?></strong>
-            · 20 per page
+            Showing <strong><?= (int)$usersFrom ?>–<?= (int)$usersTo ?></strong> of <strong><?= number_format($usersTotal) ?></strong>
+            · <?= (int)$usersLimit ?> per page
+            <?php if ($usersPages > 1): ?>
+                · Page <strong><?= (int)$usersPage ?></strong> of <strong><?= (int)$usersPages ?></strong>
+            <?php endif; ?>
         </div>
-        <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+        <?php if ($usersPages > 1): ?>
+        <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
+            <?php
+            $uPrev = max(1, $usersPage - 1);
+            $uNext = min($usersPages, $usersPage + 1);
+            $uStart = max(1, $usersPage - 2);
+            $uEnd = min($usersPages, $usersPage + 2);
+            ?>
             <?php if ($usersPage > 1): ?>
-                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $usersPage - 1 ?>#users-directory">Prev</a>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $uPrev ?>#users-directory">Prev</a>
             <?php else: ?>
                 <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
             <?php endif; ?>
+            <?php if ($uStart > 1): ?>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=1#users-directory">1</a>
+                <?php if ($uStart > 2): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+            <?php endif; ?>
+            <?php for ($p = $uStart; $p <= $uEnd; $p++): ?>
+                <a class="btn btn-sm <?= $p === $usersPage ? 'btn-primary' : 'btn-secondary' ?>"
+                   href="users.php?upage=<?= $p ?>#users-directory"><?= $p ?></a>
+            <?php endfor; ?>
+            <?php if ($uEnd < $usersPages): ?>
+                <?php if ($uEnd < $usersPages - 1): ?><span style="color:#94a3b8;">…</span><?php endif; ?>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= (int)$usersPages ?>#users-directory"><?= (int)$usersPages ?></a>
+            <?php endif; ?>
             <?php if ($usersPage < $usersPages): ?>
-                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $usersPage + 1 ?>#users-directory">Next</a>
+                <a class="btn btn-sm btn-secondary" href="users.php?upage=<?= $uNext ?>#users-directory">Next</a>
             <?php else: ?>
                 <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
             <?php endif; ?>
         </div>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
 </div>
@@ -628,8 +976,9 @@ require_once __DIR__ . '/includes/header.php';
     var phoneInput = document.getElementById('phone');
     var passwordInput = document.getElementById('password');
     var roleSelect = document.getElementById('role');
-    var zoneSelect = document.getElementById('zone');
-    var citySelect = document.getElementById('city');
+    var zoneSelect = document.getElementById('user_zone');
+    var cityInput = document.getElementById('user_city');
+    var cityDatalist = document.getElementById('user-city-datalist');
     var zoneGroup = document.getElementById('user-zone-group');
     var cityGroup = document.getElementById('user-city-group');
     var summary = document.getElementById('user-form-summary');
@@ -655,34 +1004,49 @@ require_once __DIR__ . '/includes/header.php';
         if (cityGroup) cityGroup.style.display = '';
     }
 
-    /** Fill city dropdown from stores location data for selected zone */
+    /** Refresh datalist options for selected zone (type-to-search) */
     function refillCities(keepValue) {
-        if (!citySelect) return;
-        var z = zoneSelect && zoneSelect.value ? zoneSelect.value : '';
-        var list = (z && citiesByZone[z]) ? citiesByZone[z] : (citiesByZone._all || []);
-        var prev = keepValue ? citySelect.value : '';
-        citySelect.innerHTML = '';
-        var allOpt = document.createElement('option');
-        allOpt.value = '';
-        allOpt.textContent = 'All cities';
-        citySelect.appendChild(allOpt);
+        if (!cityInput || !cityDatalist) return;
+        var z = zoneSelect && zoneSelect.value ? String(zoneSelect.value).toUpperCase() : '';
+        var list;
+        if (z && Array.isArray(citiesByZone[z]) && citiesByZone[z].length) {
+            list = citiesByZone[z];
+        } else if (z) {
+            list = [];
+        } else {
+            list = citiesByZone._all || [];
+        }
+        var prev = keepValue ? String(cityInput.value || '').trim() : '';
+        cityDatalist.innerHTML = '';
         (list || []).forEach(function (c) {
             var opt = document.createElement('option');
             opt.value = c;
-            opt.textContent = c;
-            citySelect.appendChild(opt);
+            cityDatalist.appendChild(opt);
         });
-        if (prev && list && list.indexOf(prev) !== -1) {
-            citySelect.value = prev;
-        } else if (prev && keepValue && (!list || list.indexOf(prev) === -1)) {
-            var extra = document.createElement('option');
-            extra.value = prev;
-            extra.textContent = prev;
-            citySelect.appendChild(extra);
-            citySelect.value = prev;
-        } else {
-            citySelect.value = '';
+        if (prev) {
+            var found = null;
+            for (var i = 0; i < list.length; i++) {
+                if (String(list[i]).toLowerCase() === prev.toLowerCase()) {
+                    found = list[i];
+                    break;
+                }
+            }
+            if (found) {
+                cityInput.value = found;
+            } else if (keepValue) {
+                cityInput.value = prev;
+                var extra = document.createElement('option');
+                extra.value = prev;
+                cityDatalist.appendChild(extra);
+            } else {
+                cityInput.value = '';
+            }
+        } else if (!keepValue) {
+            cityInput.value = '';
         }
+        cityInput.placeholder = z
+            ? ('Type city in ' + z + '…')
+            : 'Type or pick city…';
     }
 
     function syncSummary() {
@@ -690,7 +1054,7 @@ require_once __DIR__ . '/includes/header.php';
         var label = roleSelect.options[roleSelect.selectedIndex].text.split('—')[0].trim();
         var name = (nameInput && nameInput.value.trim()) || 'New user';
         var z = zoneSelect && zoneSelect.value ? zoneSelect.value : '';
-        var c = citySelect && citySelect.value ? citySelect.value : '';
+        var c = cityInput && cityInput.value.trim() ? cityInput.value.trim() : '';
         var area = '';
         if (roleSelect.value === 'technician') {
             if (z || c) area = ' · ' + (z || 'Any') + (c ? ' / ' + c : '');
@@ -749,8 +1113,9 @@ require_once __DIR__ . '/includes/header.php';
             syncSummary();
         });
     }
-    if (citySelect) {
-        citySelect.addEventListener('change', syncSummary);
+    if (cityInput) {
+        cityInput.addEventListener('input', syncSummary);
+        cityInput.addEventListener('change', syncSummary);
     }
 
     if (form) {
@@ -777,6 +1142,7 @@ require_once __DIR__ . '/includes/header.php';
     }
 
     syncAreaVisibility();
+    refillCities(true);
     syncSummary();
 })();
 </script>

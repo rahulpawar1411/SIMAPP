@@ -168,15 +168,40 @@ if (!in_array($activeTab, ['overview', 'freezers', 'history'], true)) {
 
 $isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
 $pendingEdit = null;
+$myPendingEdit = null;
 $editUnlock = null;
+$lastEditDecision = null;
 try {
     $pendingEdit = AppNotification::findPendingProfileEdit((int)$freezer['id']);
     if ($isTechnician && !empty($currentUser['id'])) {
-        $editUnlock = AppNotification::findActiveEditUnlock((int)$freezer['id'], (int)$currentUser['id']);
+        $uid = (int)$currentUser['id'];
+        $myPendingEdit = AppNotification::findPendingProfileEditForUser((int)$freezer['id'], $uid);
+        $editUnlock = AppNotification::findActiveEditUnlock((int)$freezer['id'], $uid);
+        if (!$editUnlock && !$myPendingEdit) {
+            $decided = AppNotification::findLatestDecidedEditForUser((int)$freezer['id'], $uid);
+            if ($decided && (string)($decided['status'] ?? '') === 'rejected') {
+                $when = strtotime((string)($decided['reviewed_at'] ?? $decided['created_at'] ?? ''));
+                if ($when && (time() - $when) <= 7 * 86400) {
+                    $lastEditDecision = $decided;
+                }
+            }
+        }
     }
 } catch (Throwable $e) {
     $pendingEdit = null;
+    $myPendingEdit = null;
     $editUnlock = null;
+    $lastEditDecision = null;
+}
+$editBtnLabel = 'Edit';
+if ($isTechnician && !$editUnlock) {
+    if ($myPendingEdit) {
+        $editBtnLabel = 'Edit pending';
+    } elseif ($pendingEdit) {
+        $editBtnLabel = 'Edit locked';
+    } else {
+        $editBtnLabel = 'Request edit';
+    }
 }
 $pageTitle = 'Store Profile: ' . ($freezer['outlet_id'] ?? $freezer['store_name']);
 $bodyClass = $isTechnician ? 'field-app-page field-shell-page' : 'app-profile-page';
@@ -210,7 +235,7 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 <div class="sp-actions field-actions-row">
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
-    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= ($isTechnician && !$editUnlock) ? ($pendingEdit ? 'Edit pending' : 'Request edit') : 'Edit' ?></a>
+    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= htmlspecialchars($editBtnLabel) ?></a>
     <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= !empty($kycStatus['due']) ? 'btn-primary' : 'btn-outline' ?>" title="<?= !empty($kycStatus['due']) ? 'KYC due' : 'KYC verify' ?>">
         <span class="btn-label-full">KYC <?= !empty($kycStatus['due']) ? '(due)' : 'verify' ?></span>
         <span class="btn-label-short">KYC<?= !empty($kycStatus['due']) ? '*' : '' ?></span>
@@ -230,24 +255,44 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 <?php endif; ?>
 
 <?php if (!empty($_GET['edit_pending'])): ?>
-    <div class="alert alert-warning" style="margin-bottom:1rem;">
+    <div class="alert alert-warning app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="Remark sent for Super Admin approval." data-app-flash-variant="success">
         Remark sent for Super Admin approval. After approval you can edit this profile.
+    </div>
+<?php endif; ?>
+<?php if (!empty($_GET['edit_cancelled'])): ?>
+    <div class="alert alert-success app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="Edit request cancelled. You can send a new remark anytime." data-app-flash-variant="success">
+        Edit request cancelled. You can send a new remark anytime.
+    </div>
+<?php endif; ?>
+<?php if (!empty($_GET['edit_locked'])): ?>
+    <div class="alert alert-success app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="Edit locked again. Password will be required next time." data-app-flash-variant="success">
+        Edit locked again. Password will be required next time.
     </div>
 <?php endif; ?>
 <?php if ($editUnlock && empty($_GET['edit_pending'])): ?>
     <div class="alert alert-success" style="margin-bottom:1rem;">
-        Edit access approved.
+        Edit access approved (1 save / 24h).
         <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>">Open edit form</a>
+    </div>
+<?php elseif ($myPendingEdit && empty($_GET['edit_pending'])): ?>
+    <div class="alert alert-warning" style="margin-bottom:1rem;">
+        Your edit remark is waiting for Super Admin approval.
+        <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>">View / cancel request</a>
     </div>
 <?php elseif ($pendingEdit && empty($_GET['edit_pending'])): ?>
     <div class="alert alert-warning" style="margin-bottom:1rem;">
-        Edit remark pending Super Admin approval
+        Edit request pending Super Admin approval
         <?php if (!empty($pendingEdit['created_by_name'])): ?>
             (by <?= htmlspecialchars((string)$pendingEdit['created_by_name']) ?>)
         <?php endif; ?>
         <?php if ($isAdminUser): ?>
             — <a href="notifications.php">Review now</a>
         <?php endif; ?>
+    </div>
+<?php elseif ($lastEditDecision): ?>
+    <div class="alert alert-danger" style="margin-bottom:1rem;">
+        Your last edit request was rejected<?= !empty($lastEditDecision['review_notes']) ? ': ' . htmlspecialchars((string)$lastEditDecision['review_notes']) : '.' ?>
+        You can send a new remark.
     </div>
 <?php endif; ?>
 <?php if (!empty($_GET['created'])): ?>
@@ -432,7 +477,7 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
     <div class="card">
         <div class="card-header">
             <div class="card-title"><span>Store details</span></div>
-            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline"><?= ($isTechnician && !$editUnlock) ? ($pendingEdit ? 'Edit pending' : 'Request edit') : 'Edit' ?></a>
+            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline"><?= htmlspecialchars($editBtnLabel) ?></a>
                     </div>
         <div class="card-body">
             <div class="profile-kv-grid">
@@ -915,6 +960,60 @@ $activityRowClass = static function (string $key): string {
                 </tbody>
             </table>
         </div>
+    </div>
+</div>
+
+<?php
+$editAuditLogs = [];
+try {
+    $editAuditLogs = Freezer::listAuditForFreezer((int)$freezer['id'], 25);
+} catch (Throwable $e) {
+    $editAuditLogs = [];
+}
+?>
+<div class="card sp-history-card" id="edit-audit" style="margin-top:1rem;">
+    <div class="card-header sp-history-header">
+        <div>
+            <div class="card-title"><span>Edit audit</span></div>
+            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
+                Who changed this profile, when, and what fields changed. Also Approve / Reject decisions.
+            </p>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <?php if (empty($editAuditLogs)): ?>
+            <p style="margin:0;padding:1rem;color:#94a3b8;">No edit audit entries yet.</p>
+        <?php else: ?>
+            <div class="logs-table-wrap" style="max-height:360px;">
+                <table class="logs-excel notif-excel">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Who</th>
+                            <th>Action</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($editAuditLogs as $a):
+                            $act = strtoupper((string)($a['action'] ?? ''));
+                            $actClass = $act === 'UPDATE' ? 'badge-primary'
+                                : ($act === 'APPROVE' ? 'badge-success'
+                                : ($act === 'REJECT' ? 'badge-danger' : 'badge-secondary'));
+                            ?>
+                            <tr>
+                                <td><?= htmlspecialchars((string)($a['created_at'] ?? '—')) ?></td>
+                                <td><?= htmlspecialchars((string)(($a['user_name'] ?? '') !== '' ? $a['user_name'] : '—')) ?></td>
+                                <td><span class="badge badge-sm <?= $actClass ?>"><?= htmlspecialchars($act !== '' ? $act : '—') ?></span></td>
+                                <td title="<?= htmlspecialchars((string)($a['details'] ?? '')) ?>">
+                                    <?= htmlspecialchars((string)(($a['details'] ?? '') !== '' ? $a['details'] : '—')) ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
     </div>
 </div>
 <?php endif; ?>

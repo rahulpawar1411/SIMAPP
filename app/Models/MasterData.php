@@ -285,6 +285,47 @@ class MasterData {
     }
 
     /**
+     * City names by zone (for Assigned city dropdowns). Sorted A–Z.
+     * @return array<string, list<string>> e.g. WEST => ['Ahmedabad', 'Mumbai', ...] + _all
+     */
+    public static function getCitiesByZone(): array {
+        $out = ['_all' => []];
+        $seenAll = [];
+        foreach (self::getGeoHierarchy() as $zone => $states) {
+            $zone = strtoupper(trim((string)$zone));
+            $names = [];
+            $seen = [];
+            if (!is_array($states)) {
+                continue;
+            }
+            foreach ($states as $cities) {
+                if (!is_array($cities)) {
+                    continue;
+                }
+                foreach ($cities as $row) {
+                    $city = trim((string)($row['city'] ?? ''));
+                    if ($city === '') {
+                        continue;
+                    }
+                    $key = strtolower($city);
+                    if (!isset($seen[$key])) {
+                        $seen[$key] = true;
+                        $names[] = $city;
+                    }
+                    if (!isset($seenAll[$key])) {
+                        $seenAll[$key] = true;
+                        $out['_all'][] = $city;
+                    }
+                }
+            }
+            sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+            $out[$zone] = $names;
+        }
+        sort($out['_all'], SORT_NATURAL | SORT_FLAG_CASE);
+        return $out;
+    }
+
+    /**
      * Comprehensive Hierarchical Geographical Master:
      * Zone -> State -> Cities (with standard Location Code, default PIN, and coordinates)
      */

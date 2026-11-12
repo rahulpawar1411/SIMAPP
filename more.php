@@ -42,14 +42,20 @@ require_once __DIR__ . '/includes/header.php';
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </a>
         <a href="notifications.php">
-            <span>Notifications<?php
+            <span>Approvals<?php
                 try {
                     $pc = \App\Models\AppNotification::countPendingApprovals();
                     if ($pc > 0) {
                         echo ' (' . (int)$pc . ')';
                     }
-                } catch (Throwable $e) {}
+                } catch (Throwable $e) {
+                    \App\Services\AppLogger::exception($e, 'more.pending_approvals');
+                }
             ?></span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+        <a href="kyc_activity.php">
+            <span>KYC Activity</span>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </a>
         <a href="users.php">

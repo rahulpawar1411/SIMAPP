@@ -245,8 +245,7 @@ INSERT INTO `brands` (`code`, `name`, `description`) VALUES
 ('OT', 'Other / OEM', 'Other or custom commercial cooling manufacturer')
 ON DUPLICATE KEY UPDATE `name`=VALUES(`name`), `description`=VALUES(`description`);
 
--- Initial Seed Data: Default Users (Pass: Admin@123 for all seeded demo users)
--- bcrypt hash for 'Admin@123': $2y$10$wN1g1k3RZZk9i2bQ3jY32.g1U7T9a.oGg9q6rV7K6lO6HlI4P1l7y
+-- Initial Seed Data: Default Users (Pass: Admin@123 — hash replaced by database_setup.php)
 INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `status`) VALUES
 ('Harshit SuperAdmin', 'admin@reeferon.com', '$2y$10$fB8Qd9P93tJ32K97n/aO3e0Q5Fk2G8M5Yl8R1bE1aJ7eC9fG7u8O.', 'super_admin', '9876543210', 'active')
 ON DUPLICATE KEY UPDATE `name`=VALUES(`name`);

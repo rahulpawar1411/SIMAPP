@@ -2,6 +2,7 @@
 namespace App\Models;
 
 use App\Config\Database;
+use App\Services\NotifyService;
 use PDO;
 use Exception;
 
@@ -98,6 +99,189 @@ class AppNotification {
 
     public static function findPendingProfileEdit(int $freezerId): ?array {
         return self::findPendingForFreezer($freezerId, self::TYPE_PROFILE_EDIT);
+    }
+
+    /** Pending edit request created by this technician for this freezer. */
+    public static function findPendingProfileEditForUser(int $freezerId, int $userId): ?array {
+        if ($freezerId <= 0 || $userId <= 0) {
+            return null;
+        }
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT * FROM `app_notifications`
+            WHERE `freezer_id` = :fid AND `type` = :t AND `status` = 'pending' AND `created_by` = :uid
+            ORDER BY `id` DESC LIMIT 1");
+        $stmt->execute([
+            'fid' => $freezerId,
+            't' => self::TYPE_PROFILE_EDIT,
+            'uid' => $userId,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /** Technician cancels their own pending edit-access request. */
+    public static function cancelOwnPendingEdit(int $id, int $userId): void {
+        $row = self::findById($id);
+        if (!$row) {
+            throw new Exception('Request not found.');
+        }
+        if (($row['type'] ?? '') !== self::TYPE_PROFILE_EDIT) {
+            throw new Exception('Not an edit request.');
+        }
+        if (($row['status'] ?? '') !== self::STATUS_PENDING) {
+            throw new Exception('This request is already ' . ($row['status'] ?? 'closed') . '.');
+        }
+        if ((int)($row['created_by'] ?? 0) !== $userId) {
+            throw new Exception('You can only cancel your own request.');
+        }
+        self::setStatus($id, self::STATUS_REJECTED, $userId, 'Cancelled by technician');
+    }
+
+    /**
+     * Recent approved/rejected approval decisions (audit list).
+     * @return list<array>
+     */
+    /**
+     * @param array{zone?:string,city?:string,technician_id?:int|string} $filters
+     * @return list<array>
+     */
+    public static function listRecentDecisions(int $limit = 30, array $filters = [], int $offset = 0): array {
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $limit = max(1, min(100, $limit));
+        $offset = max(0, $offset);
+        [$filterSql, $filterParams] = self::approvalFilterSql($filters);
+        $stmt = $pdo->prepare("SELECT n.*,
+                       COALESCE(NULLIF(TRIM(n.unique_freezer_id), ''), f.unique_freezer_id) AS unique_freezer_id,
+                       s.store_name AS profile_store_name,
+                       s.outlet_id AS profile_outlet_id,
+                       s.city AS profile_city,
+                       s.zone AS profile_zone
+                FROM `app_notifications` n
+                LEFT JOIN `freezers` f ON f.id = n.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE n.status IN ('approved', 'rejected')
+                  AND n.type IN (:t1, :t2)" . $filterSql . "
+                ORDER BY COALESCE(n.reviewed_at, n.created_at) DESC, n.id DESC
+                LIMIT {$limit} OFFSET {$offset}");
+        $stmt->execute(array_merge([
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ], $filterParams));
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    public static function countRecentDecisions(array $filters = []): int {
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        [$filterSql, $filterParams] = self::approvalFilterSql($filters);
+        $stmt = $pdo->prepare("SELECT COUNT(*)
+                FROM `app_notifications` n
+                LEFT JOIN `freezers` f ON f.id = n.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE n.status IN ('approved', 'rejected')
+                  AND n.type IN (:t1, :t2)" . $filterSql);
+        $stmt->execute(array_merge([
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ], $filterParams));
+        return (int)$stmt->fetchColumn();
+    }
+
+    /**
+     * Technician home: pending + recent edit requests (own).
+     * @return list<array>
+     */
+    public static function listMyEditRequests(int $userId, int $limit = 20): array {
+        if ($userId <= 0) {
+            return [];
+        }
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $limit = max(1, min(50, $limit));
+        $stmt = $pdo->prepare("SELECT n.*,
+                       COALESCE(NULLIF(TRIM(n.unique_freezer_id), ''), f.unique_freezer_id) AS unique_freezer_id,
+                       s.store_name AS profile_store_name,
+                       s.city AS profile_city,
+                       s.zone AS profile_zone
+                FROM `app_notifications` n
+                LEFT JOIN `freezers` f ON f.id = n.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE n.created_by = :uid
+                  AND n.type = :t
+                ORDER BY
+                  CASE n.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                  COALESCE(n.reviewed_at, n.created_at) DESC,
+                  n.id DESC
+                LIMIT {$limit}");
+        $stmt->execute([
+            'uid' => $userId,
+            't' => self::TYPE_PROFILE_EDIT,
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /** Active (unused, unexpired) edit unlocks for this technician. */
+    public static function listActiveEditUnlocks(int $userId, int $limit = 10): array {
+        if ($userId <= 0) {
+            return [];
+        }
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $limit = max(1, min(30, $limit));
+        $stmt = $pdo->prepare("SELECT n.*,
+                       COALESCE(NULLIF(TRIM(n.unique_freezer_id), ''), f.unique_freezer_id) AS unique_freezer_id,
+                       s.store_name AS profile_store_name
+                FROM `app_notifications` n
+                LEFT JOIN `freezers` f ON f.id = n.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE n.created_by = :uid
+                  AND n.type = :t
+                  AND n.status = :st
+                ORDER BY n.reviewed_at DESC, n.id DESC
+                LIMIT {$limit}");
+        $stmt->execute([
+            'uid' => $userId,
+            't' => self::TYPE_PROFILE_EDIT,
+            'st' => self::STATUS_APPROVED,
+        ]);
+        $out = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $payload = self::decodePayload($row);
+            if (empty($payload['unlocked']) || !empty($payload['consumed'])) {
+                continue;
+            }
+            $unlockedAt = strtotime((string)($payload['unlocked_at'] ?? $row['reviewed_at'] ?? ''));
+            if ($unlockedAt && (time() - $unlockedAt) > 86400) {
+                continue;
+            }
+            $out[] = $row;
+        }
+        return $out;
+    }
+
+    /** Latest decided edit request for this freezer + technician (for status banner). */
+    public static function findLatestDecidedEditForUser(int $freezerId, int $userId): ?array {
+        if ($freezerId <= 0 || $userId <= 0) {
+            return null;
+        }
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT * FROM `app_notifications`
+            WHERE `freezer_id` = :fid
+              AND `type` = :t
+              AND `created_by` = :uid
+              AND `status` IN ('approved', 'rejected')
+            ORDER BY COALESCE(`reviewed_at`, `created_at`) DESC, `id` DESC
+            LIMIT 1");
+        $stmt->execute([
+            'fid' => $freezerId,
+            't' => self::TYPE_PROFILE_EDIT,
+            'uid' => $userId,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     /**
@@ -234,35 +418,47 @@ class AppNotification {
         return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
     }
 
-    /**
-     * Pending approvals stay active until admin approves/rejects (task incomplete).
-     * @param array{zone?:string,city?:string} $filters
-     * @return list<array>
-     */
-    public static function listPendingApprovals(int $limit = 8, array $filters = []): array {
+    /** Auto-reject edit requests pending longer than $days (default 7). */
+    public static function expireStalePendingEdits(int $days = 7): int {
         self::ensureTable();
+        $days = max(1, min(90, $days));
         $pdo = Database::getConnection();
-        $limit = max(1, min(50, $limit));
+        $stmt = $pdo->prepare("SELECT `id` FROM `app_notifications`
+            WHERE `type` = :t
+              AND `status` = 'pending'
+              AND `created_at` < DATE_SUB(NOW(), INTERVAL {$days} DAY)
+            LIMIT 200");
+        $stmt->execute(['t' => self::TYPE_PROFILE_EDIT]);
+        $ids = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        $n = 0;
+        foreach ($ids as $id) {
+            try {
+                self::setStatus((int)$id, self::STATUS_REJECTED, null, 'Auto-expired after ' . $days . ' days', 'System');
+                $n++;
+            } catch (\Throwable $e) {
+                // continue
+            }
+        }
+        return $n;
+    }
 
+    /**
+     * Normalize + append zone/city/technician filters for approval queries.
+     * @param array{zone?:string,city?:string,technician_id?:int|string} $filters
+     * @return array{0:string,1:array}
+     */
+    private static function approvalFilterSql(array $filters): array {
         $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
         $city = trim((string)($filters['city'] ?? ''));
+        $techId = (int)($filters['technician_id'] ?? 0);
         if ($zone === 'ALL') {
             $zone = '';
         }
         if (strcasecmp($city, 'All') === 0) {
             $city = '';
         }
-
-        // Technician profile edits (and any leftover KYC move requests)
-        $sql = "SELECT n.*
-                FROM `app_notifications` n
-                LEFT JOIN `freezers` f ON f.id = n.freezer_id
-                LEFT JOIN `stores` s ON s.id = f.store_id
-                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)";
-        $params = [
-            't1' => self::TYPE_PROFILE_EDIT,
-            't2' => self::TYPE_KYC_STORE_MOVE,
-        ];
+        $sql = '';
+        $params = [];
         if ($zone !== '') {
             $sql .= " AND UPPER(TRIM(s.zone)) = :zone";
             $params['zone'] = $zone;
@@ -271,7 +467,40 @@ class AppNotification {
             $sql .= " AND s.city = :city";
             $params['city'] = $city;
         }
-        $sql .= " ORDER BY n.id ASC LIMIT {$limit}";
+        if ($techId > 0) {
+            $sql .= " AND n.created_by = :tech_id";
+            $params['tech_id'] = $techId;
+        }
+        return [$sql, $params];
+    }
+
+    /**
+     * Pending approvals stay active until admin approves/rejects (task incomplete).
+     * @param array{zone?:string,city?:string,technician_id?:int|string} $filters
+     * @return list<array>
+     */
+    public static function listPendingApprovals(int $limit = 8, array $filters = [], int $offset = 0): array {
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $limit = max(1, min(100, $limit));
+        $offset = max(0, $offset);
+        [$filterSql, $filterParams] = self::approvalFilterSql($filters);
+
+        $sql = "SELECT n.*,
+                       COALESCE(NULLIF(TRIM(n.unique_freezer_id), ''), f.unique_freezer_id) AS unique_freezer_id,
+                       s.store_name AS profile_store_name,
+                       s.outlet_id AS profile_outlet_id,
+                       s.city AS profile_city,
+                       s.zone AS profile_zone
+                FROM `app_notifications` n
+                LEFT JOIN `freezers` f ON f.id = n.freezer_id
+                LEFT JOIN `stores` s ON s.id = f.store_id
+                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)" . $filterSql . "
+                ORDER BY n.id ASC LIMIT {$limit} OFFSET {$offset}";
+        $params = array_merge([
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ], $filterParams);
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
@@ -279,51 +508,44 @@ class AppNotification {
     }
 
     /**
-     * @param array{zone?:string,city?:string} $filters
+     * @param array{zone?:string,city?:string,technician_id?:int|string} $filters
      */
     public static function countPendingApprovals(array $filters = []): int {
         self::ensureTable();
         $pdo = Database::getConnection();
-
-        $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
-        $city = trim((string)($filters['city'] ?? ''));
-        if ($zone === 'ALL') {
-            $zone = '';
-        }
-        if (strcasecmp($city, 'All') === 0) {
-            $city = '';
-        }
-
-        if ($zone === '' && $city === '') {
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM `app_notifications`
-                WHERE `status` = 'pending' AND `type` IN (:t1, :t2)");
-            $stmt->execute([
-                't1' => self::TYPE_PROFILE_EDIT,
-                't2' => self::TYPE_KYC_STORE_MOVE,
-            ]);
-            return (int)$stmt->fetchColumn();
-        }
+        [$filterSql, $filterParams] = self::approvalFilterSql($filters);
 
         $sql = "SELECT COUNT(*)
                 FROM `app_notifications` n
                 LEFT JOIN `freezers` f ON f.id = n.freezer_id
                 LEFT JOIN `stores` s ON s.id = f.store_id
-                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)";
-        $params = [
+                WHERE n.status = 'pending' AND n.type IN (:t1, :t2)" . $filterSql;
+        $params = array_merge([
             't1' => self::TYPE_PROFILE_EDIT,
             't2' => self::TYPE_KYC_STORE_MOVE,
-        ];
-        if ($zone !== '') {
-            $sql .= " AND UPPER(TRIM(s.zone)) = :zone";
-            $params['zone'] = $zone;
-        }
-        if ($city !== '') {
-            $sql .= " AND s.city = :city";
-            $params['city'] = $city;
-        }
+        ], $filterParams);
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         return (int)$stmt->fetchColumn();
+    }
+
+    /** Technicians who have created edit/KYC approval requests (for filter dropdown). */
+    public static function listRequesterTechnicians(): array {
+        self::ensureTable();
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT DISTINCT n.created_by AS id,
+                      COALESCE(NULLIF(TRIM(n.created_by_name), ''), u.name, CONCAT('User #', n.created_by)) AS name
+               FROM `app_notifications` n
+               LEFT JOIN `users` u ON u.id = n.created_by
+               WHERE n.type IN (:t1, :t2)
+                 AND n.created_by IS NOT NULL
+                 AND n.created_by > 0
+               ORDER BY name ASC");
+        $stmt->execute([
+            't1' => self::TYPE_PROFILE_EDIT,
+            't2' => self::TYPE_KYC_STORE_MOVE,
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
     }
 
     public static function decodePayload(?array $row): array {
@@ -353,6 +575,20 @@ class AppNotification {
             }
         }
         $pdo = Database::getConnection();
+        if ($status === self::STATUS_PENDING) {
+            $stmt = $pdo->prepare("UPDATE `app_notifications`
+                SET `status` = :st,
+                    `reviewed_by` = NULL,
+                    `reviewed_by_name` = NULL,
+                    `reviewed_at` = NULL,
+                    `review_notes` = NULL
+                WHERE `id` = :id");
+            $stmt->execute([
+                'st' => $status,
+                'id' => $id,
+            ]);
+            return;
+        }
         $stmt = $pdo->prepare("UPDATE `app_notifications`
             SET `status` = :st,
                 `reviewed_by` = :by,
@@ -370,6 +606,29 @@ class AppNotification {
     }
 
     /**
+     * Revert a decided request back to pending (toast undo).
+     * Restores payload snapshot when provided.
+     */
+    public static function revertToPending(int $id, ?array $payloadSnapshot = null): void {
+        $row = self::findById($id);
+        if (!$row) {
+            throw new Exception('Notification not found.');
+        }
+        $status = (string)($row['status'] ?? '');
+        if ($status === self::STATUS_PENDING) {
+            return; // already pending
+        }
+        if ($payloadSnapshot !== null) {
+            self::updatePayload($id, $payloadSnapshot);
+        } else {
+            $payload = self::decodePayload($row);
+            unset($payload['unlocked'], $payload['unlocked_at'], $payload['consumed'], $payload['consumed_at']);
+            self::updatePayload($id, $payload);
+        }
+        self::setStatus($id, self::STATUS_PENDING, null, null);
+    }
+
+    /**
      * Approve any pending notification (profile edit / KYC).
      * @return array{type:string,outlet_id?:string,store_id?:int,freezer_id?:int}
      */
@@ -380,18 +639,74 @@ class AppNotification {
         }
         $type = (string)($row['type'] ?? '');
         if ($type === self::TYPE_PROFILE_EDIT) {
-            self::approveProfileEdit($id, $adminId, $notes);
-            return ['type' => $type, 'freezer_id' => (int)$row['freezer_id']];
+            $editMeta = self::approveProfileEdit($id, $adminId, $notes);
+            self::auditDecision($row, 'APPROVE', $notes);
+            try {
+                NotifyService::editAccessApproved($row, $notes);
+            } catch (\Throwable $e) {
+                // never block approve on notify
+            }
+            return [
+                'type' => $type,
+                'freezer_id' => (int)$row['freezer_id'],
+                'undoable' => empty($editMeta['legacy_applied']),
+                'legacy_applied' => !empty($editMeta['legacy_applied']),
+            ];
         }
         if ($type === self::TYPE_KYC_STORE_MOVE) {
             $created = self::approveKycStoreMove($id, $adminId, $notes);
-            return array_merge(['type' => $type], $created);
+            self::auditDecision($row, 'APPROVE', $notes);
+            self::notifyKycDecision($row, true, $notes);
+            return array_merge(['type' => $type, 'undoable' => false], $created);
         }
         if ($type === self::TYPE_KYC_SAME_STORE) {
-            self::approveKycSameStore($id, $adminId, $notes);
-            return ['type' => $type];
+            $kycId = self::approveKycSameStore($id, $adminId, $notes);
+            self::auditDecision($row, 'APPROVE', $notes);
+            self::notifyKycDecision($row, true, $notes);
+            return [
+                'type' => $type,
+                'undoable' => $kycId > 0,
+                'kyc_id' => $kycId,
+            ];
         }
         throw new Exception('Unsupported notification type.');
+    }
+
+    /** Outbound notify for KYC approve/reject (log + optional webhook). */
+    private static function notifyKycDecision(array $row, bool $approved, ?string $notes = null): void {
+        try {
+            $userId = (int)($row['created_by'] ?? 0);
+            $tag = (string)($row['unique_freezer_id'] ?? ('#' . (int)($row['freezer_id'] ?? 0)));
+            $msg = ($approved ? 'KYC approved for ' : 'KYC rejected for ') . $tag . '.';
+            if ($notes !== null && trim($notes) !== '') {
+                $msg .= ' Note: ' . trim($notes);
+            }
+            NotifyService::send($approved ? 'kyc_approved' : 'kyc_rejected', $msg, [
+                'user_id' => $userId,
+                'freezer_id' => (int)($row['freezer_id'] ?? 0),
+                'unique_freezer_id' => $tag,
+                'channel' => 'log',
+            ]);
+        } catch (\Throwable $e) {
+            // never block
+        }
+    }
+
+    /** Write approval decision into freezer audit_logs. */
+    private static function auditDecision(array $row, string $decision, ?string $notes = null): void {
+        try {
+            $fid = (int)($row['freezer_id'] ?? 0);
+            $code = (string)($row['unique_freezer_id'] ?? '');
+            $tech = (string)($row['created_by_name'] ?? 'Technician');
+            $type = (string)($row['type'] ?? '');
+            $detail = $decision . ' ' . $type . ' request from ' . $tech;
+            if ($notes !== null && trim($notes) !== '') {
+                $detail .= ' · note: ' . trim($notes);
+            }
+            Freezer::logAudit($decision === 'APPROVE' ? 'APPROVE' : 'REJECT', $fid > 0 ? $fid : null, $code !== '' ? $code : null, $detail);
+        } catch (\Throwable $e) {
+            // never block approve/reject on audit failure
+        }
     }
 
     /**
@@ -399,7 +714,8 @@ class AppNotification {
      * Grants a one-time unlock so the technician can open the edit form and save.
      * Legacy payloads that already include store/freezer changes are still applied.
      */
-    public static function approveProfileEdit(int $id, int $adminId, ?string $notes = null): void {
+    /** @return array{legacy_applied:bool} */
+    public static function approveProfileEdit(int $id, int $adminId, ?string $notes = null): array {
         $row = self::findById($id);
         if (!$row) {
             throw new Exception('Notification not found.');
@@ -415,6 +731,7 @@ class AppNotification {
         $storeData = is_array($payload['store'] ?? null) ? $payload['store'] : [];
         $freezerData = is_array($payload['freezer'] ?? null) ? $payload['freezer'] : [];
         $freezerId = (int)$row['freezer_id'];
+        $legacyApplied = false;
 
         // Legacy queued field changes (if any)
         if ($storeData !== [] || $freezerData !== []) {
@@ -425,12 +742,14 @@ class AppNotification {
             $storeId = (int)($freezer['store_id'] ?? 0);
             if ($storeId > 0 && $storeData !== []) {
                 Store::update($storeId, $storeData);
+                $legacyApplied = true;
             }
             if ($freezerData !== []) {
                 $freezerData['store_id'] = $storeId;
                 Freezer::update($freezerId, $freezerData);
                 $payload['consumed'] = true;
                 $payload['consumed_at'] = date('Y-m-d H:i:s');
+                $legacyApplied = true;
             }
         }
 
@@ -443,10 +762,11 @@ class AppNotification {
 
         self::updatePayload($id, $payload);
         self::setStatus($id, self::STATUS_APPROVED, $adminId, $notes);
+        return ['legacy_applied' => $legacyApplied];
     }
 
-    /** Approve same-store KYC — record verification on current profile only. */
-    public static function approveKycSameStore(int $id, int $adminId, ?string $notes = null): void {
+    /** Approve same-store KYC — record verification on current profile only. @return int kyc verification id */
+    public static function approveKycSameStore(int $id, int $adminId, ?string $notes = null): int {
         $row = self::findById($id);
         if (!$row) {
             throw new Exception('Notification not found.');
@@ -467,7 +787,7 @@ class AppNotification {
             throw new Exception('Freezer no longer exists.');
         }
 
-        FreezerLifecycle::recordKyc([
+        $kycId = FreezerLifecycle::recordKyc([
             'freezer_id' => $freezerId,
             'verified_at' => $kycData['verified_at'] ?? date('Y-m-d'),
             'cycle_year' => (int)($kycData['cycle_year'] ?? date('Y')),
@@ -482,6 +802,7 @@ class AppNotification {
         ]);
 
         self::setStatus($id, self::STATUS_APPROVED, $adminId, $notes);
+        return $kycId;
     }
 
     /**
@@ -566,6 +887,17 @@ class AppNotification {
         if (($row['status'] ?? '') !== self::STATUS_PENDING) {
             throw new Exception('This request is already ' . ($row['status'] ?? 'closed') . '.');
         }
+        $type = (string)($row['type'] ?? '');
         self::setStatus($id, self::STATUS_REJECTED, $adminId, $notes);
+        self::auditDecision($row, 'REJECT', $notes);
+        try {
+            if ($type === self::TYPE_PROFILE_EDIT) {
+                NotifyService::editAccessRejected($row, $notes);
+            } else {
+                self::notifyKycDecision($row, false, $notes);
+            }
+        } catch (\Throwable $e) {
+            // never block reject on notify
+        }
     }
 }

@@ -337,6 +337,41 @@ class FreezerLifecycle {
         return $id;
     }
 
+    /**
+     * Delete a KYC verification row (toast undo). Only removes that id.
+     * @return array{success:bool,error?:string,freezer_id?:int,unique_freezer_id?:string}
+     */
+    public static function deleteKycVerification(int $kycId): array {
+        if ($kycId <= 0) {
+            return ['success' => false, 'error' => 'Invalid KYC id.'];
+        }
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare("SELECT k.*, f.unique_freezer_id
+            FROM `kyc_verifications` k
+            LEFT JOIN `freezers` f ON f.id = k.freezer_id
+            WHERE k.id = :id LIMIT 1");
+        $stmt->execute(['id' => $kycId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return ['success' => false, 'error' => 'KYC record already removed.'];
+        }
+        $del = $pdo->prepare("DELETE FROM `kyc_verifications` WHERE `id` = :id LIMIT 1");
+        $del->execute(['id' => $kycId]);
+        $freezerId = (int)($row['freezer_id'] ?? 0);
+        $uid = (string)($row['unique_freezer_id'] ?? '');
+        Freezer::logAudit(
+            'UNDO_KYC',
+            $freezerId > 0 ? $freezerId : null,
+            $uid !== '' ? $uid : null,
+            'KYC verification #' . $kycId . ' undone'
+        );
+        return [
+            'success' => true,
+            'freezer_id' => $freezerId,
+            'unique_freezer_id' => $uid,
+        ];
+    }
+
     public static function kycHistory(int $freezerId, int $limit = 50): array {
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare("SELECT k.*,
@@ -1219,6 +1254,26 @@ class FreezerLifecycle {
             $hasGps = $lat !== null && $lng !== null
                 && abs($lat) <= 90 && abs($lng) <= 180
                 && !($lat == 0.0 && $lng == 0.0);
+            $dueStr = (string)($r['next_kyc_due'] ?? '');
+            $daysOverdue = 0;
+            if ($dueStr !== '') {
+                try {
+                    $dueTs = strtotime($dueStr . ' 00:00:00');
+                    $todayTs = strtotime($today . ' 00:00:00');
+                    if ($dueTs !== false && $todayTs !== false && $todayTs >= $dueTs) {
+                        $daysOverdue = (int)floor(($todayTs - $dueTs) / 86400);
+                    }
+                } catch (\Throwable $e) {
+                    $daysOverdue = 0;
+                }
+            }
+            // due = just due / mild; overdue = 1–29 days; critical = 30+ days
+            $urgency = 'due';
+            if ($daysOverdue >= 30) {
+                $urgency = 'critical';
+            } elseif ($daysOverdue >= 1) {
+                $urgency = 'overdue';
+            }
             $out[] = [
                 'id' => (int)$r['id'],
                 'unique_freezer_id' => (string)($r['unique_freezer_id'] ?? ''),
@@ -1228,9 +1283,11 @@ class FreezerLifecycle {
                 'zone' => (string)($r['zone'] ?? ''),
                 'latitude' => $hasGps ? $lat : null,
                 'longitude' => $hasGps ? $lng : null,
-                'next_kyc_due' => (string)($r['next_kyc_due'] ?? ''),
+                'next_kyc_due' => $dueStr,
                 'last_kyc_at' => $r['last_kyc_at'] !== null ? (string)$r['last_kyc_at'] : null,
                 'has_gps' => $hasGps,
+                'days_overdue' => $daysOverdue,
+                'urgency' => $urgency,
             ];
         }
         return $out;
@@ -1292,7 +1349,7 @@ class FreezerLifecycle {
         if ($pending > 0 && $pendingLimit > 0) {
             $lim = (int)$pendingLimit;
             $listStmt = $pdo->prepare(
-                "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city,
+                "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city, s.zone,
                         (
                             SELECT MAX(k.verified_at) FROM `kyc_verifications` k
                             WHERE k.freezer_id = f.id AND k.store_id = f.store_id
@@ -1385,6 +1442,7 @@ class FreezerLifecycle {
         $maxRows = 500;
         $stmt = $pdo->prepare(
             "SELECT k.id, k.freezer_id, k.store_id, k.verified_at, k.result, k.notes, k.verified_by,
+                    k.image_store_front, k.image_freezer, k.latitude, k.longitude,
                     f.unique_freezer_id, f.deleted_at AS freezer_deleted,
                     s.store_name, s.outlet_id, s.city, s.zone,
                     u.name AS technician_name,
@@ -1463,6 +1521,10 @@ class FreezerLifecycle {
                     'technician_name' => (string)($r['technician_name'] ?? ''),
                     'is_new_store' => $isNew,
                     'verified_at' => (string)($r['verified_at'] ?? ''),
+                    'image_store_front' => (string)($r['image_store_front'] ?? ''),
+                    'image_freezer' => (string)($r['image_freezer'] ?? ''),
+                    'latitude' => $r['latitude'] !== null && $r['latitude'] !== '' ? (string)$r['latitude'] : '',
+                    'longitude' => $r['longitude'] !== null && $r['longitude'] !== '' ? (string)$r['longitude'] : '',
                 ];
             }
         }

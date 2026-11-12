@@ -52,6 +52,26 @@ class AppConfig {
     /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) — next phase */
     public const IOT_ENABLED = false;
 
+    /**
+     * Optional outbound notify webhook (WhatsApp/SMS gateway).
+     * Empty = log-only via NotifyService. HTTPS POST JSON when set.
+     */
+    public const NOTIFY_WEBHOOK_URL = '';
+
+    /**
+     * JWT auth (HS256). Change JWT_SECRET in production (min 32 chars).
+     * Cookie holds the token for browser pages; APIs may send Authorization: Bearer.
+     */
+    public const JWT_SECRET = 'change-me-reeferon-df-jwt-secret-32chars-min';
+    public const JWT_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+    public const JWT_COOKIE = 'reeferon_jwt';
+
+    /**
+     * Default Super Admin / seed password (local demo).
+     * Change this before any shared or production deploy.
+     */
+    public const DEFAULT_ADMIN_PASSWORD = 'Admin@123';
+
     /** Default SIM / ICCID prefill (user can edit) */
     public const DEFAULT_SIM_NUMBER = '89919225034008649';
     public const DEFAULT_SIM_COMPANY = 'Airtel';

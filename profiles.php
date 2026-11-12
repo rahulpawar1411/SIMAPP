@@ -1,4 +1,8 @@
 <?php
+/**
+ * Freezer Profiles list (Assets).
+ * Search, KYC status tabs, filters, export, and mobile card layout.
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
@@ -104,16 +108,31 @@ try {
     $tabCountPending = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['pending']]));
     $tabCountIssue = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['failed']]));
 } catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'profiles.tab_counts');
     $tabCountAll = 0;
 }
 
-$totalCount = Freezer::countFiltered($filters);
-$totalPages = max(1, (int)ceil($totalCount / max(1, $limit)));
-if ($page > $totalPages) {
-    $page = $totalPages;
+$totalCount = 0;
+$freezers = [];
+$profilesListError = null;
+try {
+    $totalCount = Freezer::countFiltered($filters);
+    $totalPages = max(1, (int)ceil($totalCount / max(1, $limit)));
+    if ($page > $totalPages) {
+        $page = $totalPages;
+    }
+    $offset = ($page - 1) * $limit;
+    $freezers = $totalCount > 0 ? Freezer::getFiltered($filters, $limit, $offset) : [];
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'profiles.list');
+    $profilesListError = \App\Services\AppLogger::friendlyMessage(
+        $e,
+        'Could not load profiles. Please refresh the page.'
+    );
+    $totalPages = 1;
+    $page = 1;
+    $offset = 0;
 }
-$offset = ($page - 1) * $limit;
-$freezers = $totalCount > 0 ? Freezer::getFiltered($filters, $limit, $offset) : [];
 $rangeFrom = $totalCount === 0 ? 0 : ($offset + 1);
 $rangeTo = min($offset + $limit, $totalCount);
 
@@ -157,6 +176,7 @@ try {
         }
     }
 } catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'profiles.cities');
     $cityOptions = [];
 }
 
@@ -203,7 +223,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="cfg-toolbar-left">
         <h1 class="cfg-toolbar-title">Freezer &amp; Store Profiles</h1>
     </div>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <div class="cfg-toolbar-actions">
         <?php if ($isAdmin): ?>
         <a href="qr_print_bulk.php?<?= http_build_query(array_filter(['q' => $search, 'city' => $cityList, 'status' => $statusList], static fn($v) => $v !== '' && $v !== [])) ?>" class="btn btn-outline" target="_blank">
             Print all stickers (PDF)
@@ -225,6 +245,12 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     </div>
 </div>
+
+<?php if (!empty($profilesListError)): ?>
+<div class="alert alert-danger" role="alert" style="margin:0.75rem 0;">
+    <?= htmlspecialchars($profilesListError) ?>
+</div>
+<?php endif; ?>
 
 <!-- Status tabs: All / OK / Pending / Issue — counts match list + pagination -->
 <nav class="assets-status-tabs" id="assets-status-tabs" aria-label="KYC status">
@@ -588,10 +614,11 @@ require_once __DIR__ . '/includes/header.php';
                 } else {
                     $pillClass = 'success';
                     $pillLabel = $rowLastResult === 'PASS' ? 'Completed' : 'OK';
-                    $nextAction = 'View';
-                    $nextHref = 'profile_view.php?id=' . urlencode((string)($row['unique_freezer_id'] ?? ''));
+                    $nextAction = '';
+                    $nextHref = '';
                 }
                 $fid = (string)($row['unique_freezer_id'] ?? '');
+                $canEdit = AuthService::hasRole(['super_admin', 'technician']);
                 ?>
                 <article class="mapp-asset-card">
                     <a class="mapp-asset-main" href="profile_view.php?id=<?= urlencode($fid) ?>">
@@ -605,9 +632,14 @@ require_once __DIR__ . '/includes/header.php';
                             <span><?= htmlspecialchars((string)($row['tag_code'] ?? $row['freezer_type'] ?? '')) ?></span>
                         </div>
                     </a>
-                    <div class="mapp-asset-actions">
-                        <a href="<?= htmlspecialchars($nextHref) ?>" class="btn btn-sm <?= $pillClass === 'success' ? 'btn-secondary' : 'btn-primary' ?>"><?= htmlspecialchars($nextAction) ?></a>
-                        <a href="profile_view.php?id=<?= urlencode($fid) ?>" class="btn btn-sm btn-outline">Details</a>
+                    <div class="mapp-asset-actions<?= $nextAction !== '' ? ' has-primary' : '' ?>">
+                        <?php if ($nextAction !== ''): ?>
+                            <a href="<?= htmlspecialchars($nextHref) ?>" class="btn btn-sm btn-primary mapp-action-primary"><?= htmlspecialchars($nextAction) ?></a>
+                        <?php endif; ?>
+                        <?php if ($canEdit): ?>
+                            <a href="profile_edit.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-outline">Edit</a>
+                        <?php endif; ?>
+                        <a href="profile_view.php?id=<?= urlencode($fid) ?>" class="btn btn-sm btn-secondary">Details</a>
                     </div>
                 </article>
             <?php endforeach; ?>

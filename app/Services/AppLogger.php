@@ -2,8 +2,8 @@
 namespace App\Services;
 
 /**
- * File logger — app/logs (daily rotation).
- * Tracks info / warning / error / audit / failed actions.
+ * Writes daily log files under /logs (INFO, AUDIT, WARNING, ERROR, FAILED).
+ * System Logs page reads these files with filters and pagination.
  */
 class AppLogger {
 
@@ -58,6 +58,17 @@ class AppLogger {
         set_exception_handler(static function (\Throwable $e): void {
             self::exception($e, 'uncaught');
             http_response_code(500);
+            // API / fetch calls need JSON, not an HTML error page
+            if (self::wantsJsonResponse()) {
+                if (!headers_sent()) {
+                    header('Content-Type: application/json; charset=utf-8');
+                }
+                echo json_encode([
+                    'success' => false,
+                    'error' => self::friendlyMessage($e),
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
             if (!headers_sent()) {
                 header('Content-Type: text/html; charset=utf-8');
             }
@@ -108,6 +119,38 @@ class AppLogger {
             'line' => $e->getLine(),
             'trace' => self::shortTrace($e),
         ]));
+    }
+
+    /**
+     * Safe message for the user (hide SQL / file paths). Full detail stays in the log.
+     */
+    public static function friendlyMessage(\Throwable $e, string $fallback = 'Something went wrong. Please try again.'): string {
+        $msg = trim($e->getMessage());
+        if ($msg === '') {
+            return $fallback;
+        }
+        // Hide database / PHP internals from the screen
+        if (preg_match('/SQLSTATE|PDOException|stack trace|on line \d+|\\\\[A-Za-z]+\\\\|mysqli_|Fatal error/i', $msg)) {
+            return $fallback;
+        }
+        if (strlen($msg) > 200) {
+            return $fallback;
+        }
+        return $msg;
+    }
+
+    /** True when the client expects JSON (API folder or Accept/XHR). */
+    public static function wantsJsonResponse(): bool {
+        $uri = (string)($_SERVER['REQUEST_URI'] ?? '');
+        if (strpos($uri, '/api/') !== false || preg_match('#(?:^|/)api/#', $uri)) {
+            return true;
+        }
+        $accept = (string)($_SERVER['HTTP_ACCEPT'] ?? '');
+        if (stripos($accept, 'application/json') !== false) {
+            return true;
+        }
+        $xhr = strtolower((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''));
+        return $xhr === 'xmlhttprequest';
     }
 
     /** @param array<string, mixed> $context */
@@ -204,25 +247,31 @@ class AppLogger {
     }
 
     /**
-     * Read log lines (newest first), optional level / q filter.
-     * @return list<array<string, mixed>>
+     * Read log lines (newest first). Optional level and search text. Supports page offset.
+     *
+     * @return array{entries: list<array<string, mixed>>, total: int, capped: bool}
      */
-    public static function readEntries(string $basename, int $limit = 200, string $level = '', string $q = ''): array {
+    public static function readEntries(string $basename, int $limit = 50, string $level = '', string $q = '', int $offset = 0): array {
+        $empty = ['entries' => [], 'total' => 0, 'capped' => false];
         $path = self::resolveLogFile($basename);
         if ($path === null) {
-            return [];
+            return $empty;
         }
-        $limit = max(1, min(1000, $limit));
+        $limit = max(1, min(200, $limit));
+        $offset = max(0, $offset);
         $level = strtoupper(trim($level));
         $q = trim($q);
 
-        // Tail-read only — never load the whole log into memory.
-        $chunk = self::tailFileLines($path, max($limit * 8, 800));
+        // Pool of matched newest rows used for paging (tail-scan only).
+        $poolMax = 2000;
+        $needScan = min($poolMax, $offset + $limit);
+        $chunk = self::tailFileLines($path, min(10000, max(($needScan + 80) * 12, 2500)));
         if ($chunk === []) {
-            return [];
+            return $empty;
         }
 
-        $out = [];
+        $matched = [];
+        $capped = false;
         for ($i = count($chunk) - 1; $i >= 0; $i--) {
             $line = trim((string)$chunk[$i]);
             if ($line === '') {
@@ -246,17 +295,24 @@ class AppLogger {
                     continue;
                 }
             }
-            $out[] = $decoded;
-            if (count($out) >= $limit) {
+            $matched[] = $decoded;
+            if (count($matched) >= $poolMax) {
+                $capped = true;
                 break;
             }
         }
-        return $out;
+
+        $total = count($matched);
+        return [
+            'entries' => array_slice($matched, $offset, $limit),
+            'total' => $total,
+            'capped' => $capped,
+        ];
     }
 
     /** Read last ~$maxLines from a text file without loading the entire file. */
     private static function tailFileLines(string $path, int $maxLines = 800): array {
-        $maxLines = max(50, min(5000, $maxLines));
+        $maxLines = max(50, min(10000, $maxLines));
         $size = @filesize($path);
         if ($size === false || $size === 0) {
             return [];

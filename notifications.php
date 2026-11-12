@@ -1,29 +1,137 @@
 <?php
+/**
+ * Approvals (Super Admin).
+ * Review pending edit / KYC requests, filter by zone/city/tech, paginate lists.
+ * Approve or reject can offer a short Undo in the toast.
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\UndoService;
 use App\Config\AppConfig;
-use App\Models\FreezerLifecycle;
 use App\Models\AppNotification;
+use App\Models\Freezer;
 
-// Admin only — menu + page
+// Admin only — Approvals (edit access requests)
 AuthService::requireRole(AppConfig::ROLE_SUPER_ADMIN);
 $currentUser = AuthService::currentUser();
 $csrfToken = AuthService::generateCsrfToken();
 
+$filterZone = strtoupper(trim((string)($_GET['zone'] ?? $_POST['filter_zone'] ?? '')));
+$filterCity = trim((string)($_GET['city'] ?? $_POST['filter_city'] ?? ''));
+$filterTechId = (int)($_GET['tech'] ?? $_POST['filter_tech'] ?? 0);
+if ($filterZone === 'ALL') {
+    $filterZone = '';
+}
+if (strcasecmp($filterCity, 'All') === 0) {
+    $filterCity = '';
+}
+
+$zoneOptions = Freezer::dashboardZones();
+$cityOptions = Freezer::dashboardCities($filterZone !== '' ? $filterZone : null);
+if ($filterCity !== '' && !in_array($filterCity, $cityOptions, true)) {
+    $filterCity = '';
+}
+
+$approvalFilters = [
+    'zone' => $filterZone,
+    'city' => $filterCity,
+    'technician_id' => $filterTechId,
+];
+$hasApprovalFilter = ($filterZone !== '' || $filterCity !== '' || $filterTechId > 0);
+
+$filterQuery = static function (array $extra = []) use ($filterZone, $filterCity, $filterTechId): string {
+    $params = [];
+    if ($filterZone !== '') {
+        $params['zone'] = $filterZone;
+    }
+    if ($filterCity !== '') {
+        $params['city'] = $filterCity;
+    }
+    if ($filterTechId > 0) {
+        $params['tech'] = $filterTechId;
+    }
+    foreach ($extra as $k => $v) {
+        if ($v === null || $v === '' || $v === 0 || $v === '0') {
+            continue;
+        }
+        $params[$k] = $v;
+    }
+    return $params === [] ? '' : ('?' . http_build_query($params));
+};
+
 $flash = null;
 $error = null;
 
-// Approve / reject technician edit (and leftover KYC move) requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['notif_action'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['notif_action']) || isset($_POST['bulk_action']))) {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security token. Please try again.';
     } else {
-        $notifId = (int)($_POST['notif_id'] ?? 0);
-        $action = strtolower(trim((string)($_POST['notif_action'] ?? '')));
-        $notes = trim((string)($_POST['review_notes'] ?? ''));
         $adminId = (int)($currentUser['id'] ?? 0);
+        $notes = trim((string)($_POST['review_notes'] ?? $_POST['bulk_notes'] ?? ''));
         try {
+            // Bulk approve / reject selected rows
+            if (isset($_POST['bulk_action'])) {
+                $bulkAction = strtolower(trim((string)$_POST['bulk_action']));
+                $ids = $_POST['notif_ids'] ?? [];
+                if (!is_array($ids)) {
+                    $ids = [];
+                }
+                $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn($id) => $id > 0)));
+                if ($ids === []) {
+                    throw new Exception('Select at least one request.');
+                }
+                if (!in_array($bulkAction, ['approve', 'reject'], true)) {
+                    throw new Exception('Unknown bulk action.');
+                }
+                $ok = 0;
+                $fail = 0;
+                $undoItems = [];
+                foreach ($ids as $nid) {
+                    try {
+                        $before = AppNotification::findById($nid);
+                        if (!$before) {
+                            $fail++;
+                            continue;
+                        }
+                        if ($bulkAction === 'approve') {
+                            $result = AppNotification::approve($nid, $adminId, $notes !== '' ? $notes : null);
+                            $snap = UndoService::buildApprovalUndo($before, 'approve', $result);
+                        } else {
+                            AppNotification::reject($nid, $adminId, $notes !== '' ? $notes : null);
+                            $snap = UndoService::buildApprovalUndo($before, 'reject', ['undoable' => true]);
+                        }
+                        if ($snap) {
+                            $undoItems[] = $snap;
+                        }
+                        $ok++;
+                    } catch (Throwable $e) {
+                        $fail++;
+                        \App\Services\AppLogger::exception($e, 'approvals.bulk_item', ['notif_id' => $nid]);
+                    }
+                }
+                if ($ok === 0) {
+                    throw new Exception('No requests were updated. They may already be decided.');
+                }
+                $flash = ucfirst($bulkAction) . 'd ' . $ok . ' request' . ($ok === 1 ? '' : 's') . '.';
+                if ($fail > 0) {
+                    $flash .= ' ' . $fail . ' skipped.';
+                }
+                $q = $filterQuery();
+                $sep = $q === '' ? '?' : '&';
+                $loc = 'notifications.php' . $q . $sep . 'ok=' . rawurlencode($flash);
+                if ($undoItems !== []) {
+                    $undoToken = UndoService::remember('approval_bulk', ['items' => $undoItems]);
+                    $loc .= '&undo=' . rawurlencode($undoToken);
+                }
+                header('Location: ' . $loc);
+                exit;
+            }
+
+            $notifId = (int)($_POST['notif_id'] ?? 0);
+            $action = strtolower(trim((string)($_POST['notif_action'] ?? '')));
+            $undoToken = null;
+            $before = AppNotification::findById($notifId);
             if ($action === 'approve') {
                 $result = AppNotification::approve($notifId, $adminId, $notes !== '' ? $notes : null);
                 if (($result['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT) {
@@ -33,654 +141,531 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['notif_action'])) {
                 } else {
                     $flash = 'Request approved.';
                 }
+                if ($before) {
+                    $snap = UndoService::buildApprovalUndo($before, 'approve', $result);
+                    if ($snap) {
+                        $undoToken = UndoService::remember('approval_decision', $snap);
+                    }
+                }
             } elseif ($action === 'reject') {
                 AppNotification::reject($notifId, $adminId, $notes !== '' ? $notes : null);
                 $flash = 'Request rejected.';
+                if ($before) {
+                    $snap = UndoService::buildApprovalUndo($before, 'reject', ['undoable' => true]);
+                    if ($snap) {
+                        $undoToken = UndoService::remember('approval_decision', $snap);
+                    }
+                }
             } else {
                 $error = 'Unknown action.';
             }
+            if ($flash && $error === null) {
+                $q = $filterQuery();
+                $sep = $q === '' ? '?' : '&';
+                $loc = 'notifications.php' . $q . $sep . 'ok=' . rawurlencode($flash);
+                if ($undoToken) {
+                    $loc .= '&undo=' . rawurlencode($undoToken);
+                }
+                header('Location: ' . $loc);
+                exit;
+            }
         } catch (Throwable $e) {
-            $error = $e->getMessage();
+            \App\Services\AppLogger::exception($e, 'approvals.action');
+            $error = \App\Services\AppLogger::friendlyMessage($e, 'Could not update this request. Please try again.');
         }
     }
 }
 
+if (!empty($_GET['ok'])) {
+    $flash = trim((string)$_GET['ok']);
+}
+
+// Approvals lists (pending + recent decisions), paginated for mobile/desktop tables
 $pendingApprovals = [];
 $pendingCount = 0;
+$pendingCountAll = 0;
+$recentDecisions = [];
+$recentDecisionsTotal = 0;
+$techOptions = [];
+$expiredCount = 0;
+$pendingLimit = 20;
+$decisionsLimit = 20;
+$pendingPage = max(1, (int)($_GET['ppage'] ?? 1));
+$decisionsPage = max(1, (int)($_GET['dpage'] ?? 1));
+$pendingPages = 1;
+$decisionsPages = 1;
+$pendingOffset = 0;
+$decisionsOffset = 0;
 try {
-    $pendingCount = AppNotification::countPendingApprovals();
-    $pendingApprovals = AppNotification::listPendingApprovals(50);
+    // Auto-close very old pending edit requests (7+ days)
+    $expiredCount = AppNotification::expireStalePendingEdits(7);
+    $pendingCountAll = AppNotification::countPendingApprovals();
+    $pendingCount = AppNotification::countPendingApprovals($approvalFilters);
+    $pendingPages = max(1, (int)ceil($pendingCount / $pendingLimit));
+    if ($pendingPage > $pendingPages) {
+        $pendingPage = $pendingPages;
+    }
+    $pendingOffset = ($pendingPage - 1) * $pendingLimit;
+    $pendingApprovals = AppNotification::listPendingApprovals($pendingLimit, $approvalFilters, $pendingOffset);
+
+    $recentDecisionsTotal = AppNotification::countRecentDecisions($approvalFilters);
+    $decisionsPages = max(1, (int)ceil($recentDecisionsTotal / $decisionsLimit));
+    if ($decisionsPage > $decisionsPages) {
+        $decisionsPage = $decisionsPages;
+    }
+    $decisionsOffset = ($decisionsPage - 1) * $decisionsLimit;
+    $recentDecisions = AppNotification::listRecentDecisions($decisionsLimit, $approvalFilters, $decisionsOffset);
+    $techOptions = AppNotification::listRequesterTechnicians();
 } catch (Throwable $e) {
+    // Keep empty lists if DB fails — page still loads with a clear message
+    \App\Services\AppLogger::exception($e, 'approvals.list');
+    $error = $error ?: \App\Services\AppLogger::friendlyMessage(
+        $e,
+        'Could not load approvals right now. Please refresh the page.'
+    );
     $pendingApprovals = [];
+    $recentDecisions = [];
+    $techOptions = [];
+    $pendingCount = 0;
+    $recentDecisionsTotal = 0;
+    $pendingPages = 1;
+    $decisionsPages = 1;
+    $pendingOffset = 0;
+    $decisionsOffset = 0;
 }
+$pendingFrom = $pendingCount === 0 ? 0 : ($pendingOffset + 1);
+$pendingTo = min($pendingOffset + count($pendingApprovals), $pendingCount);
+$decisionsFrom = $recentDecisionsTotal === 0 ? 0 : ($decisionsOffset + 1);
+$decisionsTo = min($decisionsOffset + count($recentDecisions), $recentDecisionsTotal);
 
-$today = date('Y-m-d');
-$fromDate = trim((string)($_GET['from'] ?? ''));
-$toDate = trim((string)($_GET['to'] ?? ''));
-$days = (int)($_GET['days'] ?? 0);
-$locationFilter = strtolower(trim((string)($_GET['location'] ?? 'all')));
-if (!in_array($locationFilter, ['all', 'same', 'new'], true)) {
-    $locationFilter = 'all';
-}
-$resultFilter = strtoupper(trim((string)($_GET['result'] ?? 'all')));
-if (!in_array($resultFilter, ['ALL', 'PASS', 'FAIL'], true)) {
-    $resultFilter = 'ALL';
-}
-
-$validDate = static function (string $d): bool {
-    return (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $d);
+$approvalsPageUrl = static function (string $which, int $page) use ($filterQuery, $pendingPage, $decisionsPage): string {
+    $page = max(1, $page);
+    $extra = [
+        'ppage' => $which === 'pending' ? $page : $pendingPage,
+        'dpage' => $which === 'decisions' ? $page : $decisionsPage,
+    ];
+    if ((int)$extra['ppage'] <= 1) {
+        unset($extra['ppage']);
+    }
+    if ((int)$extra['dpage'] <= 1) {
+        unset($extra['dpage']);
+    }
+    return 'notifications.php' . $filterQuery($extra);
 };
-
-// Preset quick ranges set from/to via calendar
-if (!$validDate($fromDate) || !$validDate($toDate)) {
-    if (!in_array($days, [7, 30, 90, 180, 365], true)) {
-        $days = 90;
-    }
-    $toDate = $today;
-    $fromDate = date('Y-m-d', strtotime("-{$days} days"));
-} else {
-    if ($fromDate > $toDate) {
-        [$fromDate, $toDate] = [$toDate, $fromDate];
-    }
-    // Cap range at 180 days for load safety (use narrower filters for more detail)
-    $maxFrom = date('Y-m-d', strtotime($toDate . ' -180 days'));
-    if ($fromDate < $maxFrom) {
-        $fromDate = $maxFrom;
-    }
-    $days = 0;
+if ($expiredCount > 0 && $flash === null) {
+    $flash = $expiredCount . ' stale edit request' . ($expiredCount === 1 ? '' : 's') . ' auto-expired (7+ days).';
 }
 
-$history = [];
-try {
-    $history = FreezerLifecycle::notificationHistoryByDate(90, $fromDate, $toDate, $locationFilter, $resultFilter);
-} catch (Throwable $e) {
-    $history = [];
-    $error = $error ?: ('Could not load history: ' . $e->getMessage());
-}
-
-$defaultFrom = date('Y-m-d', strtotime('-90 days'));
-$hasLocationFilter = $locationFilter !== 'all';
-$hasResultFilter = $resultFilter !== 'ALL';
-$isDefaultRange = ($fromDate === $defaultFrom && $toDate === $today && ($days === 90 || $days === 0));
-$hasActiveFilters = $hasLocationFilter || $hasResultFilter || !$isDefaultRange;
-
-$activeChips = [];
-$activeChips[] = 'Date: ' . $fromDate . ' → ' . $toDate;
-if ($locationFilter === 'same') {
-    $activeChips[] = 'Same location';
-} elseif ($locationFilter === 'new') {
-    $activeChips[] = 'New location';
-} else {
-    $activeChips[] = 'All locations';
-}
-if ($resultFilter === 'FAIL') {
-    $activeChips[] = 'Result: FAIL';
-} elseif ($resultFilter === 'PASS') {
-    $activeChips[] = 'Result: PASS';
-} else {
-    $activeChips[] = 'Result: All';
-}
-$activeFilterCount = count($activeChips);
-
-$grandTotal = 0;
-$grandSame = 0;
-$grandNew = 0;
-$grandFail = 0;
-$historyTruncated = false;
-foreach ($history as $day) {
-    $grandTotal += (int)$day['total'];
-    $grandSame += (int)$day['same_store'];
-    $grandNew += (int)$day['new_store'];
-    $grandFail += (int)$day['fail'];
-    if (!empty($day['_truncated'])) {
-        $historyTruncated = true;
-    }
-}
-
-$pageTitle = 'Notifications';
+$pageTitle = 'Approvals';
 require_once __DIR__ . '/includes/header.php';
-
-$diffFields = [
-    'store_name' => 'Store name',
-    'customer_name' => 'Customer',
-    'distributor_name' => 'Distributor',
-    'contact_person' => 'Contact',
-    'phone_number' => 'Phone',
-    'email' => 'Email',
-    'aadhar_number' => 'Aadhaar',
-    'fssai_number' => 'FSSAI',
-    'gst_number' => 'GST',
-    'address' => 'Address',
-    'city' => 'City',
-    'state' => 'State',
-    'pincode' => 'Pincode',
-    'zone' => 'Zone',
-    'location_type' => 'Location type',
-    'latitude' => 'Latitude',
-    'longitude' => 'Longitude',
-    'freezer_type' => 'Freezer type',
-    'company_code' => 'Brand',
-    'model_number' => 'Model',
-    'capacity_litres' => 'Capacity',
-    'freezer_condition' => 'Condition',
-    'location_code' => 'Location code',
-    'installation_date' => 'Install date',
-    'sim_number' => 'SIM number',
-    'sim_company' => 'SIM company',
-    'status' => 'Status',
-    'notes' => 'Notes',
-];
-$imageFields = [
-    'image_store_front' => 'Store front',
-    'image_aadhar_card' => 'Aadhaar front',
-    'image_aadhar_back' => 'Aadhaar back',
-    'image_left_side' => 'Left side',
-    'image_right_side' => 'Right side',
-    'image_sim' => 'SIM photo',
-    'image_iot_device' => 'IoT photo',
-];
-$fmtVal = static function ($v): string {
-    if ($v === null || $v === '') {
-        return '—';
-    }
-    if (is_bool($v)) {
-        return $v ? 'Yes' : 'No';
-    }
-    return (string)$v;
-};
 ?>
 
-<div class="users-page notif-page">
-    <div class="cfg-toolbar">
+<div class="logs-page users-page notif-excel-page">
+    <div class="cfg-toolbar logs-toolbar-compact">
         <div class="cfg-toolbar-left">
-            <h1 class="cfg-toolbar-title">Notifications</h1>
-            <?php if ($pendingCount > 0): ?>
-                <span class="badge badge-warning"><?= number_format($pendingCount) ?> pending approval</span>
+            <h1 class="cfg-toolbar-title">Approvals</h1>
+            <?php if ($pendingCountAll > 0): ?>
+                <span class="badge badge-warning"><?= number_format($pendingCountAll) ?> pending</span>
+            <?php else: ?>
+                <span class="badge badge-secondary">No pending</span>
             <?php endif; ?>
-            <span class="badge badge-success"><?= number_format($grandTotal) ?> KYC in range</span>
-            <?php if ($historyTruncated): ?>
-                <span class="badge badge-warning" title="Latest 500 matching records shown">Showing latest 500</span>
+            <?php if ($hasApprovalFilter): ?>
+                <span class="badge badge-primary"><?= number_format($pendingCount) ?> match filter</span>
             <?php endif; ?>
+        </div>
+        <div class="logs-toolbar-actions">
+            <a href="notifications.php<?= htmlspecialchars($filterQuery()) ?>" class="btn btn-secondary btn-sm">Refresh</a>
+        </div>
+    </div>
+
+    <div class="card logs-filters-card logs-filters-compact">
+        <div class="card-body">
+            <form method="GET" action="notifications.php" class="approvals-filter-form" id="approvals-filter-form">
+                <div class="approvals-filter-row">
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="appr-zone">Zone</label>
+                        <select id="appr-zone" name="zone" class="form-control form-control-sm"
+                                onchange="document.getElementById('appr-city').value=''; this.form.submit();">
+                            <option value="">All zones</option>
+                            <?php foreach ($zoneOptions as $z): ?>
+                                <option value="<?= htmlspecialchars($z) ?>" <?= $filterZone === $z ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($z) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="appr-city">City</label>
+                        <select id="appr-city" name="city" class="form-control form-control-sm" onchange="this.form.submit();">
+                            <option value="">All cities</option>
+                            <?php foreach ($cityOptions as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= $filterCity === $c ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($c) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin:0;">
+                        <label class="form-label" for="appr-tech">Technician</label>
+                        <select id="appr-tech" name="tech" class="form-control form-control-sm" onchange="this.form.submit();">
+                            <option value="">All technicians</option>
+                            <?php foreach ($techOptions as $t): ?>
+                                <option value="<?= (int)$t['id'] ?>" <?= $filterTechId === (int)$t['id'] ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars((string)($t['name'] ?? ('#' . $t['id']))) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <?php if ($hasApprovalFilter): ?>
+                        <div class="form-group" style="margin:0;align-self:flex-end;">
+                            <a href="notifications.php" class="btn btn-secondary btn-sm">Clear</a>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </form>
+            <p class="logs-filters-meta" style="margin:0.65rem 0 0;">
+                Approve = unlock edit (1 save / 24h) · Reject = no access ·
+                <?= number_format($pendingCount) ?> pending · click a row for details
+            </p>
         </div>
     </div>
 
     <?php if ($flash): ?>
-        <div class="alert alert-success" style="margin-bottom:1rem;"><?= htmlspecialchars($flash) ?></div>
+        <div class="alert alert-success app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="<?= htmlspecialchars($flash) ?>" data-app-flash-variant="success"><?= htmlspecialchars($flash) ?></div>
     <?php endif; ?>
     <?php if ($error): ?>
         <div class="alert alert-danger" style="margin-bottom:1rem;"><?= htmlspecialchars($error) ?></div>
     <?php endif; ?>
 
-    <section class="card notif-card" style="margin-bottom:1.25rem;">
-        <div class="card-header">
-            <div class="card-title">Pending approvals</div>
-            <span class="badge <?= $pendingCount > 0 ? 'badge-warning' : 'badge-secondary' ?>">
-                <?= number_format($pendingCount) ?>
-            </span>
-        </div>
-        <div class="card-body">
+    <div class="card logs-entries-card">
+        <div class="card-body logs-entries-body">
             <?php if (empty($pendingApprovals)): ?>
-                <p style="margin:0;color:#64748b;">No technician edit requests waiting for Super Admin.</p>
+                <p class="users-empty">No pending notifications. All clear.</p>
             <?php else: ?>
-                <?php foreach ($pendingApprovals as $n):
-                    $payload = AppNotification::decodePayload($n);
-                    $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
-                    $editRemark = trim((string)($payload['remark'] ?? ''));
-                    $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
-                    $beforeStore = is_array($payload['before']['store'] ?? null) ? $payload['before']['store'] : [];
-                    $beforeFreezer = is_array($payload['before']['freezer'] ?? null) ? $payload['before']['freezer'] : [];
-                    $afterStore = is_array($payload['store'] ?? null) ? $payload['store'] : [];
-                    $afterFreezer = is_array($payload['freezer'] ?? null) ? $payload['freezer'] : [];
-                    $beforeAll = array_merge($beforeStore, $beforeFreezer);
-                    $afterAll = array_merge($afterStore, $afterFreezer);
-                    ?>
-                    <article class="notif-card" style="border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem;">
-                        <div class="notif-card-head">
-                            <div>
-                                <strong><?= htmlspecialchars((string)($n['title'] ?? 'Request')) ?></strong>
-                                <div class="notif-card-meta">
-                                    <span class="badge badge-primary"><?= $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move') ?></span>
-                                    <span><?= htmlspecialchars((string)($n['unique_freezer_id'] ?? '')) ?></span>
-                                    <span>·</span>
-                                    <span>By <?= htmlspecialchars((string)($n['created_by_name'] ?? 'Technician')) ?></span>
-                                    <span>·</span>
-                                    <span><?= htmlspecialchars((string)($n['created_at'] ?? '')) ?></span>
-                                </div>
-                                <?php if (!empty($n['message'])): ?>
-                                    <p style="margin:0.4rem 0 0;color:#475569;font-size:0.9rem;"><?= htmlspecialchars((string)$n['message']) ?></p>
-                                <?php endif; ?>
-                            </div>
-                            <a class="btn btn-sm btn-secondary" href="profile_view.php?id=<?= (int)$n['freezer_id'] ?>">View profile</a>
-                        </div>
-
-                        <?php if ($isAccessRequest): ?>
-                            <div style="margin-top:0.85rem;padding:0.85rem 1rem;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;">
-                                <div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;color:#92400e;margin-bottom:0.35rem;">Technician remark</div>
-                                <div style="white-space:pre-wrap;color:#0f172a;font-size:0.95rem;"><?= htmlspecialchars($editRemark !== '' ? $editRemark : '—') ?></div>
-                            </div>
-                        <?php elseif ($isEdit): ?>
-                            <div class="notif-diff" style="margin-top:0.85rem;">
-                                <div class="notif-diff-head">
-                                    <div class="notif-diff-label">Field</div>
-                                    <div class="notif-diff-label notif-diff-old">Current</div>
-                                    <div class="notif-diff-label notif-diff-new">Requested</div>
-                                </div>
-                                <?php
-                                $shown = 0;
-                                foreach ($diffFields as $key => $label):
-                                    $old = $fmtVal($beforeAll[$key] ?? null);
-                                    $new = $fmtVal($afterAll[$key] ?? null);
-                                    if ($old === $new) {
-                                        continue;
-                                    }
-                                    $shown++;
-                                    ?>
-                                    <div class="notif-diff-row is-changed">
-                                        <div class="notif-diff-field"><?= htmlspecialchars($label) ?></div>
-                                        <div class="notif-diff-old"><?= htmlspecialchars($old) ?></div>
-                                        <div class="notif-diff-new"><?= htmlspecialchars($new) ?></div>
-                                    </div>
-                                <?php endforeach; ?>
-                                <?php if ($shown === 0): ?>
-                                    <div class="notif-diff-row">
-                                        <div class="notif-diff-field">Changes</div>
-                                        <div class="notif-diff-old">—</div>
-                                        <div class="notif-diff-new">Images / minor updates only</div>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
-                            <?php
-                            $media = [];
-                            foreach ($imageFields as $ikey => $ilabel) {
-                                $path = trim((string)($afterAll[$ikey] ?? ''));
-                                if ($path !== '') {
-                                    $media[] = [$ilabel, $path];
-                                }
-                            }
-                            if ($media): ?>
-                                <div class="notif-diff-media">
-                                    <?php foreach ($media as [$ilabel, $path]): ?>
-                                        <a href="<?= htmlspecialchars($path) ?>" target="_blank" rel="noopener">
-                                            <img src="<?= htmlspecialchars($path) ?>" alt="<?= htmlspecialchars($ilabel) ?>">
-                                            <span><?= htmlspecialchars($ilabel) ?></span>
-                                        </a>
-                                    <?php endforeach; ?>
-                                </div>
-                            <?php endif; ?>
-                        <?php endif; ?>
-
-                        <form method="POST" class="notif-actions" style="margin-top:0.75rem;">
-                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                            <input type="hidden" name="notif_id" value="<?= (int)$n['id'] ?>">
-                            <input type="text" name="review_notes" class="form-control" placeholder="Optional note">
-                            <button type="submit" name="notif_action" value="approve" class="btn btn-primary">Approve</button>
-                            <button type="submit" name="notif_action" value="reject" class="btn btn-secondary">Reject</button>
-                        </form>
-                    </article>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </section>
-
-    <div class="cfg-toolbar" style="margin-top:0.5rem;">
-        <div class="cfg-toolbar-left">
-            <h2 class="cfg-toolbar-title" style="font-size:1.1rem;">KYC Activity</h2>
-        </div>
-    </div>
-
-    <!-- Flipkart-style filter bar -->
-    <div class="card profiles-filter-bar">
-        <div class="card-body">
-            <div class="profiles-search-row">
-                <div class="profiles-search-field">
-                    <label class="form-label">Activity range</label>
-                    <div class="notif-range-readonly">
-                        <?= htmlspecialchars($fromDate) ?> → <?= htmlspecialchars($toDate) ?>
-                        <?php if ($locationFilter === 'same'): ?>
-                            · Same location
-                        <?php elseif ($locationFilter === 'new'): ?>
-                            · New location
-                        <?php else: ?>
-                            · All locations
-                        <?php endif; ?>
-                        <?php if ($resultFilter === 'FAIL'): ?>
-                            · FAIL only
-                        <?php elseif ($resultFilter === 'PASS'): ?>
-                            · PASS only
-                        <?php endif; ?>
+                <form method="POST" action="notifications.php<?= htmlspecialchars($filterQuery()) ?>" id="bulk-approvals-form">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                    <input type="hidden" name="filter_zone" value="<?= htmlspecialchars($filterZone) ?>">
+                    <input type="hidden" name="filter_city" value="<?= htmlspecialchars($filterCity) ?>">
+                    <input type="hidden" name="filter_tech" value="<?= (int)$filterTechId ?>">
+                    <div class="approvals-bulk-bar">
+                        <label class="approvals-bulk-select-all">
+                            <input type="checkbox" id="bulk-select-all" aria-label="Select all">
+                            <span>Select all</span>
+                        </label>
+                        <input type="text" name="bulk_notes" class="form-control form-control-sm" placeholder="Optional note for bulk action" style="max-width:220px;">
+                        <button type="submit" name="bulk_action" value="approve" class="btn btn-primary btn-sm"
+                                onclick="return confirmBulk('approve');">Approve selected</button>
+                        <button type="submit" name="bulk_action" value="reject" class="btn btn-secondary btn-sm"
+                                onclick="return confirmBulk('reject');">Reject selected</button>
+                        <span class="approvals-bulk-count" id="bulk-selected-count">0 selected</span>
                     </div>
-                </div>
-                <div class="profiles-search-actions">
-                    <button type="button" class="btn btn-outline profiles-filter-open" id="activity-filter-open" aria-haspopup="dialog" aria-controls="activity-filter-drawer" aria-expanded="false">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-                        </svg>
-                        <span>Filter</span>
-                        <?php if ($activeFilterCount > 0): ?>
-                            <span class="profiles-filter-count"><?= (int)$activeFilterCount ?></span>
-                        <?php endif; ?>
-                    </button>
-                    <?php if ($hasActiveFilters): ?>
-                        <a href="notifications.php?days=90&location=all&result=all" class="btn btn-secondary">Clear</a>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <?php if (!empty($activeChips)): ?>
-                <div class="profiles-active-chips" aria-label="Active filters">
-                    <?php foreach ($activeChips as $chip): ?>
-                        <span class="profiles-chip"><?= htmlspecialchars($chip) ?></span>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <!-- Right filter drawer (Flipkart style) -->
-    <div class="filter-drawer-backdrop" id="activity-filter-backdrop" hidden></div>
-    <aside class="filter-drawer" id="activity-filter-drawer" role="dialog" aria-modal="true" aria-labelledby="activity-filter-title" hidden>
-        <form method="GET" action="notifications.php" id="activity-filter-form" class="filter-drawer-form">
-            <header class="filter-drawer-head">
-                <h2 id="activity-filter-title">Filters</h2>
-                <button type="button" class="filter-drawer-close" id="activity-filter-close" aria-label="Close filters">&times;</button>
-            </header>
-            <div class="filter-drawer-body">
-                <section class="filter-section">
-                    <h3 class="filter-section-title">Date range</h3>
-                    <div class="filter-date-grid">
-                        <div class="form-group" style="margin-bottom:0.75rem;">
-                            <label class="form-label" for="activity-from">From</label>
-                            <input type="date" id="activity-from" name="from" class="form-control"
-                                   value="<?= htmlspecialchars($fromDate) ?>" max="<?= htmlspecialchars($today) ?>">
-                        </div>
-                        <div class="form-group" style="margin-bottom:0;">
-                            <label class="form-label" for="activity-to">To</label>
-                            <input type="date" id="activity-to" name="to" class="form-control"
-                                   value="<?= htmlspecialchars($toDate) ?>" max="<?= htmlspecialchars($today) ?>">
-                        </div>
-                    </div>
-                    <div class="filter-preset-list" style="margin-top:0.75rem;">
-                        <?php
-                        $presets = [7 => 'Last 7 days', 30 => 'Last 30 days', 90 => 'Last 90 days', 180 => 'Last 180 days', 365 => 'Last 1 year'];
-                        foreach ($presets as $d => $label):
-                            $checked = ($days === (int)$d) || ($isDefaultRange && (int)$d === 90);
-                            ?>
-                            <label class="filter-check">
-                                <input type="radio" name="days" value="<?= (int)$d ?>"
-                                    <?= $checked ? 'checked' : '' ?>
-                                    data-preset-days="<?= (int)$d ?>">
-                                <span><?= htmlspecialchars($label) ?></span>
-                            </label>
-                        <?php endforeach; ?>
-                    </div>
-                </section>
-
-                <section class="filter-section">
-                    <h3 class="filter-section-title">Location type</h3>
-                    <div class="filter-check-list">
-                        <label class="filter-check">
-                            <input type="radio" name="location" value="all" <?= $locationFilter === 'all' ? 'checked' : '' ?>>
-                            <span>All locations</span>
-                        </label>
-                        <label class="filter-check">
-                            <input type="radio" name="location" value="same" <?= $locationFilter === 'same' ? 'checked' : '' ?>>
-                            <span>Same location</span>
-                        </label>
-                        <label class="filter-check">
-                            <input type="radio" name="location" value="new" <?= $locationFilter === 'new' ? 'checked' : '' ?>>
-                            <span>New location</span>
-                        </label>
-                    </div>
-                </section>
-
-                <section class="filter-section">
-                    <h3 class="filter-section-title">KYC result</h3>
-                    <div class="filter-check-list">
-                        <label class="filter-check">
-                            <input type="radio" name="result" value="all" <?= $resultFilter === 'ALL' ? 'checked' : '' ?>>
-                            <span>All results</span>
-                        </label>
-                        <label class="filter-check">
-                            <input type="radio" name="result" value="PASS" <?= $resultFilter === 'PASS' ? 'checked' : '' ?>>
-                            <span>PASS only</span>
-                        </label>
-                        <label class="filter-check">
-                            <input type="radio" name="result" value="FAIL" <?= $resultFilter === 'FAIL' ? 'checked' : '' ?>>
-                            <span>FAIL only</span>
-                        </label>
-                    </div>
-                </section>
-            </div>
-            <footer class="filter-drawer-foot">
-                <a href="notifications.php?days=90&location=all&result=all" class="btn btn-secondary">Clear all</a>
-                <button type="submit" class="btn btn-primary">Apply filters</button>
-            </footer>
-        </form>
-    </aside>
-
-    <div class="notif-summary-grid">
-        <div class="notif-summary-card">
-            <span>Total KYC</span>
-            <strong><?= number_format($grandTotal) ?></strong>
-        </div>
-        <div class="notif-summary-card">
-            <span>Same store</span>
-            <strong><?= number_format($grandSame) ?></strong>
-        </div>
-        <div class="notif-summary-card">
-            <span>New store moves</span>
-            <strong><?= number_format($grandNew) ?></strong>
-        </div>
-        <div class="notif-summary-card">
-            <span>FAIL</span>
-            <strong><?= number_format($grandFail) ?></strong>
-        </div>
-    </div>
-
-    <p class="notif-history-intro">
-        Showing
-        <?php if ($resultFilter === 'FAIL'): ?>
-            <strong>FAIL</strong>
-        <?php elseif ($resultFilter === 'PASS'): ?>
-            <strong>PASS</strong>
-        <?php else: ?>
-            <strong>all results</strong>
-        <?php endif; ?>
-        ·
-        <?php if ($locationFilter === 'same'): ?>
-            <strong>same location</strong>
-        <?php elseif ($locationFilter === 'new'): ?>
-            <strong>new location</strong>
-        <?php else: ?>
-            <strong>all locations</strong>
-        <?php endif; ?>
-        from <strong><?= htmlspecialchars($fromDate) ?></strong>
-        to <strong><?= htmlspecialchars($toDate) ?></strong>.
-        <?php if ($grandFail > 0 && $resultFilter !== 'FAIL'): ?>
-            <a href="profiles.php?kyc[]=failed">View failed profiles</a>
-        <?php endif; ?>
-    </p>
-
-    <?php
-    $lazyBatch = 5;
-    $rowPreview = 12;
-    $historyInitial = array_slice($history, 0, $lazyBatch);
-    $historyRest = array_slice($history, $lazyBatch);
-    $renderDayCard = static function (array $day, int $rowPreview): void {
-        $items = $day['items'] ?? [];
-        $totalItems = count($items);
-        $visible = array_slice($items, 0, $rowPreview);
-        $hiddenCount = max(0, $totalItems - count($visible));
-        ?>
-        <div class="card notif-day-card" data-day="<?= htmlspecialchars((string)($day['date'] ?? '')) ?>">
-            <div class="card-header notif-day-head">
-                <div class="card-title">
-                    <span><?= htmlspecialchars((string)($day['label'] ?? '')) ?></span>
-                </div>
-                <div class="notif-day-counts">
-                    <span class="badge badge-success"><?= (int)($day['total'] ?? 0) ?> total</span>
-                    <span class="notif-day-pill"><?= (int)($day['same_store'] ?? 0) ?> same store</span>
-                    <span class="notif-day-pill notif-day-pill-move"><?= (int)($day['new_store'] ?? 0) ?> new store</span>
-                    <?php if ((int)($day['fail'] ?? 0) > 0): ?>
-                        <span class="badge badge-danger"><?= (int)$day['fail'] ?> FAIL</span>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <div class="card-body" style="padding:0;">
-                <div class="table-responsive">
-                    <table class="data-table notif-day-table">
+                <div class="logs-table-wrap">
+                    <table class="logs-excel notif-excel">
                         <thead>
                             <tr>
-                                <th>#</th>
+                                <th class="notif-check-col">Sel</th>
+                                <th>Time</th>
                                 <th>Type</th>
-                                <th>Freezer ID</th>
-                                <th>Store</th>
+                                <th>Status</th>
+                                <th>Freezer</th>
+                                <th>Profile / Store</th>
+                                <th>Zone</th>
                                 <th>City</th>
-                                <th>Result</th>
                                 <th>Technician</th>
+                                <th>Remark</th>
+                                <th>Note</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($visible as $i => $item): ?>
-                                <tr>
-                                    <td><?= $i + 1 ?></td>
-                                    <td>
-                                        <?php if (!empty($item['is_new_store'])): ?>
-                                            <span class="badge badge-warning">New store</span>
-                                        <?php else: ?>
-                                            <span class="badge badge-success">Same store</span>
-                                        <?php endif; ?>
+                            <?php foreach ($pendingApprovals as $n):
+                                $payload = AppNotification::decodePayload($n);
+                                $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
+                                $editRemark = trim((string)($payload['remark'] ?? ''));
+                                $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
+                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move');
+                                $freezerId = (string)($n['unique_freezer_id'] ?? '');
+                                $tech = (string)($n['created_by_name'] ?? 'Technician');
+                                $title = (string)($n['title'] ?? 'Request');
+                                $time = (string)($n['created_at'] ?? '');
+                                $message = (string)($n['message'] ?? '');
+                                $remarkCell = $editRemark !== '' ? $editRemark : $message;
+                                $fid = (int)($n['freezer_id'] ?? 0);
+                                $profileUrl = 'profile_view.php?id=' . $fid;
+                                $storePayload = is_array($payload['store'] ?? null) ? $payload['store'] : [];
+                                $freezerPayload = is_array($payload['freezer'] ?? null) ? $payload['freezer'] : [];
+                                $kycPayload = is_array($payload['kyc'] ?? null) ? $payload['kyc'] : [];
+                                $newStore = is_array($payload['new_store'] ?? null) ? $payload['new_store'] : [];
+                                $profileStore = (string)($n['profile_store_name'] ?? '');
+                                $profileOutlet = (string)($n['profile_outlet_id'] ?? '');
+                                $profileCity = (string)($n['profile_city'] ?? '');
+                                $profileZone = (string)($n['profile_zone'] ?? '');
+                                if ($profileStore === '') {
+                                    $profileStore = (string)($storePayload['store_name'] ?? $newStore['store_name'] ?? $kycPayload['store_name'] ?? '');
+                                }
+                                if ($profileOutlet === '') {
+                                    $profileOutlet = (string)($storePayload['outlet_id'] ?? $newStore['outlet_id'] ?? '');
+                                }
+                                if ($profileCity === '') {
+                                    $profileCity = (string)($storePayload['city'] ?? $newStore['city'] ?? '');
+                                }
+                                if ($profileZone === '') {
+                                    $profileZone = (string)($storePayload['zone'] ?? $newStore['zone'] ?? '');
+                                }
+                                $detailPayload = [
+                                    'id' => (int)$n['id'],
+                                    'form_id' => 'notif-form-' . (int)$n['id'],
+                                    'title' => $title !== '' ? $title : 'Request',
+                                    'type_label' => $typeLabel,
+                                    'status' => 'Pending',
+                                    'time' => $time,
+                                    'unique_freezer_id' => $freezerId,
+                                    'freezer_id' => (string)$fid,
+                                    'profile_url' => $profileUrl,
+                                    'technician' => $tech,
+                                    'remark' => $editRemark,
+                                    'message' => $message,
+                                    'request_kind' => (string)($payload['request_kind'] ?? ''),
+                                    'store_name' => $profileStore,
+                                    'outlet_id' => $profileOutlet,
+                                    'city' => $profileCity,
+                                    'zone' => $profileZone,
+                                    'phone' => (string)($storePayload['phone'] ?? $newStore['phone'] ?? ''),
+                                    'address' => (string)($storePayload['address'] ?? $newStore['address'] ?? ''),
+                                    'image_store_front' => (string)($kycPayload['image_store_front'] ?? $newStore['image_store_front'] ?? $payload['image_store_front'] ?? ''),
+                                    'image_freezer' => (string)($kycPayload['image_freezer'] ?? $payload['image_freezer'] ?? ''),
+                                    'notes' => (string)($kycPayload['notes'] ?? $payload['notes'] ?? ''),
+                                    'has_field_changes' => ($storePayload !== [] || $freezerPayload !== []),
+                                    'steps' => $isAccessRequest
+                                        ? [
+                                            'Technician sent a remark to request edit access.',
+                                            'Approve = unlock edit for one save within 24 hours.',
+                                            'Reject = technician cannot edit this profile.',
+                                        ]
+                                        : ($isEdit
+                                            ? [
+                                                'Technician submitted profile changes for approval.',
+                                                'Approve applies the queued store/freezer updates.',
+                                                'Reject discards the request.',
+                                            ]
+                                            : [
+                                                'Technician requested a KYC store move.',
+                                                'Approve links the new store to the freezer.',
+                                                'Reject keeps the current store assignment.',
+                                            ]),
+                                ];
+                                ?>
+                                <tr class="kyc-act-row notif-act-row"
+                                    tabindex="0"
+                                    role="button"
+                                    aria-label="Open notification details"
+                                    data-detail="<?= htmlspecialchars(json_encode($detailPayload, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS), ENT_QUOTES, 'UTF-8') ?>">
+                                    <td class="notif-check-col" data-stop-row-open>
+                                        <input type="checkbox" class="bulk-notif-check" name="notif_ids[]" value="<?= (int)$n['id'] ?>" form="bulk-approvals-form" aria-label="Select request">
                                     </td>
-                                    <td>
-                                        <a class="profile-kv-mono" href="profile_view.php?id=<?= urlencode((string)$item['unique_freezer_id']) ?>">
-                                            <?= htmlspecialchars($item['unique_freezer_id'] !== '' ? $item['unique_freezer_id'] : ('#' . $item['freezer_id'])) ?>
+                                    <td title="<?= htmlspecialchars($time) ?>"><?= htmlspecialchars($time !== '' ? $time : '—') ?></td>
+                                    <td title="<?= htmlspecialchars($typeLabel) ?>">
+                                        <span class="badge badge-sm badge-primary"><?= htmlspecialchars($typeLabel) ?></span>
+                                    </td>
+                                    <td title="Pending">
+                                        <span class="badge badge-sm badge-warning">Pending</span>
+                                    </td>
+                                    <td title="<?= htmlspecialchars($freezerId) ?>">
+                                        <a class="kyc-act-row-link" href="<?= htmlspecialchars($profileUrl) ?>">
+                                            <?= htmlspecialchars($freezerId !== '' ? $freezerId : ('#' . $fid)) ?>
                                         </a>
                                     </td>
-                                    <td>
-                                        <?= htmlspecialchars($item['store_name'] !== '' ? $item['store_name'] : '—') ?>
-                                        <?php if ($item['outlet_id'] !== ''): ?>
-                                            <div class="notif-day-sub"><?= htmlspecialchars($item['outlet_id']) ?></div>
+                                    <td title="<?= htmlspecialchars($profileStore . ($profileOutlet !== '' ? ' · ' . $profileOutlet : '')) ?>">
+                                        <?= htmlspecialchars($profileStore !== '' ? $profileStore : '—') ?>
+                                        <?php if ($profileOutlet !== ''): ?>
+                                            <div class="notif-day-sub"><?= htmlspecialchars($profileOutlet) ?></div>
                                         <?php endif; ?>
                                     </td>
-                                    <td><?= htmlspecialchars($item['city'] !== '' ? $item['city'] : '—') ?></td>
-                                    <td>
-                                        <span class="badge <?= ($item['result'] ?? '') === 'FAIL' ? 'badge-danger' : 'badge-success' ?>">
-                                            <?= htmlspecialchars($item['result'] ?: 'PASS') ?>
-                                        </span>
+                                    <td><?= htmlspecialchars($profileZone !== '' ? $profileZone : '—') ?></td>
+                                    <td><?= htmlspecialchars($profileCity !== '' ? $profileCity : '—') ?></td>
+                                    <td title="<?= htmlspecialchars($tech) ?>"><?= htmlspecialchars($tech !== '' ? $tech : '—') ?></td>
+                                    <td title="<?= htmlspecialchars($remarkCell) ?>"><?= htmlspecialchars($remarkCell !== '' ? $remarkCell : '—') ?></td>
+                                    <td class="notif-excel-note-cell" data-stop-row-open>
+                                        <form method="POST" class="notif-excel-row-form" id="notif-form-<?= (int)$n['id'] ?>">
+                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                            <input type="hidden" name="notif_id" value="<?= (int)$n['id'] ?>">
+                                            <input type="hidden" name="filter_zone" value="<?= htmlspecialchars($filterZone) ?>">
+                                            <input type="hidden" name="filter_city" value="<?= htmlspecialchars($filterCity) ?>">
+                                            <input type="hidden" name="filter_tech" value="<?= (int)$filterTechId ?>">
+                                            <input type="text" name="review_notes" class="form-control form-control-sm" placeholder="Optional note" title="Optional review note">
+                                        </form>
                                     </td>
-                                    <td><?= htmlspecialchars($item['technician_name'] !== '' ? $item['technician_name'] : '—') ?></td>
+                                    <td class="notif-excel-actions-cell" data-stop-row-open>
+                                        <div class="notif-excel-actions">
+                                            <button type="submit" form="notif-form-<?= (int)$n['id'] ?>" name="notif_action" value="approve" class="btn btn-primary btn-sm">Approve</button>
+                                            <button type="submit" form="notif-form-<?= (int)$n['id'] ?>" name="notif_action" value="reject" class="btn btn-secondary btn-sm">Reject</button>
+                                        </div>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-                <?php if ($hiddenCount > 0): ?>
-                    <div class="notif-day-more-wrap">
-                        <button type="button" class="btn btn-sm btn-outline notif-day-more-btn"
-                            data-more-items="<?= htmlspecialchars(json_encode(array_slice($items, $rowPreview), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>"
-                            data-start-index="<?= (int)$rowPreview ?>">
-                            Show <?= (int)$hiddenCount ?> more
-                        </button>
-                    </div>
+                </form>
+            <?php endif; ?>
+        </div>
+        <?php if ($pendingCount > 0): ?>
+        <div class="card-footer profiles-pagination" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+            <div style="font-size:0.85rem; color:#64748b;">
+                Showing <strong><?= (int)$pendingFrom ?>–<?= (int)$pendingTo ?></strong> of <strong><?= number_format($pendingCount) ?></strong>
+                · <?= (int)$pendingLimit ?> per page
+                <?php if ($pendingPages > 1): ?>
+                    · Page <strong><?= (int)$pendingPage ?></strong> of <strong><?= (int)$pendingPages ?></strong>
                 <?php endif; ?>
             </div>
-        </div>
-        <?php
-    };
-    ?>
-
-    <?php if (empty($history)): ?>
-        <div class="card">
-            <div class="card-body">
-                <p style="margin:0;color:#94a3b8;">No KYC activity in this date range.</p>
+            <?php if ($pendingPages > 1): ?>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
+                <?php if ($pendingPage > 1): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($approvalsPageUrl('pending', $pendingPage - 1)) ?>">Prev</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
+                <?php endif; ?>
+                <?php if ($pendingPage < $pendingPages): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($approvalsPageUrl('pending', $pendingPage + 1)) ?>">Next</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
+                <?php endif; ?>
             </div>
+            <?php endif; ?>
         </div>
-    <?php else: ?>
-        <div id="activity-day-list">
-            <?php foreach ($historyInitial as $day): ?>
-                <?php $renderDayCard($day, $rowPreview); ?>
-            <?php endforeach; ?>
-        </div>
-
-        <?php if (!empty($historyRest)): ?>
-            <div id="activity-lazy-sentinel" class="notif-lazy-sentinel" aria-hidden="true">
-                <div class="notif-lazy-spinner" aria-hidden="true"></div>
-                <span>Loading more activity…</span>
-            </div>
-            <script type="application/json" id="activity-lazy-data"><?= json_encode(array_values($historyRest), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) ?></script>
         <?php endif; ?>
-    <?php endif; ?>
+    </div>
 
+    <div class="card logs-entries-card" style="margin-top:1rem;" id="recent-decisions">
+        <div class="card-header notif-day-head">
+            <div class="card-title"><span>Recent decisions</span></div>
+            <div class="notif-day-counts">
+                <span class="badge badge-secondary"><?= number_format($recentDecisionsTotal) ?> total</span>
+            </div>
+        </div>
+        <div class="card-body logs-entries-body">
+            <?php if (empty($recentDecisions)): ?>
+                <p class="users-empty">No approved/rejected history yet.</p>
+            <?php else: ?>
+                <div class="logs-table-wrap">
+                    <table class="logs-excel notif-excel">
+                        <thead>
+                            <tr>
+                                <th>Decided</th>
+                                <th>Status</th>
+                                <th>Type</th>
+                                <th>Freezer</th>
+                                <th>Profile / Store</th>
+                                <th>Zone</th>
+                                <th>City</th>
+                                <th>Technician</th>
+                                <th>Remark</th>
+                                <th>Admin note</th>
+                                <th>By</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($recentDecisions as $n):
+                                $payload = AppNotification::decodePayload($n);
+                                $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
+                                $editRemark = trim((string)($payload['remark'] ?? ''));
+                                $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
+                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move');
+                                $status = strtolower((string)($n['status'] ?? ''));
+                                $statusClass = $status === 'approved' ? 'badge-success' : 'badge-danger';
+                                $freezerId = (string)($n['unique_freezer_id'] ?? '');
+                                $tech = (string)($n['created_by_name'] ?? 'Technician');
+                                $decidedAt = (string)($n['reviewed_at'] ?? $n['created_at'] ?? '');
+                                $adminNote = (string)($n['review_notes'] ?? '');
+                                $reviewer = (string)($n['reviewed_by_name'] ?? '');
+                                $fid = (int)($n['freezer_id'] ?? 0);
+                                $profileStore = (string)($n['profile_store_name'] ?? '');
+                                $profileOutlet = (string)($n['profile_outlet_id'] ?? '');
+                                $profileCity = (string)($n['profile_city'] ?? '');
+                                $profileZone = (string)($n['profile_zone'] ?? '');
+                                ?>
+                                <tr>
+                                    <td title="<?= htmlspecialchars($decidedAt) ?>"><?= htmlspecialchars($decidedAt !== '' ? $decidedAt : '—') ?></td>
+                                    <td>
+                                        <span class="badge badge-sm <?= $statusClass ?>"><?= htmlspecialchars(ucfirst($status !== '' ? $status : '—')) ?></span>
+                                    </td>
+                                    <td><?= htmlspecialchars($typeLabel) ?></td>
+                                    <td>
+                                        <a href="profile_view.php?id=<?= $fid ?>">
+                                            <?= htmlspecialchars($freezerId !== '' ? $freezerId : ('#' . $fid)) ?>
+                                        </a>
+                                    </td>
+                                    <td title="<?= htmlspecialchars($profileStore . ($profileOutlet !== '' ? ' · ' . $profileOutlet : '')) ?>">
+                                        <?= htmlspecialchars($profileStore !== '' ? $profileStore : '—') ?>
+                                        <?php if ($profileOutlet !== ''): ?>
+                                            <div class="notif-day-sub"><?= htmlspecialchars($profileOutlet) ?></div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?= htmlspecialchars($profileZone !== '' ? $profileZone : '—') ?></td>
+                                    <td><?= htmlspecialchars($profileCity !== '' ? $profileCity : '—') ?></td>
+                                    <td><?= htmlspecialchars($tech !== '' ? $tech : '—') ?></td>
+                                    <td title="<?= htmlspecialchars($editRemark !== '' ? $editRemark : (string)($n['message'] ?? '')) ?>">
+                                        <?= htmlspecialchars($editRemark !== '' ? $editRemark : ((string)($n['message'] ?? '') !== '' ? (string)$n['message'] : '—')) ?>
+                                    </td>
+                                    <td><?= htmlspecialchars($adminNote !== '' ? $adminNote : '—') ?></td>
+                                    <td><?= htmlspecialchars($reviewer !== '' ? $reviewer : '—') ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php if ($recentDecisionsTotal > 0): ?>
+        <div class="card-footer profiles-pagination" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+            <div style="font-size:0.85rem; color:#64748b;">
+                Showing <strong><?= (int)$decisionsFrom ?>–<?= (int)$decisionsTo ?></strong> of <strong><?= number_format($recentDecisionsTotal) ?></strong>
+                · <?= (int)$decisionsLimit ?> per page
+                <?php if ($decisionsPages > 1): ?>
+                    · Page <strong><?= (int)$decisionsPage ?></strong> of <strong><?= (int)$decisionsPages ?></strong>
+                <?php endif; ?>
+            </div>
+            <?php if ($decisionsPages > 1): ?>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center;">
+                <?php if ($decisionsPage > 1): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($approvalsPageUrl('decisions', $decisionsPage - 1)) ?>#recent-decisions">Prev</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Prev</button>
+                <?php endif; ?>
+                <?php if ($decisionsPage < $decisionsPages): ?>
+                    <a class="btn btn-sm btn-secondary" href="<?= htmlspecialchars($approvalsPageUrl('decisions', $decisionsPage + 1)) ?>#recent-decisions">Next</a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-sm btn-secondary" disabled>Next</button>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="kyc-act-modal" id="notif-act-modal" hidden aria-hidden="true">
+    <div class="kyc-act-modal-backdrop" data-notif-act-close></div>
+    <div class="kyc-act-modal-sheet" role="dialog" aria-modal="true" aria-labelledby="notif-act-modal-title">
+        <header class="kyc-act-modal-head">
+            <div>
+                <p class="kyc-act-modal-kicker">Approval</p>
+                <h2 id="notif-act-modal-title">Details</h2>
+            </div>
+            <button type="button" class="kyc-act-modal-close" data-notif-act-close aria-label="Close">&times;</button>
+        </header>
+        <div class="kyc-act-modal-body" id="notif-act-modal-body"></div>
+        <footer class="kyc-act-modal-foot" id="notif-act-modal-foot"></footer>
+    </div>
 </div>
 
 <script>
 (function () {
-    var openBtn = document.getElementById('activity-filter-open');
-    var closeBtn = document.getElementById('activity-filter-close');
-    var drawer = document.getElementById('activity-filter-drawer');
-    var backdrop = document.getElementById('activity-filter-backdrop');
-    var form = document.getElementById('activity-filter-form');
-    var fromInput = document.getElementById('activity-from');
-    var toInput = document.getElementById('activity-to');
-
-    function openDrawer() {
-        if (!drawer || !backdrop) return;
-        drawer.hidden = false;
-        backdrop.hidden = false;
-        requestAnimationFrame(function () {
-            drawer.classList.add('is-open');
-            backdrop.classList.add('is-open');
-        });
-        document.body.classList.add('filter-drawer-open');
-        if (openBtn) openBtn.setAttribute('aria-expanded', 'true');
-    }
-
-    function closeDrawer() {
-        if (!drawer || !backdrop) return;
-        drawer.classList.remove('is-open');
-        backdrop.classList.remove('is-open');
-        if (openBtn) openBtn.setAttribute('aria-expanded', 'false');
-        document.body.classList.remove('filter-drawer-open');
-        setTimeout(function () {
-            if (!drawer.classList.contains('is-open')) {
-                drawer.hidden = true;
-                backdrop.hidden = true;
-            }
-        }, 280);
-    }
-
-    if (openBtn) openBtn.addEventListener('click', openDrawer);
-    if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
-    if (backdrop) backdrop.addEventListener('click', closeDrawer);
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && drawer && drawer.classList.contains('is-open')) closeDrawer();
-    });
-
-    if (form) {
-        form.querySelectorAll('input[data-preset-days]').forEach(function (radio) {
-            radio.addEventListener('change', function () {
-                if (!radio.checked || !fromInput || !toInput) return;
-                var days = parseInt(radio.getAttribute('data-preset-days'), 10) || 90;
-                var to = new Date();
-                var from = new Date();
-                from.setDate(from.getDate() - days);
-                function fmt(d) {
-                    var m = String(d.getMonth() + 1).padStart(2, '0');
-                    var day = String(d.getDate()).padStart(2, '0');
-                    return d.getFullYear() + '-' + m + '-' + day;
-                }
-                toInput.value = fmt(to);
-                fromInput.value = fmt(from);
-            });
-        });
-        [fromInput, toInput].forEach(function (el) {
-            if (!el) return;
-            el.addEventListener('change', function () {
-                form.querySelectorAll('input[data-preset-days]').forEach(function (r) {
-                    r.checked = false;
-                });
-            });
-        });
-    }
+    var modal = document.getElementById('notif-act-modal');
+    var titleEl = document.getElementById('notif-act-modal-title');
+    var bodyEl = document.getElementById('notif-act-modal-body');
+    var footEl = document.getElementById('notif-act-modal-foot');
+    if (!modal || !titleEl || !bodyEl || !footEl) return;
 
     function esc(s) {
         return String(s == null ? '' : s)
@@ -689,133 +674,191 @@ $fmtVal = static function ($v): string {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;');
     }
-
-    function rowHtml(item, index) {
-        var uid = item.unique_freezer_id || ('#' + item.freezer_id);
-        var typeBadge = item.is_new_store
-            ? '<span class="badge badge-warning">New store</span>'
-            : '<span class="badge badge-success">Same store</span>';
-        var resultBadge = (item.result === 'FAIL')
-            ? '<span class="badge badge-danger">FAIL</span>'
-            : '<span class="badge badge-success">' + esc(item.result || 'PASS') + '</span>';
-        var outlet = item.outlet_id
-            ? '<div class="notif-day-sub">' + esc(item.outlet_id) + '</div>'
-            : '';
-        return '<tr>' +
-            '<td>' + (index + 1) + '</td>' +
-            '<td>' + typeBadge + '</td>' +
-            '<td><a class="profile-kv-mono" href="profile_view.php?id=' + encodeURIComponent(item.unique_freezer_id || '') + '">' + esc(uid) + '</a></td>' +
-            '<td>' + esc(item.store_name || '—') + outlet + '</td>' +
-            '<td>' + esc(item.city || '—') + '</td>' +
-            '<td>' + resultBadge + '</td>' +
-            '<td>' + esc(item.technician_name || '—') + '</td>' +
-            '</tr>';
+    function dash(v) {
+        v = String(v == null ? '' : v).trim();
+        return v !== '' ? v : '—';
+    }
+    function kv(label, valueHtml) {
+        return '<div class="kyc-act-kv"><span>' + esc(label) + '</span><strong>' + valueHtml + '</strong></div>';
     }
 
-    function buildDayCard(day, rowPreview) {
-        rowPreview = rowPreview || 12;
-        var items = day.items || [];
-        var visible = items.slice(0, rowPreview);
-        var rest = items.slice(rowPreview);
-        var fail = day.fail ? '<span class="badge badge-danger">' + day.fail + ' FAIL</span>' : '';
-        var rows = visible.map(function (it, i) { return rowHtml(it, i); }).join('');
-        var more = '';
-        if (rest.length) {
-            more = '<div class="notif-day-more-wrap">' +
-                '<button type="button" class="btn btn-sm btn-outline notif-day-more-btn" data-start-index="' + rowPreview + '">' +
-                'Show ' + rest.length + ' more</button></div>';
-        }
-        var el = document.createElement('div');
-        el.className = 'card notif-day-card';
-        el.setAttribute('data-day', day.date || '');
-        el.innerHTML =
-            '<div class="card-header notif-day-head">' +
-                '<div class="card-title"><span>' + esc(day.label || '') + '</span></div>' +
-                '<div class="notif-day-counts">' +
-                    '<span class="badge badge-success">' + (day.total || 0) + ' total</span>' +
-                    '<span class="notif-day-pill">' + (day.same_store || 0) + ' same store</span>' +
-                    '<span class="notif-day-pill notif-day-pill-move">' + (day.new_store || 0) + ' new store</span>' +
-                    fail +
-                '</div>' +
-            '</div>' +
-            '<div class="card-body" style="padding:0;">' +
-                '<div class="table-responsive"><table class="data-table notif-day-table">' +
-                    '<thead><tr><th>#</th><th>Type</th><th>Freezer ID</th><th>Store</th><th>City</th><th>Result</th><th>Technician</th></tr></thead>' +
-                    '<tbody>' + rows + '</tbody>' +
-                '</table></div>' + more +
+    function openModal(data) {
+        var freezerLabel = data.unique_freezer_id || (data.freezer_id ? ('#' + data.freezer_id) : '—');
+        titleEl.textContent = data.title || 'Notification';
+
+        var badges = '<div class="notif-approval-badges">' +
+            '<span class="badge badge-primary">' + esc(data.type_label || 'Request') + '</span>' +
+            '<span class="badge badge-warning">' + esc(data.status || 'Pending') + '</span>' +
             '</div>';
-        if (rest.length) {
-            var btn = el.querySelector('.notif-day-more-btn');
-            if (btn) btn._moreItems = rest;
+
+        var grid = '<div class="kyc-act-kv-grid">' +
+            kv('Freezer', '<a class="profile-kv-mono" href="' + esc(data.profile_url || '#') + '">' + esc(freezerLabel) + '</a>') +
+            kv('Technician', esc(dash(data.technician))) +
+            kv('Time', esc(dash(data.time))) +
+            kv('Request', esc(dash(data.request_kind || data.type_label))) +
+            '</div>';
+
+        if (data.store_name || data.outlet_id || data.city || data.zone || data.phone || data.address) {
+            grid += '<div class="kyc-act-kv-grid">' +
+                kv('Store', esc(dash(data.store_name))) +
+                kv('Outlet ID', esc(dash(data.outlet_id))) +
+                kv('City', esc(dash(data.city))) +
+                kv('Zone', esc(dash(data.zone))) +
+                (data.phone ? kv('Phone', esc(data.phone)) : '') +
+                (data.address ? kv('Address', esc(data.address)) : '') +
+                '</div>';
         }
-        return el;
-    }
 
-    // Lazy-load remaining day cards on scroll
-    var list = document.getElementById('activity-day-list');
-    var sentinel = document.getElementById('activity-lazy-sentinel');
-    var dataEl = document.getElementById('activity-lazy-data');
-    var queue = [];
-    var batchSize = 5;
-    var loading = false;
+        var remarkText = (data.remark && String(data.remark).trim()) || (data.message && String(data.message).trim()) || (data.notes && String(data.notes).trim()) || '';
+        var remark = remarkText
+            ? '<div class="notif-remark-box"><div class="notif-remark-label">Remark / message</div><div class="notif-remark-text">' + esc(remarkText) + '</div></div>'
+            : '';
 
-    if (dataEl && list) {
-        try {
-            queue = JSON.parse(dataEl.textContent || '[]') || [];
-        } catch (e) {
-            queue = [];
+        var photos = '';
+        var photoBits = [];
+        if (data.image_store_front) {
+            photoBits.push('<a href="' + esc(data.image_store_front) + '" target="_blank" rel="noopener"><img src="' + esc(data.image_store_front) + '" alt="Store photo"><span>Store</span></a>');
         }
-    }
-
-    function appendBatch() {
-        if (loading || !queue.length || !list) return;
-        loading = true;
-        var chunk = queue.splice(0, batchSize);
-        chunk.forEach(function (day) {
-            list.appendChild(buildDayCard(day, 12));
-        });
-        loading = false;
-        if (!queue.length && sentinel) {
-            sentinel.remove();
+        if (data.image_freezer) {
+            photoBits.push('<a href="' + esc(data.image_freezer) + '" target="_blank" rel="noopener"><img src="' + esc(data.image_freezer) + '" alt="Freezer photo"><span>Freezer</span></a>');
         }
+        if (photoBits.length) {
+            photos = '<div class="kyc-act-photos"><div class="notif-remark-label">Photos</div><div class="kyc-act-photo-grid">' + photoBits.join('') + '</div></div>';
+        }
+
+        var steps = '';
+        if (Array.isArray(data.steps) && data.steps.length) {
+            steps = '<ol class="notif-approval-steps">' + data.steps.map(function (s) {
+                return '<li>' + esc(s) + '</li>';
+            }).join('') + '</ol>';
+        }
+
+        bodyEl.innerHTML = badges +
+            '<p class="kyc-act-modal-lead">' + esc(freezerLabel) + ' · ' + esc(dash(data.technician)) + '</p>' +
+            grid + remark + photos + steps +
+            '<div class="form-group" style="margin:0.85rem 0 0;">' +
+                '<label class="form-label" for="notif-modal-notes">Admin note (optional)</label>' +
+                '<input type="text" id="notif-modal-notes" class="form-control" placeholder="Optional note for approve / reject">' +
+            '</div>';
+
+        footEl.innerHTML =
+            '<button type="button" class="btn btn-secondary" data-notif-act-close>Close</button>' +
+            '<a class="btn btn-outline" href="' + esc(data.profile_url || '#') + '">Open profile</a>' +
+            '<button type="button" class="btn btn-secondary" data-notif-act-submit="reject" data-form="' + esc(data.form_id || '') + '">Reject</button>' +
+            '<button type="button" class="btn btn-primary" data-notif-act-submit="approve" data-form="' + esc(data.form_id || '') + '">Approve</button>';
+
+        modal.hidden = false;
+        modal.setAttribute('aria-hidden', 'false');
+        requestAnimationFrame(function () { modal.classList.add('is-open'); });
+        document.body.classList.add('kyc-act-modal-open');
     }
 
-    if (sentinel && queue.length && 'IntersectionObserver' in window) {
-        var io = new IntersectionObserver(function (entries) {
-            entries.forEach(function (entry) {
-                if (entry.isIntersecting) appendBatch();
-            });
-        }, { rootMargin: '240px 0px' });
-        io.observe(sentinel);
-    } else if (queue.length) {
-        appendBatch();
-        while (queue.length) appendBatch();
-        if (sentinel) sentinel.remove();
-    }
-
-    // Expand rows inside a day card
-    document.addEventListener('click', function (e) {
-        var btn = e.target.closest('.notif-day-more-btn');
-        if (!btn) return;
-        var card = btn.closest('.notif-day-card');
-        if (!card) return;
-        var tbody = card.querySelector('tbody');
-        if (!tbody) return;
-        var rest = btn._moreItems;
-        if (!rest) {
-            try {
-                rest = JSON.parse(btn.getAttribute('data-more-items') || '[]');
-            } catch (err) {
-                rest = [];
+    function closeModal() {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('kyc-act-modal-open');
+        setTimeout(function () {
+            if (!modal.classList.contains('is-open')) {
+                modal.hidden = true;
+                bodyEl.innerHTML = '';
+                footEl.innerHTML = '';
             }
+        }, 200);
+    }
+
+    function submitFromModal(action, formId) {
+        var form = document.getElementById(formId);
+        if (!form) return;
+        var noteInput = document.getElementById('notif-modal-notes');
+        var rowNote = form.querySelector('input[name="review_notes"]');
+        if (noteInput && rowNote) {
+            rowNote.value = noteInput.value || '';
         }
-        var start = parseInt(btn.getAttribute('data-start-index'), 10) || tbody.children.length;
-        rest.forEach(function (item, i) {
-            tbody.insertAdjacentHTML('beforeend', rowHtml(item, start + i));
-        });
-        var wrap = btn.closest('.notif-day-more-wrap');
-        if (wrap) wrap.remove();
+        var actionInput = form.querySelector('input[name="notif_action"][data-modal-action]');
+        if (!actionInput) {
+            actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'notif_action';
+            actionInput.setAttribute('data-modal-action', '1');
+            form.appendChild(actionInput);
+        }
+        actionInput.value = action;
+        form.submit();
+    }
+
+    document.addEventListener('click', function (e) {
+        if (e.target.closest('[data-notif-act-close]')) {
+            closeModal();
+            return;
+        }
+        var submitBtn = e.target.closest('[data-notif-act-submit]');
+        if (submitBtn) {
+            e.preventDefault();
+            submitFromModal(submitBtn.getAttribute('data-notif-act-submit') || '', submitBtn.getAttribute('data-form') || '');
+            return;
+        }
+        if (e.target.closest('.kyc-act-row-link') || e.target.closest('[data-stop-row-open]')) {
+            return;
+        }
+        var row = e.target.closest('.notif-act-row');
+        if (!row) return;
+        try {
+            openModal(JSON.parse(row.getAttribute('data-detail') || '{}'));
+        } catch (err) {}
     });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && modal.classList.contains('is-open')) {
+            closeModal();
+            return;
+        }
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var row = e.target.closest('.notif-act-row');
+        if (!row || e.target.closest('.kyc-act-row-link') || e.target.closest('[data-stop-row-open]')) return;
+        e.preventDefault();
+        try {
+            openModal(JSON.parse(row.getAttribute('data-detail') || '{}'));
+        } catch (err) {}
+    });
+
+    // Bulk select
+    var selectAll = document.getElementById('bulk-select-all');
+    var countEl = document.getElementById('bulk-selected-count');
+    function allChecks() {
+        return Array.prototype.slice.call(document.querySelectorAll('.bulk-notif-check'));
+    }
+    function updateBulkCount() {
+        var n = allChecks().filter(function (c) { return c.checked; }).length;
+        if (countEl) countEl.textContent = n + ' selected';
+        if (selectAll) {
+            var total = allChecks().length;
+            selectAll.checked = total > 0 && n === total;
+            selectAll.indeterminate = n > 0 && n < total;
+        }
+    }
+    if (selectAll) {
+        selectAll.addEventListener('change', function () {
+            allChecks().forEach(function (c) { c.checked = selectAll.checked; });
+            updateBulkCount();
+        });
+    }
+    document.addEventListener('change', function (e) {
+        if (e.target && e.target.classList && e.target.classList.contains('bulk-notif-check')) {
+            updateBulkCount();
+        }
+    });
+    updateBulkCount();
+
+    window.confirmBulk = function (action) {
+        var n = allChecks().filter(function (c) { return c.checked; }).length;
+        if (!n) {
+            alert('Select at least one request.');
+            return false;
+        }
+        return confirm(action === 'approve'
+            ? ('Approve ' + n + ' selected request(s)?')
+            : ('Reject ' + n + ' selected request(s)?'));
+    };
 })();
 </script>
 

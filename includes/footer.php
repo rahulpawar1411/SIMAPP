@@ -11,12 +11,13 @@ $fieldHomeActive = ($fieldNavPage === 'field_home.php');
 $fieldDashActive = ($fieldNavPage === 'index.php');
 $fieldAssetsActive = in_array($fieldNavPage, ['profiles.php', 'profile_view.php', 'profile_edit.php', 'freezer_kyc.php'], true);
 $fieldScanActive = in_array($fieldNavPage, ['qr_scanner.php', 'profile_add.php', 'tag.php'], true);
-$fieldMoreActive = in_array($fieldNavPage, ['more.php', 'users.php', 'notifications.php', 'admin_logs.php', 'import_export.php', 'blank_qr.php', 'blank_qr_print.php', 'kyc_map.php'], true);
+$fieldMoreActive = in_array($fieldNavPage, ['more.php', 'users.php', 'notifications.php', 'kyc_activity.php', 'admin_logs.php', 'import_export.php', 'blank_qr.php', 'blank_qr_print.php', 'kyc_map.php'], true);
 $fieldPendingApprovals = 0;
 if ($fieldIsAdmin) {
     try {
         $fieldPendingApprovals = \App\Models\AppNotification::countPendingApprovals();
     } catch (Throwable $e) {
+        \App\Services\AppLogger::exception($e, 'footer.pending_approvals');
         $fieldPendingApprovals = 0;
     }
 }

@@ -179,7 +179,7 @@ class User {
                 'id' => $id,
                 'name' => $name,
                 'email' => $email,
-                'password' => password_hash($password, PASSWORD_DEFAULT),
+                'password' => \App\Services\PasswordService::hash($password),
                 'role' => $role,
                 'phone' => $phone,
                 'zone' => $area['zone'] !== '' ? $area['zone'] : null,
@@ -299,7 +299,7 @@ class User {
         $stmt->execute([
             'name' => $name,
             'email' => $email,
-            'password' => password_hash($password, PASSWORD_DEFAULT),
+            'password' => \App\Services\PasswordService::hash($password),
             'role' => $role,
             'phone' => $phone,
             'zone' => $area['zone'] !== '' ? $area['zone'] : null,
@@ -320,5 +320,112 @@ class User {
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare('UPDATE `users` SET `status` = :status WHERE `id` = :id');
         return $stmt->execute(['status' => $status, 'id' => $id]);
+    }
+
+    public static function delete(int $id): bool {
+        if ($id <= 0) {
+            return false;
+        }
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare('DELETE FROM `users` WHERE `id` = :id');
+        return $stmt->execute(['id' => $id]);
+    }
+
+    /** Full row including password hash — for undo snapshots. */
+    public static function findRawById(int $id): ?array {
+        self::ensureRoleColumn();
+        if ($id <= 0) {
+            return null;
+        }
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare('SELECT * FROM `users` WHERE `id` = :id LIMIT 1');
+        $stmt->execute(['id' => $id]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    /** Re-insert a previously deleted user from undo snapshot (keeps same id). */
+    public static function restoreSnapshot(array $row): bool {
+        self::ensureRoleColumn();
+        $id = (int)($row['id'] ?? 0);
+        $email = strtolower(trim((string)($row['email'] ?? '')));
+        $name = trim((string)($row['name'] ?? ''));
+        $password = (string)($row['password'] ?? '');
+        if ($id <= 0 || $email === '' || $name === '' || $password === '') {
+            return false;
+        }
+        if (self::findById($id) || self::findByEmail($email)) {
+            return false;
+        }
+
+        $role = (string)($row['role'] ?? AppConfig::ROLE_SUPER_ADMIN);
+        if (!in_array($role, AppConfig::allowedRoles(), true)) {
+            $role = AppConfig::ROLE_SUPER_ADMIN;
+        }
+        $status = (($row['status'] ?? '') === 'inactive') ? 'inactive' : 'active';
+        $area = self::normalizeArea($row['zone'] ?? null, $row['city'] ?? null);
+        if ($role !== AppConfig::ROLE_TECHNICIAN) {
+            $area = ['zone' => '', 'city' => ''];
+        }
+
+        $pdo = Database::getConnection();
+        $stmt = $pdo->prepare(
+            'INSERT INTO `users`
+                (`id`, `name`, `email`, `password`, `role`, `phone`, `zone`, `city`, `status`, `last_login`, `created_at`)
+             VALUES
+                (:id, :name, :email, :password, :role, :phone, :zone, :city, :status, :last_login, :created_at)'
+        );
+        return $stmt->execute([
+            'id' => $id,
+            'name' => $name,
+            'email' => $email,
+            'password' => $password,
+            'role' => $role,
+            'phone' => ($row['phone'] ?? null) !== '' ? ($row['phone'] ?? null) : null,
+            'zone' => $area['zone'] !== '' ? $area['zone'] : null,
+            'city' => $area['city'] !== '' ? $area['city'] : null,
+            'status' => $status,
+            'last_login' => $row['last_login'] ?? null,
+            'created_at' => $row['created_at'] ?? date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    /** Restore editable fields from undo snapshot (does not change password unless provided). */
+    public static function restoreEditSnapshot(int $id, array $row): bool {
+        self::ensureRoleColumn();
+        if ($id <= 0 || !self::findById($id)) {
+            return false;
+        }
+        $role = (string)($row['role'] ?? AppConfig::ROLE_SUPER_ADMIN);
+        if (!in_array($role, AppConfig::allowedRoles(), true)) {
+            $role = AppConfig::ROLE_SUPER_ADMIN;
+        }
+        $status = (($row['status'] ?? '') === 'inactive') ? 'inactive' : 'active';
+        $area = self::normalizeArea($row['zone'] ?? null, $row['city'] ?? null);
+        if ($role !== AppConfig::ROLE_TECHNICIAN) {
+            $area = ['zone' => '', 'city' => ''];
+        }
+
+        $pdo = Database::getConnection();
+        $params = [
+            'id' => $id,
+            'name' => trim((string)($row['name'] ?? '')),
+            'email' => strtolower(trim((string)($row['email'] ?? ''))),
+            'role' => $role,
+            'phone' => ($row['phone'] ?? null) !== '' ? ($row['phone'] ?? null) : null,
+            'zone' => $area['zone'] !== '' ? $area['zone'] : null,
+            'city' => $area['city'] !== '' ? $area['city'] : null,
+            'status' => $status,
+        ];
+        $sql = 'UPDATE `users` SET
+            `name` = :name, `email` = :email, `role` = :role, `phone` = :phone,
+            `zone` = :zone, `city` = :city, `status` = :status';
+        if (!empty($row['password'])) {
+            $sql .= ', `password` = :password';
+            $params['password'] = (string)$row['password'];
+        }
+        $sql .= ' WHERE `id` = :id';
+        $stmt = $pdo->prepare($sql);
+        return $stmt->execute($params);
     }
 }

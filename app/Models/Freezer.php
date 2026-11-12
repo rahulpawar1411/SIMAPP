@@ -1119,4 +1119,79 @@ class Freezer {
             }
         }
     }
+
+    /**
+     * Recent audit rows for a freezer profile (edit history).
+     * @return list<array>
+     */
+    public static function listAuditForFreezer(int $freezerId, int $limit = 30): array {
+        if ($freezerId <= 0) {
+            return [];
+        }
+        $pdo = Database::getConnection();
+        $limit = max(1, min(100, $limit));
+        $stmt = $pdo->prepare("SELECT * FROM `audit_logs`
+            WHERE `entity_type` = 'FREEZER' AND `entity_id` = :eid
+            ORDER BY `id` DESC
+            LIMIT {$limit}");
+        $stmt->execute(['eid' => $freezerId]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /**
+     * Build human-readable change lines from before/after field maps.
+     * @param array<string,mixed> $before
+     * @param array<string,mixed> $after
+     * @param list<string> $skipKeys
+     * @return list<string>
+     */
+    public static function describeFieldChanges(array $before, array $after, string $prefix = '', array $skipKeys = []): array {
+        $skip = array_fill_keys($skipKeys, true);
+        $lines = [];
+        foreach ($after as $key => $newVal) {
+            if (isset($skip[$key])) {
+                continue;
+            }
+            if (str_starts_with((string)$key, 'image_') && ($newVal === null || $newVal === '')) {
+                continue;
+            }
+            $oldVal = $before[$key] ?? null;
+            $oldS = self::auditScalar($oldVal);
+            $newS = self::auditScalar($newVal);
+            if ($oldS === $newS) {
+                continue;
+            }
+            $label = $prefix !== '' ? ($prefix . '.' . $key) : (string)$key;
+            if (str_starts_with((string)$key, 'image_')) {
+                $lines[] = $label . ': photo updated';
+            } else {
+                $lines[] = $label . ': "' . self::auditClip($oldS) . '" → "' . self::auditClip($newS) . '"';
+            }
+        }
+        return $lines;
+    }
+
+    private static function auditScalar(mixed $v): string {
+        if ($v === null) {
+            return '';
+        }
+        if (is_bool($v)) {
+            return $v ? '1' : '0';
+        }
+        if (is_scalar($v)) {
+            return trim((string)$v);
+        }
+        $enc = json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return $enc !== false ? $enc : '';
+    }
+
+    private static function auditClip(string $s, int $max = 80): string {
+        if ($s === '') {
+            return '—';
+        }
+        if (mb_strlen($s) <= $max) {
+            return $s;
+        }
+        return mb_substr($s, 0, $max - 1) . '…';
+    }
 }

@@ -1,6 +1,6 @@
 /**
- * ReeferON SIM - Application JavaScript
- * Real-time ID Generation, GPS Geolocation, Image Upload Previews & Map integration
+ * ReeferON DF — shared front-end helpers (English UI).
+ * ID preview, zone/city pickers, GPS, photo capture, toasts + Undo.
  */
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', function () {
     initPasswordToggles();
 });
 
+/** Show / hide password on login and password fields. */
 function initPasswordToggles() {
     document.querySelectorAll('.password-field').forEach(function (wrap) {
         const input = wrap.querySelector('input');
@@ -36,8 +37,9 @@ function initPasswordToggles() {
 }
 
 // -------------------------------------------------------------
-// Toast notifications + Undo (edit / delete)
+// Toast messages + Undo button (profile / user / approval actions)
 // -------------------------------------------------------------
+/** Read CSRF token from the page meta tag (needed for Undo API). */
 function getCsrfToken() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute('content') : '';
@@ -167,13 +169,64 @@ function initFlashToastsFromQuery() {
         } else if (params.get('deleted') === '1') {
             showAppToast('Profile deleted', { undoToken: undo || undefined, variant: 'danger' });
             shown = true;
+        } else if (params.get('ok')) {
+            const okMsg = String(params.get('ok') || '').trim();
+            if (okMsg) {
+                const isDanger = params.get('toast') === 'danger' || /deleted/i.test(okMsg);
+                showAppToast(okMsg, {
+                    undoToken: undo || undefined,
+                    variant: isDanger ? 'danger' : 'success',
+                    duration: undo ? 12000 : 4500
+                });
+                shown = true;
+            }
+        } else if (params.get('edit_locked') === '1') {
+            showAppToast('Edit locked again. Password will be required next time.', {
+                undoToken: undo || undefined,
+                variant: 'success',
+                duration: undo ? 10000 : 4500
+            });
+            shown = true;
+        } else if (params.get('edit_cancelled') === '1') {
+            showAppToast('Edit request cancelled.', { variant: 'success', duration: 4000 });
+            shown = true;
+        } else if (params.get('edit_pending') === '1') {
+            showAppToast('Remark sent for Super Admin approval.', { variant: 'success', duration: 4500 });
+            shown = true;
         }
+
+        // Prefer toast over inline success banner
+        document.querySelectorAll('.app-flash-toast-only[data-app-flash]').forEach(function (el) {
+            if (shown) {
+                el.hidden = true;
+                return;
+            }
+            const msg = String(el.getAttribute('data-app-flash') || '').trim();
+            const variant = el.getAttribute('data-app-flash-variant') === 'danger' ? 'danger' : 'success';
+            const elUndo = String(el.getAttribute('data-app-flash-undo') || undo || '').trim();
+            if (msg) {
+                showAppToast(msg, {
+                    variant: variant,
+                    undoToken: elUndo || undefined,
+                    duration: elUndo ? 10000 : 4500
+                });
+                shown = true;
+                el.hidden = true;
+            }
+            el.removeAttribute('data-app-flash');
+            el.removeAttribute('data-app-flash-variant');
+            el.removeAttribute('data-app-flash-undo');
+        });
 
         if (!shown) return;
 
         params.delete('updated');
         params.delete('deleted');
         params.delete('undo');
+        params.delete('ok');
+        params.delete('edit_locked');
+        params.delete('edit_cancelled');
+        params.delete('edit_pending');
         const qs = params.toString();
         const clean = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
         window.history.replaceState({}, '', clean);
@@ -648,10 +701,17 @@ function initIdGenerator() {
         }
 
         fetch('api/generate_id.php?' + params.toString())
-            .then(res => res.json())
-            .then(data => {
-                if (!data.success) {
-                    statusBadge.textContent = 'Ready';
+            .then(function (res) {
+                return res.json().then(function (data) {
+                    return { ok: res.ok, data: data };
+                });
+            })
+            .then(function (pack) {
+                const data = pack.data || {};
+                if (!pack.ok || !data.success) {
+                    statusBadge.textContent = (data && data.error) ? 'Check form' : 'Ready';
+                    statusBadge.style.backgroundColor = 'rgba(245, 158, 11, 0.2)';
+                    statusBadge.style.color = '#b45309';
                     return;
                 }
 
@@ -678,8 +738,10 @@ function initIdGenerator() {
                     statusBadge.style.color = '#34d399';
                 }
             })
-            .catch(() => {
-                statusBadge.textContent = 'Ready';
+            .catch(function () {
+                statusBadge.textContent = 'Unavailable';
+                statusBadge.style.backgroundColor = 'rgba(239, 68, 68, 0.15)';
+                statusBadge.style.color = '#b91c1c';
             });
     }
 
@@ -711,7 +773,9 @@ function initCascadingLocationSelector() {
     const latField = document.getElementById('latitude');
     const lngField = document.getElementById('longitude');
 
-    if (!cityInput) return;
+    // Profile/store forms only — skip Users page <select id="city"> (avoids double dropdown)
+    if (!cityInput || cityInput.tagName === 'SELECT') return;
+    if (cityInput.closest('#user-form-card, #user-create-form, .users-page')) return;
 
     // Use embedded geo hierarchy or fallback
     const geo = window.GEO_HIERARCHY || {

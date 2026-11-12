@@ -36,14 +36,45 @@ class AssetTag {
         self::$tableReady = true;
     }
 
-    public static function generateTagCode(): string {
+    /**
+     * Zone → 2-letter code used in tag: RO-SO-XXXXXX (ReeferON + South + random).
+     * @return array<string,string>
+     */
+    public static function zoneTagCodes(): array {
+        return [
+            'SOUTH' => 'SO',
+            'NORTH' => 'NO',
+            'WEST' => 'WE',
+            'EAST' => 'EA',
+        ];
+    }
+
+    public static function zoneToTagCode(?string $zone): string {
+        $z = strtoupper(trim((string)$zone));
+        $map = self::zoneTagCodes();
+        if (isset($map[$z])) {
+            return $map[$z];
+        }
+        // Already a 2-letter code
+        if (preg_match('/^[A-Z]{2}$/', $z) && in_array($z, $map, true)) {
+            return $z;
+        }
+        return 'WE'; // default West
+    }
+
+    /**
+     * Tag format: RO-{ZONE}-{RANDOM6}
+     * Example: RO-SO-A7K2M9 (ReeferON + South + random)
+     */
+    public static function generateTagCode(?string $zone = null): string {
+        $zoneCode = self::zoneToTagCode($zone);
         $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
         do {
             $suffix = '';
             for ($i = 0; $i < 6; $i++) {
                 $suffix .= $chars[random_int(0, strlen($chars) - 1)];
             }
-            $code = 'RO-' . $suffix;
+            $code = 'RO-' . $zoneCode . '-' . $suffix;
         } while (self::findByCode($code));
         return $code;
     }
@@ -78,7 +109,7 @@ class AssetTag {
     /**
      * @return list<array>
      */
-    public static function createBatch(int $count, ?int $createdBy = null, ?string $batchLabel = null): array {
+    public static function createBatch(int $count, ?int $createdBy = null, ?string $batchLabel = null, ?string $zone = null): array {
         self::ensureTable();
         if ($count < 1 || $count > 200) {
             throw new Exception('Generate between 1 and 200 blank QR tags at a time.');
@@ -88,12 +119,13 @@ class AssetTag {
             ? trim($batchLabel)
             : ('BATCH-' . date('Ymd-His'));
 
+        $zoneCode = self::zoneToTagCode($zone);
         $created = [];
         $pdo = Database::getConnection();
         // Avoid wrapping in a DB transaction: QR file I/O + MySQL DDL side-effects
         // can end the transaction and cause "There is no active transaction" on rollBack.
         for ($i = 0; $i < $count; $i++) {
-            $code = self::generateTagCode();
+            $code = self::generateTagCode($zoneCode);
             $qr = QRCodeService::generateAndSaveTag($code);
             if (empty($qr['success'])) {
                 throw new Exception($qr['error'] ?? 'Failed to generate QR for ' . $code);
@@ -122,7 +154,7 @@ class AssetTag {
 
     /**
      * Ensure a freezer has a linked asset tag (for profile QR sticker Tag code).
-     * Creates + assigns a new RO- tag when none exists yet.
+     * Creates + assigns a new RO-{ZONE}- tag when none exists yet.
      */
     public static function ensureForFreezer(int $freezerId, ?int $createdBy = null): array {
         $existing = self::findByFreezerId($freezerId);
@@ -130,7 +162,15 @@ class AssetTag {
             return $existing;
         }
 
-        $created = self::createBatch(1, $createdBy, 'AUTO-PROFILE-' . date('Ymd'));
+        $zone = null;
+        try {
+            $freezer = Freezer::findById($freezerId);
+            $zone = $freezer['store_zone'] ?? ($freezer['zone'] ?? null);
+        } catch (\Throwable $e) {
+            $zone = null;
+        }
+
+        $created = self::createBatch(1, $createdBy, 'AUTO-PROFILE-' . date('Ymd'), $zone);
         $tag = $created[0] ?? null;
         if (!$tag) {
             throw new Exception('Could not create tag code for this freezer.');
@@ -204,25 +244,78 @@ class AssetTag {
     }
 
     /**
+     * SQL fragment: filter by zone via tag_code prefix RO-{SO|NO|WE|EA}-
+     * Empty / ALL = no zone filter.
+     * @return array{0:string,1:array<string,string>} [sqlAnd, params]
+     */
+    public static function zoneFilterSql(string $zone, string $alias = 't'): array {
+        $z = strtoupper(trim($zone));
+        if ($z === '' || $z === 'ALL') {
+            return ['', []];
+        }
+        $code = self::zoneToTagCode($z);
+        $prefix = 'RO-' . $code . '-';
+        return [" AND {$alias}.`tag_code` LIKE :zone_prefix", ['zone_prefix' => $prefix . '%']];
+    }
+
+    /** Human zone name from tag code, e.g. RO-SO-ABC123 → SOUTH */
+    public static function zoneNameFromTagCode(string $tagCode): string {
+        if (preg_match('/^RO-([A-Z]{2})-/i', trim($tagCode), $m)) {
+            $code = strtoupper($m[1]);
+            foreach (self::zoneTagCodes() as $name => $zc) {
+                if ($zc === $code) {
+                    return $name;
+                }
+            }
+        }
+        return '';
+    }
+
+    /**
      * @return array{unused:int,assigned:int,total:int}
      */
-    public static function getStats(): array {
+    public static function getStats(string $zone = ''): array {
         self::ensureTable();
         // Orphan cleanup at most once per hour — not on every page load.
         self::maybeReleaseOrphans();
         $pdo = Database::getConnection();
-        // Assigned = only tags linked to a live freezer
-        $assigned = (int)$pdo->query(
-            "SELECT COUNT(*) FROM `asset_tags` t
+        [$zoneSql, $zoneParams] = self::zoneFilterSql($zone, 't');
+
+        $assignedSql = "SELECT COUNT(*) FROM `asset_tags` t
              INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
-             WHERE t.`status` = 'assigned'"
-        )->fetchColumn();
-        $unused = (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = 'unused'")->fetchColumn();
+             WHERE t.`status` = 'assigned'{$zoneSql}";
+        $unusedSql = "SELECT COUNT(*) FROM `asset_tags` t WHERE t.`status` = 'unused'{$zoneSql}";
+
+        if ($zoneParams === []) {
+            $assigned = (int)$pdo->query($assignedSql)->fetchColumn();
+            $unused = (int)$pdo->query($unusedSql)->fetchColumn();
+        } else {
+            $stA = $pdo->prepare($assignedSql);
+            $stA->execute($zoneParams);
+            $assigned = (int)$stA->fetchColumn();
+            $stU = $pdo->prepare($unusedSql);
+            $stU->execute($zoneParams);
+            $unused = (int)$stU->fetchColumn();
+        }
         return [
             'unused' => $unused,
             'assigned' => $assigned,
             'total' => $unused + $assigned,
         ];
+    }
+
+    /**
+     * Per-zone unused counts for print UI.
+     * @return array<string,int> SOUTH => n, …
+     */
+    public static function unusedCountsByZone(): array {
+        self::ensureTable();
+        $out = [];
+        foreach (array_keys(self::zoneTagCodes()) as $zName) {
+            $stats = self::getStats($zName);
+            $out[$zName] = (int)$stats['unused'];
+        }
+        return $out;
     }
 
     private static function maybeReleaseOrphans(): void {
@@ -244,65 +337,95 @@ class AssetTag {
      * Counts aligned with getStats():
      * unused = status unused; assigned = linked to a live freezer; all = unused + assigned.
      */
-    public static function countTags(string $status = ''): int {
+    public static function countTags(string $status = '', string $zone = ''): int {
         self::ensureTable();
         $pdo = Database::getConnection();
+        [$zoneSql, $zoneParams] = self::zoneFilterSql($zone, 't');
+
         if ($status === 'unused') {
-            return (int)$pdo->query("SELECT COUNT(*) FROM `asset_tags` WHERE `status` = 'unused'")->fetchColumn();
+            $sql = "SELECT COUNT(*) FROM `asset_tags` t WHERE t.`status` = 'unused'{$zoneSql}";
+            if ($zoneParams === []) {
+                return (int)$pdo->query($sql)->fetchColumn();
+            }
+            $st = $pdo->prepare($sql);
+            $st->execute($zoneParams);
+            return (int)$st->fetchColumn();
         }
         if ($status === 'assigned') {
-            return (int)$pdo->query(
-                "SELECT COUNT(*) FROM `asset_tags` t
+            $sql = "SELECT COUNT(*) FROM `asset_tags` t
                  INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
-                 WHERE t.`status` = 'assigned'"
-            )->fetchColumn();
+                 WHERE t.`status` = 'assigned'{$zoneSql}";
+            if ($zoneParams === []) {
+                return (int)$pdo->query($sql)->fetchColumn();
+            }
+            $st = $pdo->prepare($sql);
+            $st->execute($zoneParams);
+            return (int)$st->fetchColumn();
         }
         // all — same as stats total (exclude orphan assigned with no live freezer)
-        $stats = self::getStats();
+        $stats = self::getStats($zone);
         return (int)$stats['total'];
     }
 
     /**
      * @return list<array>
      */
-    public static function listTags(string $status = '', int $limit = 100, int $offset = 0): array {
+    public static function listTags(string $status = '', int $limit = 100, int $offset = 0, string $zone = ''): array {
         self::ensureTable();
         $pdo = Database::getConnection();
         $limit = max(1, min(500, $limit));
         $offset = max(0, $offset);
         Freezer::ensureSimColumns();
+        [$zoneSql, $zoneParams] = self::zoneFilterSql($zone, 't');
 
         if ($status === 'unused') {
             $sql = "SELECT t.*, NULL AS unique_freezer_id
                     FROM `asset_tags` t
-                    WHERE t.status = 'unused'
+                    WHERE t.status = 'unused'{$zoneSql}
                     ORDER BY t.id DESC
                     LIMIT {$limit} OFFSET {$offset}";
-            $stmt = $pdo->query($sql);
-            return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+            if ($zoneParams === []) {
+                $stmt = $pdo->query($sql);
+                return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+            }
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($zoneParams);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         }
 
         if ($status === 'assigned') {
             $sql = "SELECT t.*, f.unique_freezer_id
                     FROM `asset_tags` t
                     INNER JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
-                    WHERE t.status = 'assigned'
+                    WHERE t.status = 'assigned'{$zoneSql}
                     ORDER BY t.id DESC
                     LIMIT {$limit} OFFSET {$offset}";
-            $stmt = $pdo->query($sql);
-            return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+            if ($zoneParams === []) {
+                $stmt = $pdo->query($sql);
+                return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+            }
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($zoneParams);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         }
 
         // all = unused + assigned-to-live-freezer (same universe as counts)
         $sql = "SELECT t.*, f.unique_freezer_id
                 FROM `asset_tags` t
                 LEFT JOIN `freezers` f ON f.id = t.freezer_id AND f.deleted_at IS NULL
-                WHERE t.status = 'unused'
-                   OR (t.status = 'assigned' AND f.id IS NOT NULL)
+                WHERE (
+                    t.status = 'unused'
+                    OR (t.status = 'assigned' AND f.id IS NOT NULL)
+                ){$zoneSql}
                 ORDER BY t.id DESC
                 LIMIT {$limit} OFFSET {$offset}";
-        $stmt = $pdo->query($sql);
-        return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        if ($zoneParams === []) {
+            $stmt = $pdo->query($sql);
+            return $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        }
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($zoneParams);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
     }
 
     /**

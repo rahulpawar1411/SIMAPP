@@ -5,6 +5,8 @@ use App\Services\AuthService;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
 use App\Services\KycScanGate;
+use App\Services\NotifyService;
+use App\Config\AppConfig;
 
 AuthService::requireLogin();
 
@@ -37,6 +39,24 @@ try {
 
 $withGps = array_values(array_filter($points, static fn($p) => !empty($p['has_gps'])));
 $withoutGps = count($points) - count($withGps);
+$criticalCount = count(array_filter($points, static fn($p) => ($p['urgency'] ?? '') === 'critical'));
+$overdueCount = count(array_filter($points, static fn($p) => ($p['urgency'] ?? '') === 'overdue'));
+
+// Once per day per session: log KYC due digest (optional webhook)
+try {
+    $digestKey = 'kyc_due_digest_' . date('Y-m-d');
+    if (empty($_SESSION[$digestKey]) && count($points) > 0 && AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN)) {
+        NotifyService::kycDueDigest(count($points), [
+            'with_gps' => count($withGps),
+            'critical' => $criticalCount,
+            'zone' => $filterZone,
+            'city' => $filterCity,
+        ]);
+        $_SESSION[$digestKey] = 1;
+    }
+} catch (Throwable $e) {
+    // ignore
+}
 
 $pageTitle = 'KYC Map';
 $bodyClass = 'field-app-page field-shell-page';
@@ -48,10 +68,20 @@ require_once __DIR__ . '/includes/header.php';
         <div>
             <p class="mapp-greet">Locations</p>
             <h1 class="mapp-name" style="font-size:1.25rem;">KYC due nearby</h1>
-            <p class="mapp-role"><?= number_format(count($withGps)) ?> on map · <?= number_format($withoutGps) ?> missing GPS</p>
+            <p class="mapp-role"><?= number_format(count($withGps)) ?> on map · <?= number_format($withoutGps) ?> missing GPS<?php if ($criticalCount > 0): ?> · <?= number_format($criticalCount) ?> critical (30d+)<?php endif; ?></p>
         </div>
-        <button type="button" class="btn btn-sm btn-primary" id="kyc-map-locate">Near me</button>
+        <div class="kyc-map-hero-actions">
+            <a class="btn btn-sm btn-outline" href="kyc_activity.php?result=pending">Activity</a>
+            <button type="button" class="btn btn-sm btn-primary" id="kyc-map-locate">Near me</button>
+        </div>
     </header>
+
+    <div class="kyc-map-legend" aria-label="Pin legend">
+        <span><i class="kyc-pin-swatch is-due"></i> Due today</span>
+        <span><i class="kyc-pin-swatch is-overdue"></i> Overdue</span>
+        <span><i class="kyc-pin-swatch is-critical"></i> 30+ days</span>
+        <span><i class="kyc-pin-swatch is-you"></i> You</span>
+    </div>
 
     <form method="GET" action="kyc_map.php" class="kyc-map-filters">
         <?php if ($lockMapArea): ?>
@@ -99,8 +129,13 @@ require_once __DIR__ . '/includes/header.php';
                     <?php
                     $fid = (string)($row['unique_freezer_id'] ?? '');
                     $scan = KycScanGate::scannerUrl($row);
+                    $urgency = (string)($row['urgency'] ?? 'due');
+                    $daysOd = (int)($row['days_overdue'] ?? 0);
                     ?>
-                    <li data-fid="<?= htmlspecialchars($fid) ?>"
+                    <li class="kyc-list-urgency-<?= htmlspecialchars($urgency) ?>"
+                        data-fid="<?= htmlspecialchars($fid) ?>"
+                        data-urgency="<?= htmlspecialchars($urgency) ?>"
+                        data-overdue="<?= $daysOd ?>"
                         data-lat="<?= $row['has_gps'] ? htmlspecialchars((string)$row['latitude']) : '' ?>"
                         data-lng="<?= $row['has_gps'] ? htmlspecialchars((string)$row['longitude']) : '' ?>">
                         <a href="profile_view.php?id=<?= urlencode($fid) ?>">
@@ -109,6 +144,9 @@ require_once __DIR__ . '/includes/header.php';
                             <span class="mapp-due-meta">
                                 <?= htmlspecialchars((string)($row['city'] ?: '—')) ?>
                                 · Due <?= htmlspecialchars((string)($row['next_kyc_due'] ?: '—')) ?>
+                                <?php if ($daysOd > 0): ?>
+                                    · <span class="kyc-od-badge is-<?= htmlspecialchars($urgency) ?>"><?= $daysOd ?>d late</span>
+                                <?php endif; ?>
                                 <?php if (empty($row['has_gps'])): ?> · No GPS<?php endif; ?>
                                 <span class="kyc-dist" hidden></span>
                             </span>
@@ -132,6 +170,12 @@ require_once __DIR__ . '/includes/header.php';
     var userMarker = null;
     var markers = [];
 
+    var PIN_COLORS = {
+        due: '#d97706',
+        overdue: '#ea580c',
+        critical: '#dc2626'
+    };
+
     function haversineKm(lat1, lon1, lat2, lon2) {
         var R = 6371;
         var dLat = (lat2 - lat1) * Math.PI / 180;
@@ -146,13 +190,36 @@ require_once __DIR__ . '/includes/header.php';
         if (statusEl) statusEl.textContent = msg || '';
     }
 
+    function pinColor(p) {
+        return PIN_COLORS[p.urgency] || PIN_COLORS.due;
+    }
+
+    function pinRadius(p) {
+        if (p.urgency === 'critical') return 11;
+        if (p.urgency === 'overdue') return 10;
+        return 9;
+    }
+
+    function escHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
     function popupHtml(p) {
         var id = encodeURIComponent(p.unique_freezer_id || '');
+        var scan = 'qr_scanner.php?purpose=kyc&expect=' + id;
+        var late = (p.days_overdue > 0)
+            ? (' · <span class="kyc-od-badge is-' + escHtml(p.urgency || 'due') + '">' + p.days_overdue + 'd late</span>')
+            : '';
         return '<div class="kyc-map-popup">' +
-            '<strong>' + (p.store_name || 'Store') + '</strong><br>' +
-            '<code>' + (p.unique_freezer_id || '') + '</code><br>' +
-            (p.city || '') + ' · Due ' + (p.next_kyc_due || '—') + '<br>' +
+            '<strong>' + escHtml(p.store_name || 'Store') + '</strong><br>' +
+            '<code>' + escHtml(p.unique_freezer_id || '') + '</code><br>' +
+            escHtml(p.city || '') + ' · Due ' + escHtml(p.next_kyc_due || '—') + late + '<br>' +
             '<a href="profile_view.php?id=' + id + '">Open profile</a>' +
+            ' · <a href="' + scan + '">Start KYC</a>' +
             '</div>';
     }
 
@@ -178,13 +245,19 @@ require_once __DIR__ . '/includes/header.php';
         }).addTo(map);
 
         var bounds = [];
-        points.forEach(function (p) {
+        // Critical pins first so they sit above milder ones when stacked
+        var ordered = points.slice().sort(function (a, b) {
+            var rank = { due: 0, overdue: 1, critical: 2 };
+            return (rank[a.urgency] || 0) - (rank[b.urgency] || 0);
+        });
+        ordered.forEach(function (p) {
             var m = L.circleMarker([p.latitude, p.longitude], {
-                radius: 9,
+                radius: pinRadius(p),
                 color: '#fff',
                 weight: 2,
-                fillColor: '#d97706',
-                fillOpacity: 0.95
+                fillColor: pinColor(p),
+                fillOpacity: 0.95,
+                className: 'kyc-map-pin kyc-map-pin-' + (p.urgency || 'due')
             }).addTo(map);
             m.bindPopup(popupHtml(p));
             markers.push({ marker: m, point: p });

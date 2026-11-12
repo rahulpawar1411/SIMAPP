@@ -10,19 +10,49 @@ use App\Models\AssetTag;
 
 AuthService::requireLogin();
 
+$zoneOptions = AssetTag::zoneTagCodes();
+$filterZone = strtoupper(trim((string)($_GET['zone'] ?? '')));
+if ($filterZone === 'ALL') {
+    $filterZone = '';
+}
+$areaScope = AuthService::areaScope();
+if (($areaScope['zone'] ?? '') !== '') {
+    $filterZone = strtoupper((string)$areaScope['zone']);
+}
+if ($filterZone !== '' && !isset($zoneOptions[$filterZone])) {
+    $filterZone = '';
+}
+$zoneLabel = $filterZone !== '' ? ucfirst(strtolower($filterZone)) : 'All zones';
+$statusRawLabel = strtolower(trim((string)($_GET['status'] ?? 'unused')));
+$statusLabel = $statusRawLabel === 'all' ? 'All' : ($statusRawLabel === 'assigned' ? 'Assigned' : 'Unused');
+
 $tags = [];
 if (!empty($_GET['ids'])) {
     $ids = array_map('intval', explode(',', (string)$_GET['ids']));
     $tags = AssetTag::findByIds($ids);
+    // Optional: keep only selected zone when ids mixed
+    if ($filterZone !== '') {
+        $prefix = 'RO-' . AssetTag::zoneToTagCode($filterZone) . '-';
+        $tags = array_values(array_filter($tags, static function ($t) use ($prefix) {
+            return stripos((string)($t['tag_code'] ?? ''), $prefix) === 0;
+        }));
+    }
 } else {
-    $status = ($_GET['status'] ?? 'unused') === 'assigned' ? 'assigned' : 'unused';
-    $limit = max(1, min(200, (int)($_GET['limit'] ?? 20)));
-    $tags = AssetTag::listTags($status, $limit, 0);
+    $statusRaw = strtolower(trim((string)($_GET['status'] ?? 'unused')));
+    if ($statusRaw === 'all') {
+        $status = '';
+    } elseif ($statusRaw === 'assigned') {
+        $status = 'assigned';
+    } else {
+        $status = 'unused';
+    }
+    $limit = max(1, min(500, (int)($_GET['limit'] ?? 20)));
+    $tags = AssetTag::listTags($status, $limit, 0, $filterZone);
     $tags = array_reverse($tags);
 }
 
 if (!$tags) {
-    die('No blank QR tags to print.');
+    die('No blank QR tags to print' . ($filterZone !== '' ? ' for ' . $zoneLabel : '') . '.');
 }
 
 $pages = array_chunk($tags, 4);
@@ -33,7 +63,7 @@ $pageCount = count($pages);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Print Blank QR Tags | ReeferON</title>
+    <title>Print Blank QR · <?= htmlspecialchars($zoneLabel) ?> | ReeferON</title>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@600;800&display=swap" rel="stylesheet">
     <style>
         * { box-sizing: border-box; }
@@ -211,12 +241,14 @@ $pageCount = count($pages);
 <body>
     <div class="print-actions">
         <p>
-            <?= count($tags) ?> tag(s) · <?= $pageCount ?> A4 page(s) ·
+            <strong><?= htmlspecialchars($statusLabel) ?></strong>
+            · <strong><?= htmlspecialchars($zoneLabel) ?></strong>
+            · <?= count($tags) ?> tag(s) · <?= $pageCount ?> A4 page(s) ·
             <strong>4 stickers / page</strong> (Logo + QR only)
         </p>
-        <div style="display:flex; gap:0.5rem;">
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
             <button type="button" class="btn btn-primary" onclick="window.print()">Print A4</button>
-            <a href="blank_qr.php" class="btn btn-secondary">Back</a>
+            <a href="blank_qr.php<?= $filterZone !== '' ? ('?zone=' . urlencode($filterZone)) : '' ?>" class="btn btn-secondary">Back</a>
         </div>
     </div>
 

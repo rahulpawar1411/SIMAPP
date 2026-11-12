@@ -34,7 +34,7 @@ $csrfToken = AuthService::generateCsrfToken();
 
 $assetTag = AssetTag::findByFreezerId((int)$freezer['id']);
 
-// Profile pe ho → scan skip; list / dashboard se → scan required
+// Opened from profile → skip QR scan. From list/dashboard → scan is required.
 if (isset($_GET['from']) && $_GET['from'] === 'profile') {
     KycScanGate::markFromProfile((int)$freezer['id']);
 }
@@ -240,7 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception('PASS requires both Store front photo and Freezer photo.');
             }
 
-            FreezerLifecycle::recordKyc([
+            $kycId = FreezerLifecycle::recordKyc([
                 'freezer_id' => (int)$freezer['id'],
                 'verified_at' => $verifiedAt,
                 'cycle_year' => (int)($_POST['cycle_year'] ?? $cycle['year']),
@@ -260,18 +260,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
                 'result' => $result,
             ]);
+            $undoToken = \App\Services\UndoService::remember('kyc_same', [
+                'kyc_id' => $kycId,
+                'freezer_id' => (int)$freezer['id'],
+                'unique_freezer_id' => (string)($freezer['unique_freezer_id'] ?? ''),
+            ]);
             header(
                 'Location: kyc_done.php?id=' . urlencode($freezer['unique_freezer_id'])
                 . '&result=' . urlencode($result)
+                . '&undo=' . urlencode($undoToken)
             );
             exit;
         } catch (Throwable $e) {
-            $error = $e->getMessage();
-            \App\Services\AppLogger::failed('kyc.submit', $e->getMessage(), [
+            \App\Services\AppLogger::exception($e, 'kyc.submit', [
                 'freezer_id' => (int)$freezer['id'],
                 'unique_freezer_id' => $freezer['unique_freezer_id'] ?? null,
             ]);
-            $kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
+            $error = \App\Services\AppLogger::friendlyMessage(
+                $e,
+                'Could not save KYC. Please check the form and try again.'
+            );
+            try {
+                $kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
+            } catch (Throwable $e2) {
+                \App\Services\AppLogger::exception($e2, 'kyc.status_refresh');
+            }
         }
     }
 }

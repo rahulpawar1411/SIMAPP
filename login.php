@@ -1,4 +1,8 @@
 <?php
+/**
+ * Sign-in page (English UI).
+ * After login, each role goes to its home screen.
+ */
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
@@ -9,7 +13,7 @@ AuthService::startSession();
 $error = null;
 $redirect = $_GET['redirect'] ?? 'index.php';
 
-/** Role home: admin → Dashboard, technician → QR Management, viewer → Assets. */
+/** Pick home page by role: admin → Dashboard, technician → Field Home, others → Profiles. */
 $resolveHome = static function (string $target): string {
     $path = parse_url($target, PHP_URL_PATH) ?: $target;
     $base = basename($path);
@@ -31,15 +35,27 @@ if (AuthService::isLoggedIn()) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = $_POST['email'] ?? '';
-    $password = $_POST['password'] ?? '';
+    $email = trim((string)($_POST['email'] ?? ''));
+    $password = (string)($_POST['password'] ?? '');
 
-    $res = AuthService::login($email, $password);
-    if ($res['success']) {
-        header('Location: ' . $resolveHome($redirect));
-        exit;
+    if ($email === '' || $password === '') {
+        $error = 'Enter your email and password to sign in.';
     } else {
-        $error = $res['error'];
+        try {
+            $res = AuthService::login($email, $password);
+            if (!empty($res['success'])) {
+                header('Location: ' . $resolveHome($redirect));
+                exit;
+            }
+            $error = $res['error'] ?? 'Invalid email address or password.';
+        } catch (Throwable $e) {
+            // Log full error; show a safe English message on screen
+            \App\Services\AppLogger::exception($e, 'auth.login');
+            $error = \App\Services\AppLogger::friendlyMessage(
+                $e,
+                'Sign-in is unavailable right now. Please try again in a moment.'
+            );
+        }
     }
 }
 ?>
@@ -209,45 +225,117 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             object-fit: contain;
             display: block;
         }
-        .demo-roles-box {
-            margin-top: 1.25rem;
-            padding: 0.85rem 1rem;
-            background: #f8fafc;
-            border-radius: 12px;
-            border: 1px dashed #cbd5e1;
-            font-size: 0.8rem;
-        }
-        .demo-pill {
-            display: inline-block;
-            background: #dbeafe;
-            color: #1d4ed8;
-            padding: 0.25rem 0.65rem;
-            border-radius: 999px;
-            cursor: pointer;
-            margin: 0.2rem 0.1rem;
-            font-weight: 700;
-        }
-        .demo-pill:hover {
-            background: #bfdbfe;
-            color: #1e40af;
-        }
         @media (max-width: 900px) {
+            html, body {
+                height: 100%;
+                height: 100dvh;
+                overflow: hidden;
+            }
             .login-wrap {
-                grid-template-columns: 1fr;
-                grid-template-rows: auto 1fr;
+                display: flex;
+                flex-direction: column;
+                grid-template-columns: none;
+                width: 100%;
+                height: 100vh;
+                height: 100dvh;
                 min-height: 100vh;
                 min-height: 100dvh;
+                overflow: hidden;
             }
             .login-hero {
-                min-height: 180px;
-                max-height: 32vh;
-                padding: 1.25rem 1.25rem 1.1rem;
+                flex: 1 1 38%;
+                min-height: 0;
+                max-height: none;
+                padding:
+                    max(1.1rem, env(safe-area-inset-top))
+                    1.25rem
+                    1.35rem;
                 justify-content: flex-end;
             }
-            .login-hero h1 { font-size: 1.35rem; max-width: none; }
+            .login-hero h1 {
+                font-size: clamp(1.35rem, 6vw, 1.75rem);
+                max-width: none;
+                margin-bottom: 0.45rem;
+            }
+            .login-hero p {
+                font-size: 0.88rem;
+                max-width: none;
+                display: -webkit-box;
+                -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+            }
             .login-panel {
-                align-items: flex-start;
-                padding: 1rem 1rem max(1rem, env(safe-area-inset-bottom));
+                flex: 1 1 62%;
+                min-height: 0;
+                width: 100%;
+                align-items: stretch;
+                justify-content: stretch;
+                padding: 0;
+                background: transparent;
+            }
+            .login-card {
+                max-width: none;
+                width: 100%;
+                height: 100%;
+                min-height: 0;
+                border-radius: 22px 22px 0 0;
+                border: 0;
+                border-top: 1px solid #e2e8f0;
+                box-shadow: 0 -10px 36px rgba(15, 23, 42, 0.18);
+                padding:
+                    1.35rem 1.25rem
+                    max(1.25rem, env(safe-area-inset-bottom));
+                display: flex;
+                flex-direction: column;
+                overflow: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .login-brand {
+                margin-bottom: 1.15rem;
+            }
+            .login-brand img {
+                height: 52px;
+                max-width: 68px;
+            }
+            .login-card form {
+                margin-top: 0.15rem;
+                padding-bottom: 0.15rem;
+            }
+            .login-card .btn {
+                min-height: 52px;
+                margin-top: 0.15rem;
+            }
+        }
+        @media (max-width: 900px) and (max-height: 640px) {
+            .login-hero {
+                flex: 0 0 28%;
+                padding-bottom: 0.85rem;
+            }
+            .login-hero p { display: none; }
+            .login-panel { flex: 1 1 72%; }
+            .login-card {
+                padding-top: 1rem;
+            }
+            .login-brand { margin-bottom: 0.75rem; }
+            .login-card .form-group { margin-bottom: 0.85rem !important; }
+        }
+        @media (max-width: 900px) and (orientation: landscape) {
+            .login-wrap {
+                flex-direction: row;
+            }
+            .login-hero {
+                flex: 0 0 38%;
+                max-width: 42%;
+                padding: 1rem;
+            }
+            .login-hero p { display: none; }
+            .login-panel {
+                flex: 1 1 auto;
+            }
+            .login-card {
+                border-radius: 0;
+                box-shadow: none;
             }
         }
     </style>
@@ -305,21 +393,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <button type="submit" class="btn btn-primary">Login</button>
             </form>
-
-            <div class="demo-roles-box">
-                <div style="font-weight: 700; color: #334155; margin-bottom: 0.35rem;">Demo login</div>
-                <span class="demo-pill" onclick="fillCreds('admin@reeferon.com', 'Admin@123')">Super Admin</span>
-            </div>
         </div>
     </section>
 </div>
 
 <script>
-function fillCreds(email, pass) {
-    document.getElementById('email').value = email;
-    document.getElementById('password').value = pass;
-}
-
 (function () {
     var input = document.getElementById('password');
     var btn = document.getElementById('password-toggle');

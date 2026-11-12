@@ -1,10 +1,12 @@
 <?php
-// API Endpoint: Dynamic Freezer ID Generation & Duplicate Validation
-
-header('Content-Type: application/json');
+/**
+ * API: build / check Unique Freezer ID candidates (live preview on forms).
+ */
+header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../vendor/autoload.php';
 
 use App\Services\FreezerIdGenerator;
+use App\Services\AppLogger;
 
 $type = $_GET['type'] ?? 'DF';
 $brand = $_GET['brand'] ?? 'RW';
@@ -51,9 +53,10 @@ try {
         ]
     ]);
 } catch (\Throwable $e) {
+    AppLogger::exception($e, 'api.generate_id');
     http_response_code(400);
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => AppLogger::friendlyMessage($e, 'Could not generate freezer ID. Check the form values.'),
     ]);
 }
