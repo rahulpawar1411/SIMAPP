@@ -166,7 +166,7 @@ if ($activeTab === 'documents' || $activeTab === 'location') {
 }
 $allowedTabs = ['overview', 'freezers', 'history'];
 if (AppConfig::ELIXIA_VTS_ENABLED) {
-    $allowedTabs[] = 'elixia';
+    $allowedTabs[] = 'freezer_location';
 }
 if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'overview';
@@ -427,13 +427,13 @@ $galleryPhotos = [
 <div class="sp-tabs" role="tablist">
     <?php
     $tabs = [
-        'overview' => 'Store info',
-        'freezers' => 'Freezers (' . count($storeFreezers) . ')',
-        'history' => 'History',
+        'overview' => 'Store profile',
     ];
     if (AppConfig::ELIXIA_VTS_ENABLED) {
-        $tabs['elixia'] = 'Freezer location';
+        $tabs['freezer_location'] = 'Freezer location';
     }
+    $tabs['freezers'] = 'Freezers (' . count($storeFreezers) . ')';
+    $tabs['history'] = 'History';
     $baseUrl = 'profile_view.php?id=' . urlencode($freezer['unique_freezer_id']);
     foreach ($tabs as $key => $label):
     ?>
@@ -442,273 +442,460 @@ $galleryPhotos = [
     <?php endforeach; ?>
                     </div>
 
+<?php
+$renderProfileSection = static function (string $title, array $rows, ?string $headerRightHtml = null): void {
+    ?>
+    <section class="sp-pro-section">
+        <div class="sp-pro-section-head">
+            <h3 class="sp-pro-section-title"><?= htmlspecialchars($title) ?></h3>
+            <?php if ($headerRightHtml !== null && $headerRightHtml !== ''): ?>
+                <div class="sp-pro-section-actions"><?= $headerRightHtml ?></div>
+            <?php endif; ?>
+        </div>
+        <dl class="sp-pro-grid">
+            <?php foreach ($rows as $row):
+                $label = (string)($row[0] ?? '');
+                $value = $row[1] ?? '—';
+                $isHtml = !empty($row[2]);
+                $wide = !empty($row[3]);
+            ?>
+                <div class="sp-pro-item<?= $wide ? ' is-wide' : '' ?>">
+                    <dt><?= htmlspecialchars($label) ?></dt>
+                    <dd>
+                        <?php if ($isHtml): ?>
+                            <?= $value ?>
+                        <?php else: ?>
+                            <?= htmlspecialchars((string)$value) ?>
+                        <?php endif; ?>
+                    </dd>
+                </div>
+            <?php endforeach; ?>
+        </dl>
+    </section>
+    <?php
+};
+
+$statusBadge = (($freezer['status'] ?? '') === 'Active')
+    ? '<span class="badge badge-success">Active</span>'
+    : '<span class="badge badge-warning">' . htmlspecialchars((string)($freezer['status'] ?? '—')) . '</span>';
+
+$tagStatusBadge = '';
+if ($profileAssetTag) {
+    $tagStatusBadge = (($profileAssetTag['status'] ?? '') === 'assigned')
+        ? '<span class="badge badge-success">Assigned</span>'
+        : '<span class="badge badge-primary">Unused</span>';
+}
+
+$gpsBadge = $hasGps
+    ? '<span class="badge badge-success">Recorded</span>'
+    : '<span class="badge badge-warning">Not set</span>';
+
+$editBtn = '<a href="profile_edit.php?id=' . (int)$freezer['id'] . '" class="btn btn-sm btn-outline">' . htmlspecialchars($editBtnLabel) . '</a>';
+
+$machineType = trim(($freezer['freezer_type'] ?? '') . (!empty($freezer['type_name']) ? ' — ' . $freezer['type_name'] : '')) ?: '—';
+$machineBrand = trim(($freezer['company_code'] ?? '') . (!empty($freezer['brand_name']) ? ' — ' . $freezer['brand_name'] : '')) ?: '—';
+$machineCap = !empty($freezer['capacity_litres']) ? ((string)$freezer['capacity_litres'] . ' L') : '—';
+$installCombined = trim(($freezer['installation_date'] ?? '') . (!empty($freezer['install_month_year']) ? ' (' . $freezer['install_month_year'] . ')' : '')) ?: '—';
+
+$installerDisplay = trim((string)($freezer['created_by_name'] ?? ''));
+if ($installerDisplay === '' && !empty($freezer['created_by'])) {
+    try {
+        $iu = \App\Models\User::findById((int)$freezer['created_by']);
+        $installerDisplay = trim((string)($iu['name'] ?? ''));
+    } catch (Throwable $e) {
+        $installerDisplay = '';
+    }
+}
+$storeZoneDisp = $displayTitleCase(trim((string)($freezer['store_zone'] ?? $freezer['zone'] ?? '')));
+$storeCityDisp = $displayTitleCase(trim((string)($freezer['store_city'] ?? '')));
+$storeStateDisp = $displayTitleCase(trim((string)($freezer['store_state'] ?? '')));
+$storeAddrDisp = $lineAddressParts['address'] !== '' ? $lineAddressParts['address'] : '—';
+if ($hasGps) {
+    $storeMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
+    if ($storeMapsLink === '') {
+        $storeMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
+    }
+}
+?>
+
 <?php if ($activeTab === 'overview'): ?>
-<div class="sp-main-grid">
-    <div class="card">
-        <div class="card-header">
-            <div class="card-title"><span>Store details</span></div>
-            <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-sm btn-outline"><?= htmlspecialchars($editBtnLabel) ?></a>
-                    </div>
-        <div class="card-body">
-            <div class="profile-kv-grid">
-                <div class="profile-kv"><span class="profile-kv-label">Store name</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_name'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Outlet ID</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['outlet_id'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Customer</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['customer_name'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Distributor</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['distributor_name'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Contact person</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['contact_person'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Phone</span><strong class="profile-kv-value"><?= htmlspecialchars($viewPhone !== '' ? $viewPhone : '—') ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Email</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_email'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Location type</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['location_type'] ?? 'Retail Store')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Zone</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_zone'] ?? $freezer['zone'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">City</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_city'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">State</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_state'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">PIN</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['store_pincode'] ?? '')) ?></strong></div>
-                <div class="profile-kv profile-kv-wide">
-                    <span class="profile-kv-label">Address</span>
-                    <strong class="profile-kv-value"><?= htmlspecialchars($lineAddressParts['address'] !== '' ? $lineAddressParts['address'] : '—') ?></strong>
-                </div>
-                <div class="profile-kv"><span class="profile-kv-label">Aadhaar</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($aadharDisplay) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">FSSAI</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['fssai_number'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">GST</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['gst_number'] ?? '')) ?></strong></div>
-                </div>
+<div class="sp-pro-stack">
+<?php
+$renderProfileSection('Store', [
+    ['Store name', $valOrDash($freezer['store_name'] ?? '')],
+    ['Outlet ID', $valOrDash($freezer['outlet_id'] ?? '')],
+    ['Customer', $valOrDash($freezer['customer_name'] ?? '')],
+    ['Distributor', $valOrDash($freezer['distributor_name'] ?? '')],
+    ['Location type', $valOrDash($freezer['location_type'] ?? 'Retail Store')],
+    ['Contact', $valOrDash($freezer['contact_person'] ?? '')],
+    ['Phone', $viewPhone !== '' ? $viewPhone : '—'],
+    ['Email', $valOrDash($freezer['store_email'] ?? '')],
+    ['Zone', $storeZoneDisp !== '' ? $storeZoneDisp : '—'],
+    ['City', $storeCityDisp !== '' ? $storeCityDisp : '—'],
+    ['State', $storeStateDisp !== '' ? $storeStateDisp : '—'],
+    ['PIN', $valOrDash($freezer['store_pincode'] ?? '')],
+    ['Address', $storeAddrDisp, false, true],
+    ['Aadhaar', $aadharDisplay],
+    ['FSSAI', $valOrDash($freezer['fssai_number'] ?? '')],
+    ['GST', $valOrDash($freezer['gst_number'] ?? '')],
+    ['Status', $statusBadge, true],
+    ['Install date', (string)($freezer['installation_date'] ?? '—')],
+    ['Installed by', $installerDisplay !== '' ? $installerDisplay : '—'],
+    ['Freezers here', (string)count($storeFreezers)],
+], $editBtn);
 
-            <div class="sp-current-loc-panel">
-                <div class="sp-current-loc-panel-head">
-                    <h4>Current location</h4>
-                    <?php if ($hasGps): ?>
-                        <span class="badge badge-success">Recorded</span>
+$tagGpsRows = [];
+if ($profileAssetTag) {
+    $tagGpsRows = array_merge($tagGpsRows, [
+        ['Tag code', (string)$profileAssetTag['tag_code']],
+        ['Tag status', $tagStatusBadge, true],
+        ['Batch', $profileAssetTag['batch_label'] ?: '—'],
+        ['Tag created', (string)($profileAssetTag['created_at'] ?? '—')],
+    ]);
+}
+if ($hasGps) {
+    $tagGpsRows = array_merge($tagGpsRows, [
+        ['Latitude', number_format((float)$freezer['store_latitude'], 6)],
+        ['Longitude', number_format((float)$freezer['store_longitude'], 6)],
+        ['Accuracy', !empty($freezer['store_gps_accuracy']) ? ('± ' . (string)round((float)$freezer['store_gps_accuracy']) . ' m') : '—'],
+        ['GPS captured', $valOrDash($freezer['store_gps_captured_at'] ?? '')],
+        ['Maps', '<span class="sp-pro-maps-actions">'
+            . '<a class="sp-pro-link" href="' . htmlspecialchars($storeMapsLink) . '" target="_blank" rel="noopener">Open Maps</a>'
+            . '<button type="button" class="btn btn-sm btn-outline sp-pro-copy-btn" data-copy="' . htmlspecialchars($storeMapsLink) . '">Copy link</button>'
+            . '</span>', true],
+    ]);
+} else {
+    $tagGpsRows[] = ['GPS', 'Not set', false, true];
+}
+$renderProfileSection('QR & GPS', $tagGpsRows, $gpsBadge);
+
+$freezerStatusLabel = trim((string)($freezer['status'] ?? 'Active'));
+$freezerStatusBadge = (strcasecmp($freezerStatusLabel, 'Active') === 0)
+    ? '<span class="badge badge-success">' . htmlspecialchars($freezerStatusLabel) . '</span>'
+    : '<span class="badge badge-warning">' . htmlspecialchars($freezerStatusLabel !== '' ? $freezerStatusLabel : '—') . '</span>';
+
+$freezerRows = [
+    ['Unique Freezer ID', $valOrDash($freezer['unique_freezer_id'] ?? ''), false, true],
+    ['Type', $machineType],
+    ['Brand', $machineBrand],
+    ['Model', $valOrDash($freezer['model_number'] ?? '')],
+    ['Capacity', $machineCap],
+    ['Location code', $valOrDash($freezer['location_code'] ?? '')],
+    ['Kept at', $valOrDash($freezer['freezer_placed_at'] ?? '')],
+    ['Install', $installCombined],
+    ['Installed by', $installerDisplay !== '' ? $installerDisplay : '—'],
+    ['Sequence', $valOrDash($freezer['unit_sequence'] ?? '')],
+    ['SIM number', $valOrDash($freezer['sim_number'] ?? '')],
+    ['SIM company', $valOrDash($freezer['sim_company'] ?? '')],
+    ['Remark', $valOrDash($freezer['notes'] ?? ''), false, true],
+];
+if (AppConfig::IOT_ENABLED) {
+    $freezerRows = array_merge($freezerRows, [
+        ['IoT serial', $valOrDash($freezer['device_serial'] ?? '')],
+        ['IMEI / MAC', $valOrDash($freezer['imei_or_mac'] ?? '')],
+        ['IoT SIM', $valOrDash($freezer['iot_sim_number'] ?? $freezer['sim_number'] ?? '')],
+        ['Power', $valOrDash($freezer['iot_power_status'] ?? '')],
+        ['Last ping', $valOrDash($freezer['iot_last_ping'] ?? '')],
+    ]);
+}
+$renderProfileSection('Freezer', $freezerRows, $freezerStatusBadge . ' <span class="badge badge-primary">' . htmlspecialchars((string)($freezer['freezer_type'] ?? 'DF')) . '</span>');
+?>
+
+    <section class="sp-pro-section">
+        <div class="sp-pro-section-head">
+            <h3 class="sp-pro-section-title">Photos</h3>
+        </div>
+        <div class="sp-photo-row sp-photo-row-all tech-photo-gallery">
+            <?php foreach ($galleryPhotos as $ph):
+                $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
+            ?>
+                <div class="sp-photo-tile <?= $ok ? 'has-photo' : '' ?>">
+                    <?php if ($ok): ?>
+                        <img src="<?= htmlspecialchars($ph['path']) ?>" alt="<?= htmlspecialchars($ph['label']) ?>" class="lightbox-trigger" loading="lazy" decoding="async" data-caption="<?= htmlspecialchars($ph['label']) ?>">
+                        <div class="sp-photo-caption"><?= htmlspecialchars($ph['label']) ?></div>
                     <?php else: ?>
-                        <span class="badge badge-warning">Not set</span>
+                        <div class="sp-photo-empty"><?= htmlspecialchars($ph['label']) ?></div>
                     <?php endif; ?>
                 </div>
-                <?php if ($hasGps): ?>
-                    <div class="profile-kv-grid">
-                        <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_latitude'], 6)) ?></strong></div>
-                        <div class="profile-kv"><span class="profile-kv-label">Longitude</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars(number_format((float)$freezer['store_longitude'], 6)) ?></strong></div>
-                        <div class="profile-kv"><span class="profile-kv-label">Accuracy</span><strong class="profile-kv-value"><?= !empty($freezer['store_gps_accuracy']) ? ('± ' . htmlspecialchars((string)round((float)$freezer['store_gps_accuracy'])) . ' m') : '—' ?></strong></div>
-                        <div class="profile-kv"><span class="profile-kv-label">Captured at</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['store_gps_captured_at'] ?? '')) ?></strong></div>
-                        <div class="profile-kv profile-kv-wide">
-                            <span class="profile-kv-label">Maps link</span>
-                            <strong class="profile-kv-value">
-                                <a href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener" class="sp-maps-link"><?= htmlspecialchars($storeMapsLink) ?></a>
-                            </strong>
-            </div>
+            <?php endforeach; ?>
         </div>
-                <?php else: ?>
-                    <p class="sp-current-loc-empty">No current location saved for this store yet.</p>
-        <?php endif; ?>
-    </div>
-                </div>
-            </div>
+    </section>
 
-    <div class="sp-side-stack">
-        <div class="card">
-            <div class="card-header"><div class="card-title"><span>Store status</span></div></div>
-            <div class="card-body">
-                <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;">
-                    <div class="profile-kv">
-                        <span class="profile-kv-label">Store / unit status</span>
-                        <?php if (($freezer['status'] ?? '') === 'Active'): ?>
-                            <span class="badge badge-success">Active</span>
-                        <?php else: ?>
-                            <span class="badge badge-warning"><?= htmlspecialchars($freezer['status'] ?? '—') ?></span>
-                        <?php endif; ?>
-                    </div>
-                    <div class="profile-kv">
-                        <span class="profile-kv-label">Install date</span>
-                        <strong class="profile-kv-value"><?= htmlspecialchars((string)($freezer['installation_date'] ?? '—')) ?></strong>
-                    </div>
-                </div>
-            </div>
+    <section class="sp-pro-section">
+        <div class="sp-pro-section-head">
+            <h3 class="sp-pro-section-title">Associated freezers</h3>
+            <div class="sp-pro-section-actions"><span class="badge badge-secondary"><?= count($storeFreezers) ?></span></div>
         </div>
-
-        <?php if ($profileAssetTag): ?>
-        <div class="card tag-inv-profile">
-            <div class="card-header"><div class="card-title"><span>Tag inventory</span></div></div>
-            <div class="card-body">
-                <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;">
-                    <div class="profile-kv"><span class="profile-kv-label">Tag code</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($profileAssetTag['tag_code']) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">Status</span>
-                        <?php if (($profileAssetTag['status'] ?? '') === 'assigned'): ?>
-                            <span class="badge badge-success">Assigned</span>
-                        <?php else: ?>
-                            <span class="badge badge-primary">Unused</span>
-                        <?php endif; ?>
-                    </div>
-                    <div class="profile-kv profile-kv-wide hide-mobile"><span class="profile-kv-label">Batch</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['batch_label'] ?: '—') ?></strong></div>
-                    <div class="profile-kv profile-kv-wide hide-mobile"><span class="profile-kv-label">Created</span><strong class="profile-kv-value"><?= htmlspecialchars($profileAssetTag['created_at'] ?? '—') ?></strong></div>
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
-            </div>
-        </div>
-
-<div class="sp-main-grid sp-main-grid-2">
-        <div class="card">
-        <div class="card-header">
-            <div class="card-title"><span>Location on map</span></div>
-            <?php if (!empty($freezer['store_latitude'])): ?>
-                <a href="https://maps.google.com/?q=<?= urlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']) ?>" target="_blank" rel="noopener" class="btn btn-sm btn-outline">Open Maps</a>
-            <?php endif; ?>
-        </div>
-        <div class="card-body">
-            <?php if (!empty($freezer['store_latitude'])): ?>
-                        <?php
-                $storeMapsLink = trim((string)($freezer['store_location_link'] ?? ''));
-                if ($storeMapsLink === '') {
-                    $storeMapsLink = 'https://maps.google.com/?q=' . rawurlencode($freezer['store_latitude'] . ',' . $freezer['store_longitude']);
-                }
-                ?>
-                <div class="sp-map-wrap">
-                    <div id="store-view-map"></div>
-                    </div>
-                <div class="sp-location-link-box">
-                    <div class="sp-location-link-label">Current location link</div>
-                    <a class="sp-location-link" href="<?= htmlspecialchars($storeMapsLink) ?>" target="_blank" rel="noopener"><?= htmlspecialchars($storeMapsLink) ?></a>
-                    <button type="button" class="btn btn-sm btn-outline" id="btn-copy-location-link" data-copy="<?= htmlspecialchars($storeMapsLink) ?>">Copy link</button>
-                    </div>
-                <div class="sp-latlng">
-                    Lat <?= htmlspecialchars((string)$freezer['store_latitude']) ?>
-                    · Lng <?= htmlspecialchars((string)$freezer['store_longitude']) ?>
-                    <?php if (!empty($freezer['store_gps_captured_at'])): ?>
-                        · Saved <?= htmlspecialchars((string)$freezer['store_gps_captured_at']) ?>
+        <ul class="sp-pro-list">
+            <?php foreach ($storeFreezers as $sf): ?>
+                <li class="<?= (int)$sf['id'] === (int)$freezer['id'] ? 'is-current' : '' ?>">
+                    <a href="profile_view.php?id=<?= urlencode($sf['unique_freezer_id']) ?>">
+                        <strong><?= htmlspecialchars($sf['unique_freezer_id']) ?></strong>
+                        <span><?= htmlspecialchars(trim(($sf['company_code'] ?? '') . ' · ' . ($sf['model_number'] ?? ''), ' ·')) ?></span>
+                    </a>
+                    <?php if (($sf['status'] ?? '') === 'Active'): ?>
+                        <span class="badge badge-success">Active</span>
+                    <?php else: ?>
+                        <span class="badge badge-warning"><?= htmlspecialchars($sf['status'] ?? '—') ?></span>
                     <?php endif; ?>
-                    </div>
-            <?php else: ?>
-                <p style="color:#94a3b8; font-size:0.875rem; margin:0;">No GPS location saved for this store yet.</p>
-            <?php endif; ?>
-                    </div>
-                </div>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </section>
 
-    <div class="card tech-gallery-card">
-        <div class="card-header"><div class="card-title"><span>Photo gallery</span></div></div>
-        <div class="card-body">
-            <div class="sp-photo-row sp-photo-row-all tech-photo-gallery">
-                <?php foreach ($galleryPhotos as $ph):
-                    $ok = !empty($ph['path']) && file_exists(__DIR__ . '/' . $ph['path']);
-                ?>
-                    <div class="sp-photo-tile <?= $ok ? 'has-photo' : '' ?>">
-                        <?php if ($ok): ?>
-                            <img src="<?= htmlspecialchars($ph['path']) ?>" alt="<?= htmlspecialchars($ph['label']) ?>" class="lightbox-trigger" loading="lazy" decoding="async" data-caption="<?= htmlspecialchars($ph['label']) ?>">
-                            <div class="sp-photo-caption"><?= htmlspecialchars($ph['label']) ?></div>
-                        <?php else: ?>
-                            <div class="sp-photo-empty"><?= htmlspecialchars($ph['label']) ?></div>
-                        <?php endif; ?>
-                    </div>
-                <?php endforeach; ?>
-            </div>
+    <section class="sp-pro-section">
+        <div class="sp-pro-section-head">
+            <h3 class="sp-pro-section-title">Recent activity</h3>
         </div>
-    </div>
-
-        </div>
-
-<div class="sp-main-grid sp-main-grid-2">
-        <div class="card">
-            <div class="card-header">
-            <div class="card-title"><span>Associated freezers (<?= count($storeFreezers) ?>)</span></div>
-                </div>
-        <div class="card-body" style="padding:0;">
-            <ul class="sp-freezer-list">
-                <?php foreach ($storeFreezers as $sf): ?>
-                    <li class="<?= (int)$sf['id'] === (int)$freezer['id'] ? 'is-current' : '' ?>">
-                        <a href="profile_view.php?id=<?= urlencode($sf['unique_freezer_id']) ?>">
-                            <code><?= htmlspecialchars($sf['unique_freezer_id']) ?></code>
-                            <span><?= htmlspecialchars(($sf['company_code'] ?? '') . ' · ' . ($sf['model_number'] ?? '')) ?></span>
-                        </a>
-                        <?php if (($sf['status'] ?? '') === 'Active'): ?>
-                            <span class="badge badge-success">Active</span>
-                            <?php else: ?>
-                            <span class="badge badge-warning"><?= htmlspecialchars($sf['status'] ?? '—') ?></span>
-                            <?php endif; ?>
-                    </li>
-                <?php endforeach; ?>
-            </ul>
-                        </div>
-                    </div>
-
-    <div class="card">
-        <div class="card-header">
-            <div class="card-title"><span>Machine specifications</span></div>
-            <span class="badge badge-primary"><?= htmlspecialchars($freezer['freezer_type']) ?></span>
-        </div>
-        <div class="card-body">
-            <div class="profile-kv-grid">
-                <div class="profile-kv profile-kv-wide">
-                    <span class="profile-kv-label">Unique Freezer ID</span>
-                    <strong class="profile-kv-value"><code class="sp-freezer-id-code"><?= htmlspecialchars($valOrDash($freezer['unique_freezer_id'] ?? '')) ?></code></strong>
-                </div>
-                <div class="profile-kv"><span class="profile-kv-label">Type</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['freezer_type'] ?? '') . (!empty($freezer['type_name']) ? ' — ' . $freezer['type_name'] : '')) ?: '—') ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Brand</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['company_code'] ?? '') . (!empty($freezer['brand_name']) ? ' — ' . $freezer['brand_name'] : '')) ?: '—') ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Model</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['model_number'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Capacity</span><strong class="profile-kv-value"><?= !empty($freezer['capacity_litres']) ? htmlspecialchars((string)$freezer['capacity_litres']) . ' L' : '—' ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Location code</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['location_code'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Install</span><strong class="profile-kv-value"><?= htmlspecialchars(trim(($freezer['installation_date'] ?? '') . (!empty($freezer['install_month_year']) ? ' (' . $freezer['install_month_year'] . ')' : '')) ?: '—') ?></strong></div>
-                <?php
-                $installerDisplay = trim((string)($freezer['created_by_name'] ?? ''));
-                if ($installerDisplay === '' && !empty($freezer['created_by'])) {
-                    try {
-                        $iu = \App\Models\User::findById((int)$freezer['created_by']);
-                        $installerDisplay = trim((string)($iu['name'] ?? ''));
-                    } catch (Throwable $e) {
-                        $installerDisplay = '';
-                    }
-                }
-                ?>
-                <div class="profile-kv"><span class="profile-kv-label">Installed by</span><strong class="profile-kv-value"><?= htmlspecialchars($installerDisplay !== '' ? $installerDisplay : '—') ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Condition</span><span class="badge badge-neutral"><?= htmlspecialchars($valOrDash($freezer['freezer_condition'] ?? '')) ?></span></div>
-                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Freezer kept at</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['freezer_placed_at'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Sequence</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['unit_sequence'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['status'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">SIM number</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_company'] ?? '')) ?></strong></div>
-                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Remark / notes</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['notes'] ?? '')) ?></strong></div>
-            </div>
-            <?php if (AppConfig::IOT_ENABLED): ?>
-            <div class="sp-iot-mini">
-                <h4>IoT device</h4>
-                <div class="profile-kv-grid">
-                    <div class="profile-kv"><span class="profile-kv-label">Serial</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['device_serial'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">IMEI / MAC</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['imei_or_mac'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">SIM</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['iot_sim_number'] ?? $freezer['sim_number'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_sim_company'] ?? $freezer['sim_company'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">Power</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_power_status'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">Last ping</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_last_ping'] ?? '')) ?></strong></div>
-                </div>
-            </div>
-                            <?php endif; ?>
-        </div>
-                        </div>
-                    </div>
-
-<div class="card">
-    <div class="card-header"><div class="card-title"><span>Store activity</span></div></div>
-    <div class="card-body">
         <?php if (empty($lifecycleTimeline)): ?>
-            <p style="color:#94a3b8; margin:0;">No activity yet.</p>
-                            <?php else: ?>
-            <ul class="sp-timeline">
+            <p class="sp-pro-empty">No activity yet.</p>
+        <?php else: ?>
+            <ul class="sp-pro-timeline">
                 <?php foreach (array_slice($lifecycleTimeline, 0, 8) as $ev): ?>
                     <li>
-                        <div class="sp-timeline-dot"></div>
+                        <div class="sp-pro-timeline-dot"></div>
                         <div>
-                            <strong><?= htmlspecialchars($ev['title'] ?? $ev['type'] ?? 'Event') ?></strong>
-                            <div class="sp-timeline-meta">
-                                <?= htmlspecialchars($ev['sort_date'] ?? $ev['date'] ?? '') ?>
+                            <strong><?= htmlspecialchars((string)($ev['title'] ?? $ev['type'] ?? 'Event')) ?></strong>
+                            <p>
+                                <?= htmlspecialchars((string)($ev['sort_date'] ?? $ev['date'] ?? '')) ?>
                                 <?php if (!empty($ev['outlet_id'])): ?>
-                                    · <code><?= htmlspecialchars($ev['outlet_id']) ?></code>
+                                    · <?= htmlspecialchars((string)$ev['outlet_id']) ?>
                                 <?php endif; ?>
                                 <?php if (!empty($ev['store_name'])): ?>
-                                    · <?= htmlspecialchars($ev['store_name']) ?>
-                            <?php endif; ?>
+                                    · <?= htmlspecialchars((string)$ev['store_name']) ?>
+                                <?php endif; ?>
+                            </p>
                         </div>
-                    </div>
                     </li>
                 <?php endforeach; ?>
             </ul>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+        <?php endif; ?>
+    </section>
+</div>
+
+<?php elseif ($activeTab === 'freezer_location'): ?>
+<?php
+$profileUniqueId = (string)($freezer['unique_freezer_id'] ?? '');
+$elixiaEnabled = AppConfig::ELIXIA_VTS_ENABLED;
+$elixiaAutoRefresh = !empty($_GET['refresh']);
+?>
+<div class="sp-pro-stack">
+    <section class="sp-pro-section sp-lazy-panel" id="elixia-lazy-panel"
+             data-unique-id="<?= htmlspecialchars($profileUniqueId) ?>"
+             data-enabled="<?= $elixiaEnabled ? '1' : '0' ?>"
+             data-auto-refresh="<?= $elixiaAutoRefresh ? '1' : '0' ?>">
+        <div class="sp-pro-section-head">
+            <h3 class="sp-pro-section-title">Elixia API</h3>
+            <div class="sp-pro-section-actions" data-elixia-actions>
+                <button type="button" class="btn btn-sm btn-outline" data-elixia-refresh disabled>Refresh</button>
+            </div>
+        </div>
+        <div class="sp-lazy-body" data-elixia-body>
+            <div class="sp-lazy-loading" role="status" aria-live="polite">
+                <div class="sp-lazy-spinner" aria-hidden="true"></div>
+                <p>Loading live API data…</p>
+                <div class="sp-lazy-skeleton">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+<script>
+(function () {
+    var panel = document.getElementById('elixia-lazy-panel');
+    if (!panel) return;
+
+    var body = panel.querySelector('[data-elixia-body]');
+    var actions = panel.querySelector('[data-elixia-actions]');
+    var uniqueId = panel.getAttribute('data-unique-id') || '';
+    var enabled = panel.getAttribute('data-enabled') === '1';
+    var loading = false;
+
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function dash(v) {
+        if (v === null || v === undefined) return '—';
+        if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+        var s = String(v).trim();
+        return s !== '' ? s : '—';
+    }
+    function ignLabel(v) {
+        if (v === null || v === undefined || v === '') return '—';
+        if (String(v) === '1' || v === 1 || v === true) return 'ON';
+        if (String(v) === '0' || v === 0 || v === false) return 'OFF';
+        return String(v);
+    }
+    function idleLabel(idleSec) {
+        if (idleSec === null || idleSec === undefined || idleSec === '') return '—';
+        var sec = parseInt(idleSec, 10) || 0;
+        var d = Math.floor(sec / 86400);
+        var h = Math.floor((sec % 86400) / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        var parts = [];
+        if (d > 0) parts.push(d + 'd');
+        if (h > 0) parts.push(h + 'h');
+        if (m > 0 || !parts.length) parts.push(m + 'm');
+        return parts.join(' ');
+    }
+    function itemHtml(label, valueHtml, wide) {
+        return '<div class="sp-pro-item' + (wide ? ' is-wide' : '') + '">'
+            + '<dt>' + esc(label) + '</dt><dd>' + valueHtml + '</dd></div>';
+    }
+    function textItem(label, value, wide) {
+        return itemHtml(label, esc(dash(value)), !!wide);
+    }
+    function showLoading() {
+        body.innerHTML = '<div class="sp-lazy-loading" role="status" aria-live="polite">'
+            + '<div class="sp-lazy-spinner" aria-hidden="true"></div>'
+            + '<p>Loading live API data…</p>'
+            + '<div class="sp-lazy-skeleton"><span></span><span></span><span></span><span></span><span></span><span></span></div>'
+            + '</div>';
+        if (actions) {
+            actions.innerHTML = '<span class="badge badge-secondary">Fetching…</span>'
+                + ' <button type="button" class="btn btn-sm btn-outline" data-elixia-refresh disabled>Refresh</button>';
+        }
+    }
+    function bindRefresh() {
+        var btn = panel.querySelector('[data-elixia-refresh]');
+        if (btn) btn.addEventListener('click', function () { load(true); });
+    }
+    function renderError(msg, triedFresh) {
+        if (actions) {
+            actions.innerHTML = '<button type="button" class="btn btn-sm btn-outline" data-elixia-refresh>Refresh</button>'
+                + (triedFresh ? ' <span class="badge badge-warning">Tried fresh</span>' : '');
+        }
+        body.innerHTML = '<dl class="sp-pro-grid">' + textItem('status', msg || 'No API data', true) + '</dl>';
+        bindRefresh();
+    }
+    function renderDevice(device, active, fresh) {
+        var lat = device.lat;
+        var lng = device.lng;
+        var hasCoords = lat !== null && lat !== undefined && lng !== null && lng !== undefined && lat !== '' && lng !== '';
+        var maps = hasCoords
+            ? ('https://maps.google.com/?q=' + encodeURIComponent(String(lat) + ',' + String(lng)))
+            : '';
+        var lastUpdated = dash(device.lastupdated);
+        var activeBadge = active
+            ? '<span class="badge badge-success">Active</span>'
+            : '<span class="badge badge-warning">Inactive</span>';
+
+        if (actions) {
+            actions.innerHTML = activeBadge
+                + ' <span class="badge badge-secondary">Last update: ' + esc(lastUpdated) + '</span>'
+                + ' <button type="button" class="btn btn-sm btn-outline" data-elixia-refresh>Refresh</button>'
+                + (fresh ? ' <span class="badge badge-success">Fresh</span>' : '');
+        }
+
+        var preferred = [
+            'vehicleno','vehicleid','unitno','kind','groupname','type','deviceId','status','status_new',
+            'vehicleMotionStatus','deviceTrackingState','ignition','vehiclespeed','idleSince','digitalstatus',
+            'drivername','temperature1','temperature2','temperature3','temperature4','doorSensor1','doorSensor2',
+            'lat','lng','location','direction','odometer','distance','lastupdated','timestamp','utctimestamp',
+            'systemtime','utcsystemtime','shorturl'
+        ];
+        var wideKeys = { vehicleno: 1, location: 1, shorturl: 1, lastupdated: 1 };
+        var html = '';
+        html += itemHtml('Active', activeBadge, false);
+        html += textItem('Last update', lastUpdated, true);
+
+        preferred.forEach(function (key) {
+            var val;
+            if (key === 'ignition') val = ignLabel(device[key]);
+            else if (key === 'idleSince') val = idleLabel(device[key]);
+            else if (key === 'lat') val = hasCoords ? Number(lat).toFixed(6) : '—';
+            else if (key === 'lng') val = hasCoords ? Number(lng).toFixed(6) : '—';
+            else val = dash(device[key]);
+            html += textItem(key, val, !!wideKeys[key]);
+        });
+
+        if (maps) {
+            html += itemHtml(
+                'Maps URL',
+                '<span class="sp-pro-maps-actions">'
+                    + '<a class="sp-pro-link" href="' + esc(maps) + '" target="_blank" rel="noopener">Open Maps</a>'
+                    + '<button type="button" class="btn btn-sm btn-outline sp-pro-copy-btn" data-copy="' + esc(maps) + '">Copy link</button>'
+                    + '</span>',
+                true
+            );
+        }
+
+        Object.keys(device).forEach(function (key) {
+            if (preferred.indexOf(key) !== -1) return;
+            var val = device[key];
+            if (val && typeof val === 'object') {
+                try { val = JSON.stringify(val); } catch (e) { val = String(val); }
+            }
+            html += textItem(key, val, false);
+        });
+
+        body.innerHTML = '<dl class="sp-pro-grid">' + html + '</dl>';
+        bindRefresh();
+    }
+
+    function load(forceRefresh) {
+        if (loading) return;
+        if (!enabled) {
+            renderError('Elixia VTS is disabled.');
+            return;
+        }
+        if (!uniqueId) {
+            renderError('Missing Unique Freezer ID.');
+            return;
+        }
+        loading = true;
+        showLoading();
+        bindRefresh();
+
+        var url = 'api/elixia_live.php?unique_id=' + encodeURIComponent(uniqueId)
+            + (forceRefresh ? '&refresh=1' : '');
+
+        fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+            .then(function (res) { return res.json().then(function (data) { return { okHttp: res.ok, data: data }; }); })
+            .then(function (pack) {
+                loading = false;
+                var data = pack.data || {};
+                if (!data.ok) {
+                    renderError(data.error || 'Could not load Elixia API data.', !!forceRefresh);
+                    return;
+                }
+                if (!data.found || !data.device) {
+                    renderError(data.error || 'No matching Freezer / Vehicle no. in Elixia API.', !!forceRefresh);
+                    return;
+                }
+                renderDevice(data.device, !!data.active, !!data.fresh || !!forceRefresh);
+                if (forceRefresh && window.history && window.history.replaceState) {
+                    try {
+                        var u = new URL(window.location.href);
+                        u.searchParams.delete('refresh');
+                        window.history.replaceState({}, '', u.pathname + u.search + u.hash);
+                    } catch (e) {}
+                }
+            })
+            .catch(function () {
+                loading = false;
+                renderError('Network error loading Elixia API.', !!forceRefresh);
+            });
+    }
+
+    // Lazy: fetch when panel is near viewport (or immediately if already visible)
+    if ('IntersectionObserver' in window) {
+        var io = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                io.disconnect();
+                load(panel.getAttribute('data-auto-refresh') === '1');
+            });
+        }, { rootMargin: '120px 0px' });
+        io.observe(panel);
+    } else {
+        load(panel.getAttribute('data-auto-refresh') === '1');
+    }
+})();
+</script>
 
 <?php elseif ($activeTab === 'freezers'): ?>
 <div class="card">
@@ -889,185 +1076,6 @@ try {
         <?php endif; ?>
     </div>
 </div>
-<?php elseif ($activeTab === 'elixia' && AppConfig::ELIXIA_VTS_ENABLED): ?>
-<?php
-$elixiaUniqueId = (string)($freezer['unique_freezer_id'] ?? '');
-?>
-<div class="card" id="elixia-live-panel">
-    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
-        <div>
-            <div class="card-title"><span>Freezer location</span></div>
-            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
-                Live GPS / status / temperature from Elixia VTS for this freezer only — separate from store info.
-            </p>
-        </div>
-        <button type="button" class="btn btn-sm btn-outline" id="elixia-refresh-btn">Refresh</button>
-    </div>
-    <div class="card-body">
-        <div class="profile-kv-grid" style="margin-bottom:1rem;">
-            <div class="profile-kv">
-                <span class="profile-kv-label">Matched by Unique Freezer ID</span>
-                <strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($elixiaUniqueId) ?></strong>
-            </div>
-            <div class="profile-kv">
-                <span class="profile-kv-label">Source</span>
-                <strong class="profile-kv-value">Elixia VTS API</strong>
-            </div>
-        </div>
-
-        <div id="elixia-live-status" class="alert" style="margin-bottom:1rem;">Loading Elixia data…</div>
-
-        <div id="elixia-live-body" hidden>
-            <div class="profile-kv-grid" id="elixia-kv-grid">
-                <div class="profile-kv"><span class="profile-kv-label">Vehicle / Freezer no.</span><strong class="profile-kv-value profile-kv-mono" data-elixia="vehicleno">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Unit no.</span><strong class="profile-kv-value profile-kv-mono" data-elixia="unitno">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value" data-elixia="status">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Ignition</span><strong class="profile-kv-value" data-elixia="ignition">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Temperature 1</span><strong class="profile-kv-value" data-elixia="temperature1">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Temperature 2</span><strong class="profile-kv-value" data-elixia="temperature2">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono" data-elixia="lat">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Longitude</span><strong class="profile-kv-value profile-kv-mono" data-elixia="lng">—</strong></div>
-                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Location</span><strong class="profile-kv-value" data-elixia="location">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Last updated</span><strong class="profile-kv-value" data-elixia="lastupdated">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Timestamp</span><strong class="profile-kv-value" data-elixia="timestamp">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Door sensor 1</span><strong class="profile-kv-value" data-elixia="doorSensor1">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Door sensor 2</span><strong class="profile-kv-value" data-elixia="doorSensor2">—</strong></div>
-                <div class="profile-kv"><span class="profile-kv-label">Odometer</span><strong class="profile-kv-value" data-elixia="odometer">—</strong></div>
-            </div>
-            <div id="elixia-maps-row" style="margin-top:1rem;" hidden>
-                <a href="#" target="_blank" rel="noopener" class="btn btn-sm btn-primary" id="elixia-maps-link">Open in Google Maps</a>
-                <a href="#" target="_blank" rel="noopener" class="btn btn-sm btn-outline" id="elixia-short-link" hidden>Elixia short link</a>
-            </div>
-            <div id="elixia-live-map" style="height:280px;margin-top:1rem;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;" hidden></div>
-        </div>
-    </div>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const uniqueId = <?= json_encode($elixiaUniqueId, JSON_UNESCAPED_UNICODE) ?>;
-    const statusEl = document.getElementById('elixia-live-status');
-    const bodyEl = document.getElementById('elixia-live-body');
-    const refreshBtn = document.getElementById('elixia-refresh-btn');
-    let elixiaMap = null;
-    let elixiaMarker = null;
-
-    function setKv(key, value) {
-        const el = document.querySelector('[data-elixia="' + key + '"]');
-        if (!el) return;
-        const text = (value === null || value === undefined || value === '') ? '—' : String(value);
-        el.textContent = text;
-    }
-
-    function renderDevice(device) {
-        bodyEl.hidden = false;
-        ['vehicleno','unitno','status','ignition','temperature1','temperature2','location','lastupdated','timestamp','doorSensor1','doorSensor2','odometer'].forEach(function (k) {
-            setKv(k, device[k]);
-        });
-        setKv('lat', device.lat != null ? Number(device.lat).toFixed(6) : '');
-        setKv('lng', device.lng != null ? Number(device.lng).toFixed(6) : '');
-
-        const mapsRow = document.getElementById('elixia-maps-row');
-        const mapsLink = document.getElementById('elixia-maps-link');
-        const shortLink = document.getElementById('elixia-short-link');
-        const mapBox = document.getElementById('elixia-live-map');
-
-        if (device.lat != null && device.lng != null && !isNaN(device.lat) && !isNaN(device.lng)) {
-            mapsRow.hidden = false;
-            mapsLink.href = 'https://maps.google.com/?q=' + encodeURIComponent(device.lat + ',' + device.lng);
-            mapBox.hidden = false;
-            if (typeof L !== 'undefined') {
-                if (!elixiaMap) {
-                    elixiaMap = L.map(mapBox).setView([device.lat, device.lng], 15);
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '&copy; OpenStreetMap'
-                    }).addTo(elixiaMap);
-                    elixiaMarker = L.marker([device.lat, device.lng]).addTo(elixiaMap);
-                } else {
-                    elixiaMap.setView([device.lat, device.lng], 15);
-                    elixiaMarker.setLatLng([device.lat, device.lng]);
-                }
-                setTimeout(function () { elixiaMap.invalidateSize(); }, 80);
-            }
-        } else {
-            mapsRow.hidden = true;
-            mapBox.hidden = true;
-        }
-
-        if (device.shorturl) {
-            shortLink.hidden = false;
-            shortLink.href = device.shorturl;
-        } else {
-            shortLink.hidden = true;
-        }
-    }
-
-    function loadElixia(force) {
-        statusEl.className = 'alert';
-        statusEl.textContent = 'Loading Elixia data…';
-        bodyEl.hidden = true;
-        refreshBtn.disabled = true;
-
-        const url = 'api/elixia_live.php?unique_id=' + encodeURIComponent(uniqueId) + (force ? '&refresh=1' : '');
-        fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                refreshBtn.disabled = false;
-                if (!data || !data.ok) {
-                    statusEl.className = 'alert alert-danger';
-                    statusEl.textContent = (data && data.error) ? data.error : 'Could not load Elixia data.';
-                    return;
-                }
-                if (!data.found || !data.device) {
-                    statusEl.className = 'alert alert-warning';
-                    statusEl.textContent = 'No Elixia device matched this Unique Freezer ID yet.';
-                    return;
-                }
-                statusEl.className = 'alert alert-success';
-                statusEl.textContent = 'Live match found in Elixia VTS.';
-                renderDevice(data.device);
-            })
-            .catch(function () {
-                refreshBtn.disabled = false;
-                statusEl.className = 'alert alert-danger';
-                statusEl.textContent = 'Network error while calling Elixia API.';
-            });
-    }
-
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', function () { loadElixia(true); });
-    }
-    loadElixia(false);
-});
-</script>
-<?php endif; ?>
-
-<!-- Map Script for Store View -->
-<?php if (!empty($freezer['store_latitude']) && $activeTab === 'overview'): ?>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const mapEl = document.getElementById('store-view-map');
-    if (!mapEl) return;
-    const lat = <?= (float)$freezer['store_latitude'] ?>;
-    const lng = <?= (float)$freezer['store_longitude'] ?>;
-    const storeMap = L.map(mapEl).setView([lat, lng], 16);
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap'
-    }).addTo(storeMap);
-
-    const marker = L.marker([lat, lng]).addTo(storeMap);
-    marker.bindPopup(`<strong><?= addslashes($freezer['store_name']) ?></strong><br><?= addslashes($freezer['store_address']) ?>`).openPopup();
-
-    <?php if (!empty($freezer['store_gps_accuracy'])): ?>
-        L.circle([lat, lng], {
-            radius: <?= (float)$freezer['store_gps_accuracy'] ?>,
-            color: '#0284c7',
-            fillColor: '#38bdf8',
-            fillOpacity: 0.15
-        }).addTo(storeMap);
-    <?php endif; ?>
-});
-</script>
 <?php endif; ?>
 
 <?php if (AppConfig::IOT_ENABLED): ?>

@@ -6827,6 +6827,291 @@ body.filter-drawer-open {
 .sp-main-grid-2 { grid-template-columns: 1fr 1fr; }
 .sp-side-stack { display: flex; flex-direction: column; gap: 1.15rem; }
 .sp-side-stack .card { margin-bottom: 0; }
+.sp-info-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.sp-info-section {
+    padding: 0 0 1.1rem;
+    margin: 0 0 1.1rem;
+    border-bottom: 1px solid #e2e8f0;
+}
+.sp-info-section:last-child {
+    padding-bottom: 0;
+    margin-bottom: 0;
+    border-bottom: 0;
+}
+.sp-info-section-title {
+    margin: 0 0 0.75rem;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+/* Dense profile: more info, less vertical space */
+.sp-pro-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+}
+.sp-lazy-panel.is-loading {
+    min-height: 220px;
+}
+.sp-lazy-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    padding: 1.25rem 0.75rem 1rem;
+    color: #64748b;
+    text-align: center;
+}
+.sp-lazy-loading p {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 650;
+}
+.sp-lazy-spinner {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 2.5px solid #e2e8f0;
+    border-top-color: #0284c7;
+    animation: sp-lazy-spin 0.7s linear infinite;
+}
+@keyframes sp-lazy-spin {
+    to { transform: rotate(360deg); }
+}
+.sp-lazy-skeleton {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
+    margin-top: 0.35rem;
+}
+.sp-lazy-skeleton span {
+    display: block;
+    height: 2.1rem;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: sp-lazy-shimmer 1.1s ease-in-out infinite;
+}
+@keyframes sp-lazy-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+}
+.sp-lazy-table-loading {
+    padding: 2rem 1rem;
+}
+@media (max-width: 720px) {
+    .sp-lazy-skeleton {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+.sp-pro-section {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 0.65rem 0.85rem 0.7rem;
+}
+.sp-pro-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid #f1f5f9;
+}
+.sp-pro-section-title {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 800;
+    color: #334155;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.sp-pro-section-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+.sp-pro-section-actions .btn {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+    min-height: 0;
+}
+.sp-pro-section-actions .badge {
+    font-size: 0.65rem;
+}
+.sp-pro-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    margin: 0;
+}
+.sp-pro-item {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 104px minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.35rem 0.5rem;
+    padding: 0.28rem 0.35rem;
+    border-bottom: 1px solid #f8fafc;
+}
+.sp-pro-item.is-wide {
+    grid-column: 1 / -1;
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+    padding-top: 0.4rem;
+    padding-bottom: 0.45rem;
+    border-top: 1px dashed #e2e8f0;
+    border-bottom: 1px dashed #e2e8f0;
+    margin: 0.15rem 0;
+}
+.sp-pro-item.is-wide dd {
+    white-space: normal;
+    line-height: 1.4;
+    font-size: 0.82rem;
+}
+.sp-pro-item dt {
+    margin: 0;
+    font-size: 0.68rem;
+    font-weight: 650;
+    color: #64748b;
+    line-height: 1.25;
+}
+.sp-pro-item dd {
+    margin: 0;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.sp-pro-link {
+    color: #0284c7;
+    font-weight: 700;
+    text-decoration: none;
+    font-size: 0.78rem;
+}
+.sp-pro-link:hover {
+    text-decoration: underline;
+}
+.sp-pro-maps-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+}
+.sp-pro-copy-btn {
+    padding: 0.15rem 0.45rem !important;
+    font-size: 0.68rem !important;
+    min-height: 0 !important;
+    line-height: 1.2 !important;
+}
+.sp-pro-empty {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 0.78rem;
+}
+.sp-pro-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.sp-pro-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    background: #f8fafc;
+}
+.sp-pro-list li.is-current {
+    background: #f0fdf4;
+}
+.sp-pro-list a {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    min-width: 0;
+    text-decoration: none;
+    color: inherit;
+}
+.sp-pro-list a strong {
+    font-size: 0.74rem;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    color: #0f172a;
+    word-break: break-all;
+}
+.sp-pro-list a span {
+    font-size: 0.68rem;
+    color: #64748b;
+}
+.sp-pro-timeline {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.sp-pro-timeline li {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    padding: 0.2rem 0;
+}
+.sp-pro-timeline-dot {
+    width: 7px;
+    height: 7px;
+    margin-top: 0.35rem;
+    border-radius: 50%;
+    background: #16a34a;
+    flex-shrink: 0;
+}
+.sp-pro-timeline strong {
+    display: block;
+    font-size: 0.78rem;
+    color: #0f172a;
+}
+.sp-pro-timeline p {
+    margin: 0.1rem 0 0;
+    font-size: 0.68rem;
+    color: #64748b;
+}
+.sp-pro-section .sp-photo-row {
+    gap: 0.45rem;
+}
+.sp-pro-section .sp-photo-tile {
+    min-height: 88px;
+}
+@media (max-width: 980px) {
+    .sp-pro-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 640px) {
+    .sp-pro-grid {
+        grid-template-columns: 1fr;
+    }
+    .sp-pro-item,
+    .sp-pro-item.is-wide {
+        grid-template-columns: 92px minmax(0, 1fr);
+        padding: 0.25rem 0;
+    }
+}
 .sp-status-row {
     display: flex;
     justify-content: space-between;

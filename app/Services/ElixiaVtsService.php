@@ -27,25 +27,45 @@ class ElixiaVtsService {
     public static function mapDevice(array $row): array {
         $lat = isset($row['lat']) && $row['lat'] !== '' ? (float)$row['lat'] : null;
         $lng = isset($row['lng']) && $row['lng'] !== '' ? (float)$row['lng'] : null;
+        $location = trim((string)($row['location'] ?? ''));
+        if ($location === '') {
+            $location = trim((string)($row['locationName'] ?? ''));
+        }
         return [
             'vehicleno' => (string)($row['vehicleno'] ?? ''),
             'vehicleid' => $row['vehicleid'] ?? null,
+            'kind' => (string)($row['kind'] ?? ''),
             'unitno' => (string)($row['unitno'] ?? ''),
+            'groupname' => (string)($row['groupname'] ?? ''),
             'status' => (string)($row['vehiclestatus'] ?? $row['vehiclestatus_new'] ?? ''),
+            'status_new' => (string)($row['vehiclestatus_new'] ?? ''),
             'lat' => $lat,
             'lng' => $lng,
-            'location' => (string)($row['location'] ?? $row['locationName'] ?? ''),
-            'timestamp' => (string)($row['timestamp'] ?? ''),
+            'location' => $location,
             'lastupdated' => (string)($row['lastupdated'] ?? ''),
+            'vehiclespeed' => $row['vehiclespeed'] ?? null,
+            'odometer' => $row['odometer'] ?? null,
+            'distance' => $row['distance'] ?? null,
+            'digitalstatus' => (string)($row['digitalstatus'] ?? ''),
             'temperature1' => (string)($row['temperature1'] ?? ''),
             'temperature2' => (string)($row['temperature2'] ?? ''),
+            'temperature3' => (string)($row['temperature3'] ?? ''),
+            'temperature4' => (string)($row['temperature4'] ?? ''),
+            'drivername' => (string)($row['drivername'] ?? ''),
             'ignition' => $row['ignition'] ?? null,
-            'idleSince' => $row['idleSince'] ?? null,
+            'timestamp' => (string)($row['timestamp'] ?? ''),
+            'utctimestamp' => (string)($row['utctimestamp'] ?? ''),
+            'systemtime' => (string)($row['systemtime'] ?? ''),
+            'utcsystemtime' => (string)($row['utcsystemtime'] ?? ''),
             'doorSensor1' => (string)($row['doorSensor1'] ?? ''),
             'doorSensor2' => (string)($row['doorSensor2'] ?? ''),
-            'odometer' => $row['odometer'] ?? null,
+            'idleSince' => $row['idleSince'] ?? null,
+            'direction' => $row['direction'] ?? null,
+            'deviceId' => $row['deviceId'] ?? null,
+            'type' => (string)($row['type'] ?? ''),
+            'vehicleMotionStatus' => (string)($row['vehicleMotionStatus'] ?? ''),
+            'deviceTrackingState' => (string)($row['deviceTrackingState'] ?? ''),
             'shorturl' => (string)($row['shorturl'] ?? ''),
-            'kind' => (string)($row['kind'] ?? ''),
         ];
     }
 
@@ -219,7 +239,12 @@ class ElixiaVtsService {
             return ['ok' => false, 'found' => false, 'device' => null, 'error' => 'Missing Unique Freezer ID.'];
         }
 
-        // Fast path: API search with a distinctive fragment of the ID
+        // On refresh, bust warehouse cache first so fallback also has fresh rows.
+        if ($forceRefresh) {
+            self::fetchWarehouseList(true);
+        }
+
+        // Fast path: live API search with a distinctive fragment of the ID
         $parts = explode('-', $want);
         $searchHint = $want;
         if (count($parts) >= 4) {
@@ -235,7 +260,7 @@ class ElixiaVtsService {
             }
         }
 
-        // Fallback: scan cached / full warehouse list
+        // Fallback: scan warehouse list (already refreshed when forceRefresh)
         $list = self::fetchWarehouseList($forceRefresh);
         if (empty($list['ok'])) {
             return [

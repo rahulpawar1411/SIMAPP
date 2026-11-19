@@ -411,7 +411,7 @@ require_once __DIR__ . '/includes/header.php';
                     <th>Brand</th>
                     <th>Tag code</th>
                     <?php if (AppConfig::IOT_ENABLED): ?><th>IoT Status</th><?php endif; ?>
-                    <th>Condition</th>
+                    <th>Active since</th>
                     <th style="text-align: right;">Actions</th>
                 </tr>
             </thead>
@@ -469,8 +469,12 @@ require_once __DIR__ . '/includes/header.php';
                                 <?php endif; ?>
                             </td>
                             <?php endif; ?>
-                            <td>
-                                <span style="font-size: 0.75rem; color: #475569;"><?= htmlspecialchars($row['freezer_condition']) ?></span>
+                            <td class="elixia-active-since" data-unique-id="<?= htmlspecialchars((string)$row['unique_freezer_id']) ?>">
+                                <?php if (AppConfig::ELIXIA_VTS_ENABLED): ?>
+                                    <span style="font-size:0.78rem;color:#94a3b8;">Loading…</span>
+                                <?php else: ?>
+                                    <span style="font-size:0.8rem;color:#94a3b8;">—</span>
+                                <?php endif; ?>
                             </td>
                             <td style="text-align: right; white-space: nowrap;">
                                 <a href="profile_view.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="btn btn-sm btn-secondary" title="View Full Details">View</a>
@@ -497,19 +501,18 @@ require_once __DIR__ . '/includes/header.php';
                 <?php
                 $fid = (string)($row['unique_freezer_id'] ?? '');
                 $canEdit = AuthService::hasRole(['super_admin', 'technician']);
-                $statusLabel = (string)($row['status'] ?? 'Active');
-                $pillClass = strcasecmp($statusLabel, 'Active') === 0 ? 'success' : 'pending';
                 ?>
-                <article class="mapp-asset-card">
+                <article class="mapp-asset-card" data-unique-id="<?= htmlspecialchars($fid) ?>">
                     <a class="mapp-asset-main" href="profile_view.php?id=<?= urlencode($fid) ?>">
                         <div class="mapp-asset-top">
                             <strong><?= htmlspecialchars((string)($row['store_name'] ?? 'Store')) ?></strong>
-                            <span class="mapp-pill mapp-pill-<?= $pillClass ?>"><?= htmlspecialchars($statusLabel) ?></span>
+                            <span class="mapp-pill mapp-pill-pending elixia-active-since-ago" data-unique-id="<?= htmlspecialchars($fid) ?>">…</span>
                         </div>
                         <div class="mapp-asset-id"><?= htmlspecialchars($fid) ?></div>
                         <div class="mapp-asset-meta">
                             <span><?= htmlspecialchars((string)($row['store_city'] ?? '—')) ?></span>
                             <span><?= htmlspecialchars((string)($row['tag_code'] ?? $row['freezer_type'] ?? '')) ?></span>
+                            <span class="elixia-active-since" data-unique-id="<?= htmlspecialchars($fid) ?>">Active since…</span>
                         </div>
                     </a>
                     <div class="mapp-asset-actions">
@@ -680,5 +683,144 @@ require_once __DIR__ . '/includes/header.php';
     }, true);
 })();
 </script>
+
+<?php if (AppConfig::ELIXIA_VTS_ENABLED && !empty($freezers)): ?>
+<script>
+(function () {
+    function normalizeId(id) {
+        return String(id || '').toUpperCase().replace(/\s+/g, '');
+    }
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function parseApiTime(raw) {
+        if (!raw) return null;
+        var s = String(raw).trim();
+        if (!s) return null;
+        // Common Elixia formats: "19-11-2026 18:45:00", "2026-11-19 18:45:00", ISO
+        var m = s.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+        if (m) {
+            return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0));
+        }
+        m = s.match(/^(\d{4})[\/\-](\d{2})[\/\-](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+        if (m) {
+            return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+        }
+        var d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    }
+    function agoText(date) {
+        if (!date) return '';
+        var diff = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+        if (diff < 60) return 'just now';
+        if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
+        if (diff < 86400) return Math.floor(diff / 3600) + ' hr ago';
+        var days = Math.floor(diff / 86400);
+        return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+    }
+    function fmtDate(date, fallback) {
+        if (!date) return fallback || '—';
+        var dd = String(date.getDate()).padStart(2, '0');
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var hh = String(date.getHours()).padStart(2, '0');
+        var mm = String(date.getMinutes()).padStart(2, '0');
+        return dd + ' ' + months[date.getMonth()] + ' ' + date.getFullYear() + ', ' + hh + ':' + mm;
+    }
+    function idleLabel(sec) {
+        if (sec === null || sec === undefined || sec === '') return '';
+        var n = parseInt(sec, 10);
+        if (!isFinite(n) || n < 0) return '';
+        var d = Math.floor(n / 86400);
+        var h = Math.floor((n % 86400) / 3600);
+        var m = Math.floor((n % 3600) / 60);
+        var parts = [];
+        if (d > 0) parts.push(d + 'd');
+        if (h > 0) parts.push(h + 'h');
+        if (m > 0 || !parts.length) parts.push(m + 'm');
+        return parts.join(' ');
+    }
+
+    var cells = document.querySelectorAll('.elixia-active-since[data-unique-id]');
+    var agoPills = document.querySelectorAll('.elixia-active-since-ago[data-unique-id]');
+    if (!cells.length && !agoPills.length) return;
+
+    fetch('api/elixia_list.php?status=all', {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin'
+    })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            var map = {};
+            if (data && data.ok && Array.isArray(data.devices)) {
+                data.devices.forEach(function (d) {
+                    var key = normalizeId(d.vehicleno || '');
+                    if (key) map[key] = d;
+                });
+            }
+
+            function fill(el, isMobileMeta) {
+                var key = normalizeId(el.getAttribute('data-unique-id') || '');
+                var d = map[key];
+                if (!d) {
+                    el.innerHTML = isMobileMeta
+                        ? 'No API match'
+                        : '<span style="font-size:0.8rem;color:#94a3b8;">No API match</span>';
+                    return { ago: 'No API', ok: false };
+                }
+                var raw = (d.lastupdated || d.timestamp || d.systemtime || '').toString().trim();
+                var dt = parseApiTime(raw);
+                var main = fmtDate(dt, raw || '—');
+                var ago = agoText(dt);
+                var idle = idleLabel(d.idleSince);
+                if (isMobileMeta) {
+                    el.textContent = raw ? ('Active since ' + main) : 'No last update';
+                } else {
+                    var html = '<div style="font-size:0.78rem;font-weight:700;color:#0f172a;white-space:nowrap;" title="'
+                        + esc(raw) + '">' + esc(main) + '</div>';
+                    if (ago) {
+                        html += '<div style="font-size:0.68rem;color:#64748b;margin-top:0.1rem;">' + esc(ago) + '</div>';
+                    }
+                    if (idle) {
+                        html += '<div style="font-size:0.68rem;color:#0284c7;margin-top:0.05rem;">Idle ' + esc(idle) + '</div>';
+                    }
+                    el.innerHTML = html;
+                }
+                return { ago: ago || (raw ? 'Updated' : '—'), ok: !!raw, active: !!d.active };
+            }
+
+            cells.forEach(function (el) {
+                fill(el, !!el.closest('.mapp-asset-meta'));
+            });
+            agoPills.forEach(function (el) {
+                var key = normalizeId(el.getAttribute('data-unique-id') || '');
+                var d = map[key];
+                el.classList.remove('mapp-pill-pending', 'mapp-pill-success');
+                if (!d) {
+                    el.classList.add('mapp-pill-pending');
+                    el.textContent = 'No API';
+                    return;
+                }
+                var raw = (d.lastupdated || d.timestamp || '').toString().trim();
+                var dt = parseApiTime(raw);
+                var ago = agoText(dt);
+                el.classList.add(d.active ? 'mapp-pill-success' : 'mapp-pill-pending');
+                el.textContent = ago || (d.active ? 'Active' : 'Inactive');
+            });
+        })
+        .catch(function () {
+            cells.forEach(function (el) {
+                el.innerHTML = '<span style="font-size:0.8rem;color:#94a3b8;">API error</span>';
+            });
+            agoPills.forEach(function (el) {
+                el.classList.remove('mapp-pill-success');
+                el.classList.add('mapp-pill-pending');
+                el.textContent = 'API error';
+            });
+        });
+})();
+</script>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

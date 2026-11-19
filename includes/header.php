@@ -80,6 +80,15 @@ if ($currentUser && (($currentUser['role'] ?? '') === AppConfig::ROLE_SUPER_ADMI
                 <span>Freezer Assets</span>
             </a>
 
+            <?php if ($currentUser && AppConfig::ELIXIA_VTS_ENABLED): ?>
+            <a href="live_freezer_tracking.php" class="nav-link <?= $currentPage === 'live_freezer_tracking.php' ? 'active' : '' ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="3 11 22 2 13 21 11 13 3 11"/>
+                </svg>
+                <span>Live freezer tracking</span>
+            </a>
+            <?php endif; ?>
+
             <a href="qr_scanner.php" class="nav-link <?= in_array($currentPage, ['qr_scanner.php', 'profile_add.php', 'tag.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="3" y="3" width="7" height="7"/>

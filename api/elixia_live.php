@@ -31,14 +31,36 @@ try {
 
     $force = !empty($_GET['refresh']) || !empty($_GET['force']);
     $match = ElixiaVtsService::findByUniqueFreezerId($uniqueId, $force);
+    $device = is_array($match['device'] ?? null) ? $match['device'] : null;
+    $active = false;
+    if ($device) {
+        $st = strtolower(trim((string)($device['status'] ?? $device['status_new'] ?? '')));
+        $ign = $device['ignition'] ?? null;
+        if ($st !== '' && (str_contains($st, 'inactive') || str_contains($st, 'offline') || str_contains($st, 'ignition off'))) {
+            $active = false;
+        } elseif (
+            str_contains($st, 'ignition on')
+            || str_contains($st, 'idle')
+            || str_contains($st, 'active')
+            || str_contains($st, 'running')
+            || str_contains($st, 'moving')
+            || str_contains($st, 'online')
+            || (string)$ign === '1'
+            || $ign === 1
+        ) {
+            $active = true;
+        }
+    }
 
     echo json_encode([
         'ok' => !empty($match['ok']),
         'found' => !empty($match['found']),
-        'device' => $match['device'] ?? null,
+        'device' => $device,
+        'active' => $active,
         'error' => $match['error'] ?? null,
         'unique_id' => $uniqueId,
         'normalized_id' => ElixiaVtsService::normalizeId($uniqueId),
+        'fresh' => $force,
     ]);
 } catch (Throwable $e) {
     AppLogger::exception($e, 'api.elixia_live');

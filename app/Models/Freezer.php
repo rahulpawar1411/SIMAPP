@@ -742,6 +742,7 @@ class Freezer {
                        s.image_store_front as store_image_front,
                        ft.name as type_name, b.name as brand_name,
                        iot.device_serial, iot.power_status as iot_power_status,
+                       iot.last_ping_at as iot_last_ping,
                        (
                            SELECT at.tag_code FROM `asset_tags` at
                            WHERE at.freezer_id = f.id

@@ -26,6 +26,12 @@ require_once __DIR__ . '/includes/header.php';
             <span>Freezer Assets</span>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </a>
+        <?php if (\App\Config\AppConfig::ELIXIA_VTS_ENABLED): ?>
+        <a href="live_freezer_tracking.php">
+            <span>Live freezer tracking</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+        <?php endif; ?>
         <?php if (($currentUser['role'] ?? '') === \App\Config\AppConfig::ROLE_TECHNICIAN): ?>
         <a href="field_home.php">
             <span>Home</span>
