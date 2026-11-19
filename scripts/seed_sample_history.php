@@ -1,7 +1,7 @@
 <?php
 /**
  * Seed sample history for DF-RW-SFR550DDU-AMD1-058-0324-AAA004:
- * Installation, KYC same store, KYC new store (move),
+ * Installation, AMC same store, AMC new store (move),
  * plus notification reject + approve examples.
  *
  * Run: php scripts/seed_sample_history.php
@@ -71,7 +71,7 @@ $fromStore = [
     'store_name' => $freezer['store_name'] ?? null,
 ];
 
-// --- 2) KYC — Same store (recorded = approved) ---
+// --- 2) AMC — Same store (recorded = approved) ---
 $sameDate = '2024-09-20';
 $chk = $pdo->prepare("SELECT id FROM kyc_verifications WHERE freezer_id = :fid AND verified_at = :d AND notes LIKE :n LIMIT 1");
 $chk->execute(['fid' => $fid, 'd' => $sameDate, 'n' => '%SAMPLE same-store%']);
@@ -84,14 +84,14 @@ if (!$chk->fetch()) {
             'cycle_year' => 2024,
             'cycle_half' => 2,
             'result' => 'PASS',
-            'notes' => 'SAMPLE same-store KYC (approved / on profile)',
+            'notes' => 'SAMPLE same-store AMC (approved / on profile)',
             'image_store_front' => null,
             'image_freezer' => null,
             'latitude' => null,
             'longitude' => null,
             'verified_by' => $adminId,
         ]);
-        echo "Added KYC same store @ {$sameDate}\n";
+        echo "Added AMC same store @ {$sameDate}\n";
     } catch (Throwable $e) {
         // Direct insert if gap rule blocks
         $ins = $pdo->prepare("INSERT INTO kyc_verifications
@@ -101,19 +101,19 @@ if (!$chk->fetch()) {
             'fid' => $fid,
             'sid' => (int)$freezer['store_id'],
             'd' => $sameDate,
-            'notes' => 'SAMPLE same-store KYC (approved / on profile)',
+            'notes' => 'SAMPLE same-store AMC (approved / on profile)',
             'by' => $adminId,
         ]);
-        echo "Added KYC same store (direct) @ {$sameDate}: {$e->getMessage()}\n";
+        echo "Added AMC same store (direct) @ {$sameDate}: {$e->getMessage()}\n";
     }
 } else {
-    echo "Same-store KYC sample already exists\n";
+    echo "Same-store AMC sample already exists\n";
 }
 
-// --- 3) KYC — New store (create outlet + transfer + KYC) ---
+// --- 3) AMC — New store (create outlet + transfer + AMC) ---
 $moveDate = '2025-03-25';
 $chkMove = $pdo->prepare("SELECT id FROM kyc_verifications WHERE freezer_id = :fid AND notes LIKE :n LIMIT 1");
-$chkMove->execute(['fid' => $fid, 'n' => '%SAMPLE new-store KYC%']);
+$chkMove->execute(['fid' => $fid, 'n' => '%SAMPLE new-store AMC%']);
 if (!$chkMove->fetch()) {
     $created = FreezerLifecycle::createNewOutlet([
         'store_name' => 'SAMPLE Relocated Outlet',
@@ -133,7 +133,7 @@ if (!$chkMove->fetch()) {
     FreezerLifecycle::transfer(
         $fid,
         $created['store_id'],
-        'KYC — moved to new outlet (SAMPLE auto ID ' . $created['outlet_id'] . ')',
+        'AMC — moved to new outlet (SAMPLE auto ID ' . $created['outlet_id'] . ')',
         'SAMPLE new-store move for history',
         $adminId,
         $moveDate
@@ -147,7 +147,7 @@ if (!$chkMove->fetch()) {
             'cycle_year' => 2025,
             'cycle_half' => 1,
             'result' => 'PASS',
-            'notes' => 'SAMPLE new-store KYC (approved after move)',
+            'notes' => 'SAMPLE new-store AMC (approved after move)',
             'latitude' => '23.0225',
             'longitude' => '72.5714',
             'verified_by' => $adminId,
@@ -160,14 +160,14 @@ if (!$chkMove->fetch()) {
                 'fid' => $fid,
                 'sid' => (int)$freezer['store_id'],
                 'd' => $moveDate,
-                'notes' => 'SAMPLE new-store KYC (approved after move)',
+                'notes' => 'SAMPLE new-store AMC (approved after move)',
                 'by' => $adminId,
             ]);
-        echo "New-store KYC direct insert: {$e->getMessage()}\n";
+        echo "New-store AMC direct insert: {$e->getMessage()}\n";
     }
-    echo "Added store move + KYC new store @ {$moveDate} → {$created['outlet_id']}\n";
+    echo "Added store move + AMC new store @ {$moveDate} → {$created['outlet_id']}\n";
 } else {
-    echo "New-store KYC sample already exists\n";
+    echo "New-store AMC sample already exists\n";
 }
 
 $freezer = Freezer::findById($fid);
@@ -177,14 +177,14 @@ AppNotification::ensureTable();
 $pdo->prepare("DELETE FROM app_notifications WHERE freezer_id = :fid AND title LIKE 'SAMPLE —%'")
     ->execute(['fid' => $fid]);
 
-// Rejected same-store request (no KYC record — already the case)
+// Rejected same-store request (no AMC record — already the case)
 $idReject = AppNotification::create([
     'type' => AppNotification::TYPE_KYC_SAME_STORE,
     'status' => AppNotification::STATUS_PENDING,
     'freezer_id' => $fid,
     'unique_freezer_id' => $ufid,
-    'title' => 'SAMPLE — rejected KYC (demo)',
-    'message' => 'Sample same-store KYC that admin rejected — no profile KYC record.',
+    'title' => 'SAMPLE — rejected AMC (demo)',
+    'message' => 'Sample same-store AMC that admin rejected — no profile AMC record.',
     'created_by' => $adminId,
     'payload' => [
         'kyc' => [
@@ -192,7 +192,7 @@ $idReject = AppNotification::create([
             'cycle_year' => (int)date('Y'),
             'cycle_half' => ((int)date('n') <= 6) ? 1 : 2,
             'result' => 'PASS',
-            'notes' => 'SAMPLE rejected — should not appear in History KYC',
+            'notes' => 'SAMPLE rejected — should not appear in History AMC',
             'verified_by' => $adminId,
         ],
         'from_store' => $fromStore,
@@ -207,8 +207,8 @@ $idApproved = AppNotification::create([
     'status' => AppNotification::STATUS_PENDING,
     'freezer_id' => $fid,
     'unique_freezer_id' => $ufid,
-    'title' => 'SAMPLE — approved KYC (demo)',
-    'message' => 'Sample notification marked approved (demo). History already has same-store KYC row.',
+    'title' => 'SAMPLE — approved AMC (demo)',
+    'message' => 'Sample notification marked approved (demo). History already has same-store AMC row.',
     'created_by' => $adminId,
     'payload' => [
         'kyc' => [
@@ -253,7 +253,7 @@ AppNotification::create([
             'cycle_year' => (int)date('Y'),
             'cycle_half' => ((int)date('n') <= 6) ? 1 : 2,
             'result' => 'PASS',
-            'notes' => 'SAMPLE pending new-store KYC',
+            'notes' => 'SAMPLE pending new-store AMC',
             'verified_by' => $adminId,
         ],
         'from_store' => [

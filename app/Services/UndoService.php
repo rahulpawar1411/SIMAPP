@@ -10,7 +10,7 @@ use App\Models\User;
 /**
  * Short-lived Undo for the toast button.
  * Stores a snapshot in the session (about 3 minutes), then restores on Undo.
- * Covers: profile edit/delete, approvals, KYC, admin lock, and user On/Off/Edit/Delete.
+ * Covers: profile edit/delete, approvals, AMC, admin lock, and user On/Off/Edit/Delete.
  */
 class UndoService {
     private const SESSION_KEY = 'df_undo_actions';
@@ -42,6 +42,7 @@ class UndoService {
                 'image_right_side' => $freezer['image_right_side'] ?? null,
                 'image_iot_device' => $freezer['image_iot_device'] ?? null,
                 'image_sim' => $freezer['image_sim'] ?? null,
+                'image_sim_back' => $freezer['image_sim_back'] ?? null,
                 'qr_code_path' => $freezer['qr_code_path'] ?? null,
                 'qr_code_data' => $freezer['qr_code_data'] ?? null,
                 'status' => $freezer['status'] ?? null,
@@ -231,7 +232,7 @@ class UndoService {
         if ($kycId > 0) {
             $del = FreezerLifecycle::deleteKycVerification($kycId);
             if (empty($del['success'])) {
-                return ['success' => false, 'error' => $del['error'] ?? 'Could not remove KYC record.'];
+                return ['success' => false, 'error' => $del['error'] ?? 'Could not remove AMC record.'];
             }
         }
 
@@ -285,11 +286,11 @@ class UndoService {
         $freezerId = (int)($payload['freezer_id'] ?? 0);
         $uid = (string)($payload['unique_freezer_id'] ?? '');
         if ($kycId <= 0) {
-            return ['success' => false, 'error' => 'Invalid KYC snapshot.'];
+            return ['success' => false, 'error' => 'Invalid AMC snapshot.'];
         }
         $del = FreezerLifecycle::deleteKycVerification($kycId);
         if (empty($del['success'])) {
-            return ['success' => false, 'error' => $del['error'] ?? 'Could not undo KYC.'];
+            return ['success' => false, 'error' => $del['error'] ?? 'Could not undo AMC.'];
         }
         if ($freezerId > 0) {
             KycScanGate::mark($freezerId);
@@ -297,7 +298,7 @@ class UndoService {
         $label = $uid !== '' ? $uid : ('#' . ($del['freezer_id'] ?? $freezerId));
         return [
             'success' => true,
-            'message' => 'KYC undone for ' . $label,
+            'message' => 'AMC undone for ' . $label,
             'redirect' => 'freezer_kyc.php?id=' . (int)($del['freezer_id'] ?? $freezerId) . '&from=profile',
         ];
     }

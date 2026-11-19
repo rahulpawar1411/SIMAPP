@@ -44,7 +44,7 @@ Automatically generates, validates, and prevents duplicate IDs adhering to the e
 - **Printable Industrial Asset Tag:** (`qr_print.php`) Thermal sticker/label ready for printing and pasting onto freezer chassis.
 
 ### 5. Access Control
-- **Super Admin only (`super_admin`):** Full access — profiles, import/export, users, QR, KYC, transfer.
+- **Super Admin only (`super_admin`):** Full access — profiles, import/export, users, QR, asset, transfer.
 - **Security Practices:** Password hashing with `password_hash()` (bcrypt), prepared statements (PDO), and CSRF tokens.
 
 ### 6. IoT Telemetry Ready

@@ -4,7 +4,6 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
-use App\Models\FreezerLifecycle;
 use App\Models\AppNotification;
 
 AuthService::requireLogin();
@@ -29,10 +28,8 @@ if ($areaLabel === '') {
     $areaLabel = 'All areas';
 }
 
-// Home = totals only (no lists) + KYC alert
+// Home = totals only (no lists)
 $myInstallCount = 0;
-$kycPending = 0;
-$myTodayCount = 0;
 
 try {
     $myInstallCount = Freezer::countFiltered(AuthService::applyAreaToFilters([
@@ -41,24 +38,6 @@ try {
 } catch (Throwable $e) {
     \App\Services\AppLogger::exception($e, 'field_home.install_count');
     $myInstallCount = 0;
-}
-
-try {
-    $kycDash = FreezerLifecycle::dashboardKycStats(0, $areaScope);
-    $kycPending = (int)$kycDash['pending'];
-} catch (Throwable $e) {
-    \App\Services\AppLogger::exception($e, 'field_home.kyc_pending');
-    $kycPending = 0;
-}
-
-if ($uid > 0) {
-    try {
-        $queue = FreezerLifecycle::technicianWorkQueue($uid, 1, $areaScope);
-        $myTodayCount = (int)($queue['today_count'] ?? 0);
-    } catch (Throwable $e) {
-        \App\Services\AppLogger::exception($e, 'field_home.today_count');
-        $myTodayCount = 0;
-    }
 }
 
 $myEditRequests = [];
@@ -82,7 +61,6 @@ if ($uid > 0) {
     }
 }
 
-$hasKycAlert = $kycPending > 0;
 $hasEditUnlockAlert = count($myEditUnlocks) > 0;
 
 $hour = (int)date('G');
@@ -103,9 +81,6 @@ require_once __DIR__ . '/includes/header.php';
         </div>
         <div class="mapp-hero-av mapp-hero-av-alert" aria-hidden="true">
             <?= strtoupper(substr($firstName, 0, 1)) ?>
-            <?php if ($hasKycAlert): ?>
-                <span class="mapp-alert-dot" title="KYC pending"></span>
-            <?php endif; ?>
         </div>
     </header>
 
@@ -114,17 +89,10 @@ require_once __DIR__ . '/includes/header.php';
             <span class="mapp-kpi-label">Total installations</span>
             <strong><?= number_format($myInstallCount) ?></strong>
         </a>
-        <a class="mapp-kpi-card is-pending<?= $hasKycAlert ? ' has-alert' : '' ?>" href="profiles.php?kyc[]=pending">
-            <?php if ($hasKycAlert): ?>
-                <span class="mapp-alert-dot mapp-alert-dot-card" aria-hidden="true"></span>
-            <?php endif; ?>
-            <span class="mapp-kpi-label">KYC pending<?= $hasKycAlert ? ' · alert' : '' ?></span>
-            <strong><?= number_format($kycPending) ?></strong>
+        <a class="mapp-kpi-card" href="profiles.php">
+            <span class="mapp-kpi-label">Assets</span>
+            <strong>Open</strong>
         </a>
-        <div class="mapp-kpi-card is-ok">
-            <span class="mapp-kpi-label">Today KYC</span>
-            <strong><?= number_format($myTodayCount) ?></strong>
-        </div>
         <a class="mapp-kpi-card" href="qr_scanner.php">
             <span class="mapp-kpi-label">Add new</span>
             <strong>Scan</strong>
@@ -188,17 +156,6 @@ require_once __DIR__ . '/includes/header.php';
     </a>
     <?php endif; ?>
 
-    <?php if ($hasKycAlert): ?>
-    <a href="profiles.php?kyc[]=pending" class="mapp-kyc-alert">
-        <span class="mapp-alert-dot" aria-hidden="true"></span>
-        <div>
-            <strong>KYC alert</strong>
-            <span><?= number_format($kycPending) ?> freezer<?= $kycPending === 1 ? '' : 's' ?> pending in your area</span>
-        </div>
-        <span class="mapp-banner-cta">Open</span>
-    </a>
-    <?php endif; ?>
-
     <section class="mapp-edit-req-card" aria-label="My edit requests">
         <div class="mapp-edit-req-head">
             <h2>My edit requests</h2>
@@ -253,10 +210,7 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="mapp-actions mapp-actions-row">
         <a href="qr_scanner.php" class="btn btn-primary mapp-btn">Scan QR — fill data</a>
-        <a href="profiles.php?kyc[]=pending" class="btn btn-secondary mapp-btn">
-            KYC pending
-            <?php if ($hasKycAlert): ?><span class="mapp-alert-dot mapp-alert-dot-btn" aria-hidden="true"></span><?php endif; ?>
-        </a>
+        <a href="profiles.php" class="btn btn-secondary mapp-btn">Freezer Assets</a>
     </div>
 </div>
 

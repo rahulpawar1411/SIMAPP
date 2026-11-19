@@ -226,8 +226,9 @@ class AuthService {
     }
 
     /**
-     * Assigned zone/city for Technicians only. Empty = no restriction.
-     * Viewer & Super Admin always see All areas.
+     * Technician area assignment (zone / city).
+     * Empty zone and city = no restriction (all areas).
+     * Super Admin and Viewer are never area-scoped.
      *
      * @return array{zone:string,city:string}
      */
@@ -251,14 +252,17 @@ class AuthService {
         return $area;
     }
 
+    /** True when this technician has at least zone or city assigned. */
     public static function hasAreaScope(): bool {
         $scope = self::areaScope();
         return $scope['zone'] !== '' || $scope['city'] !== '';
     }
 
     /**
-     * Merge area assignment into Freezer list filters.
-     * Zone is a string; city becomes a single-item list when scoped.
+     * Apply technician area to freezer list filters so Assets only shows their zone/city.
+     *
+     * @param array<string,mixed> $filters
+     * @return array<string,mixed>
      */
     public static function applyAreaToFilters(array $filters): array {
         $scope = self::areaScope();
@@ -271,7 +275,12 @@ class AuthService {
         return $filters;
     }
 
-    /** Force store create/edit zone+city to the user's assignment. */
+    /**
+     * Force store create/update payload to the technician's assigned zone/city.
+     *
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
     public static function applyAreaToStoreData(array $data): array {
         $scope = self::areaScope();
         if ($scope['zone'] !== '') {
@@ -283,7 +292,10 @@ class AuthService {
         return $data;
     }
 
-    /** Whether current user may view/edit a store in this zone/city. */
+    /**
+     * Can the current user open a store in this zone/city?
+     * Unscoped users (admin / technician with no area) always return true.
+     */
     public static function canAccessArea(?string $zone, ?string $city): bool {
         $scope = self::areaScope();
         if ($scope['zone'] === '' && $scope['city'] === '') {
@@ -296,6 +308,50 @@ class AuthService {
             return false;
         }
         return true;
+    }
+
+    /** Short message for forms / exceptions when area check fails. */
+    public static function areaAccessDeniedMessage(): string {
+        $scope = self::areaScope();
+        $parts = array_filter([
+            $scope['zone'] !== '' ? $scope['zone'] : null,
+            $scope['city'] !== '' ? $scope['city'] : null,
+        ]);
+        if ($parts === []) {
+            return 'This store is outside your assigned area.';
+        }
+        return 'This store is outside your assigned area (' . implode(' · ', $parts) . ').';
+    }
+
+    /**
+     * Stop the request with HTTP 403 when the store is outside the technician area.
+     * Use on profile view/edit and QR print pages.
+     */
+    public static function requireAreaAccess(?string $zone, ?string $city, string $backHref = 'profiles.php'): void {
+        if (self::canAccessArea($zone, $city)) {
+            return;
+        }
+        self::denyAreaAccess($backHref);
+    }
+
+    /**
+     * Show a clear 403 page and exit. Does not return.
+     */
+    public static function denyAreaAccess(string $backHref = 'profiles.php'): void {
+        http_response_code(403);
+        $msg = htmlspecialchars(self::areaAccessDeniedMessage(), ENT_QUOTES, 'UTF-8');
+        $back = htmlspecialchars($backHref, ENT_QUOTES, 'UTF-8');
+        echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+            . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            . '<title>Access denied</title>'
+            . '<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem;color:#0f172a;line-height:1.45}'
+            . 'a{color:#166534;font-weight:600}</style></head><body>'
+            . '<h1>Access denied</h1>'
+            . '<p>' . $msg . '</p>'
+            . '<p>You can only open freezers and QR stickers in your assigned zone/city.</p>'
+            . '<p><a href="' . $back . '">Back to Assets</a></p>'
+            . '</body></html>';
+        exit;
     }
 
     public static function isLoggedIn(): bool {

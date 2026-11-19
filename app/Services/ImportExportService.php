@@ -281,7 +281,7 @@ class ImportExportService {
             'installation_date', 'install_month_year', 'pincode_last3', 'unit_sequence',
             'unique_freezer_id', 'capacity_litres', 'freezer_condition', 'status',
             'image_left_side', 'image_right_side', 'qr_code_path', 'qr_code_data',
-            'sim_number', 'sim_company', 'image_sim',
+            'sim_number', 'sim_company', 'image_sim', 'image_sim_back',
             'freezer_created_at', 'freezer_updated_at',
             'last_kyc_at', 'next_kyc_due', 'kyc_status',
         ];
@@ -352,9 +352,10 @@ class ImportExportService {
             'sim_number',
             'sim_company',
             'image_sim',
+            'image_sim_back',
             'freezer_created_at',
             'freezer_updated_at',
-            // KYC (6-month from install / last KYC)
+            // AMC (6-month from install / last AMC)
             'last_kyc_at',
             'next_kyc_due',
             'kyc_status',
@@ -704,6 +705,7 @@ class ImportExportService {
                 'sim_number' => $r['sim_number'] ?? '',
                 'sim_company' => $r['sim_company'] ?? '',
                 'image_sim' => $r['image_sim'] ?? '',
+                'image_sim_back' => $r['image_sim_back'] ?? '',
                 'freezer_created_at' => $r['created_at'] ?? '',
                 'freezer_updated_at' => $r['updated_at'] ?? '',
                 'last_kyc_at' => $r['last_kyc_at'] ?? '',
@@ -852,7 +854,7 @@ class ImportExportService {
             throw new Exception("Freezer ID '{$uniqueId}' already exists.");
         }
 
-        // Photos REQUIRED (same as profile form): store front + freezer left/right
+        // Photos REQUIRED (same as profile form): store front + freezer full
         $storeFrontName = trim((string)($row['image_store_front'] ?? ''));
         $leftName = trim((string)($row['image_left_side'] ?? ''));
         $rightName = trim((string)($row['image_right_side'] ?? ''));
@@ -860,8 +862,8 @@ class ImportExportService {
         $iotSerialCheck = $iotEnabled ? trim((string)($row['iot_serial'] ?? '')) : '';
         $iotImgName = $iotEnabled ? trim((string)($row['image_iot_device'] ?? '')) : '';
 
-        if ($leftName === '' || $rightName === '') {
-            throw new Exception('image_left_side and image_right_side are required (filenames in uploads/import/).');
+        if ($leftName === '') {
+            throw new Exception('image_left_side (freezer full photo) is required (filename in uploads/import/).');
         }
         if ($storeFrontName === '' && !$existingStore) {
             throw new Exception('image_store_front is required for new stores (filename in uploads/import/).');
@@ -887,8 +889,10 @@ class ImportExportService {
             }
             $imgAadhar = FileUploadService::promoteImportImage($row['image_aadhar_card'] ?? '', 'stores', 'aadhar_front');
             $imgAadharBack = FileUploadService::promoteImportImage($row['image_aadhar_back'] ?? '', 'stores', 'aadhar_back');
-            $imgLeft = FileUploadService::promoteImportImage($leftName, 'freezers', 'frz_left');
-            $imgRight = FileUploadService::promoteImportImage($rightName, 'freezers', 'frz_right');
+            $imgLeft = FileUploadService::promoteImportImage($leftName, 'freezers', 'frz_full');
+            $imgRight = $rightName !== ''
+                ? FileUploadService::promoteImportImage($rightName, 'freezers', 'frz_right')
+                : null;
             if ($iotEnabled && $iotImgName !== '') {
                 $imgIot = FileUploadService::promoteImportImage($iotImgName, 'iot', 'iot_dev');
             }

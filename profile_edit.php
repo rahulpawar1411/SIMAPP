@@ -27,10 +27,12 @@ if (!$freezer) {
     die("<h1>Profile Not Found</h1><p>Freezer profile #{$id} does not exist.</p><p><a href='profiles.php'>Back to Profiles</a></p>");
 }
 
-if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? null, $freezer['store_city'] ?? null)) {
-    http_response_code(403);
-    die("<h1>403 Forbidden</h1><p>This store is outside your assigned zone/city.</p><p><a href='profiles.php'>Back to Assets</a></p>");
-}
+// Technicians with zone/city assignment cannot edit out-of-area profiles
+AuthService::requireAreaAccess(
+    $freezer['store_zone'] ?? $freezer['zone'] ?? null,
+    $freezer['store_city'] ?? null,
+    'profiles.php'
+);
 
 $error = null;
 $success = null;
@@ -214,17 +216,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $imgLeftResult = !empty($_FILES['image_left_side']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left', $imgNameMeta)
+                ? FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_full', $imgNameMeta)
                 : null;
             if ($imgLeftResult && !$imgLeftResult['success']) {
-                throw new Exception("Left Side Image Error: " . $imgLeftResult['error']);
-            }
-
-            $imgRightResult = !empty($_FILES['image_right_side']['name'])
-                ? FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right', $imgNameMeta)
-                : null;
-            if ($imgRightResult && !$imgRightResult['success']) {
-                throw new Exception("Right Side Image Error: " . $imgRightResult['error']);
+                throw new Exception('Freezer full photo error: ' . $imgLeftResult['error']);
             }
 
             $imgIotResult = null;
@@ -276,7 +271,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'status' => 'Active',
             ]);
             if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
-                throw new Exception('Zone/city is outside your assigned area.');
+                throw new Exception(AuthService::areaAccessDeniedMessage());
             }
 
             // Update Freezer Profile — Unique Freezer ID never changes after create
@@ -292,13 +287,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'model_number' => $_POST['model_number'] ?? $freezer['model_number'],
                 'capacity_litres' => !empty($_POST['capacity_litres']) ? (int)$_POST['capacity_litres'] : $freezer['capacity_litres'],
                 'freezer_condition' => $_POST['freezer_condition'] ?? $freezer['freezer_condition'],
+                'freezer_placed_at' => trim((string)($_POST['freezer_placed_at'] ?? ($freezer['freezer_placed_at'] ?? ''))),
                 'location_code' => $_POST['location_code'] ?? $freezer['location_code'],
                 'pincode_last3' => FreezerIdGenerator::extractPinCode($_POST['pincode'] ?? ''),
                 'install_month_year' => $installMmYy,
                 'unit_sequence' => $freezer['unit_sequence'] ?? null,
                 'installation_date' => $installDate,
                 'image_left_side' => $imgLeftResult ? $imgLeftResult['path'] : null,
-                'image_right_side' => $imgRightResult ? $imgRightResult['path'] : null,
                 'image_sim' => $imgSimResult ? $imgSimResult['path'] : null,
                 'sim_number' => trim((string)($_POST['sim_number'] ?? '')),
                 'sim_company' => trim((string)($_POST['sim_company'] ?? '')),
@@ -380,6 +375,7 @@ $pageTitle = $canEditNow
     : (!$isTechnician
         ? ('Confirm edit: ' . $freezer['unique_freezer_id'])
         : ('Request edit: ' . $freezer['unique_freezer_id']));
+$bodyClass = 'profile-edit-page';
 require_once __DIR__ . '/includes/header.php';
 
 ?>
@@ -581,90 +577,97 @@ require_once __DIR__ . '/includes/header.php';
             ?>
             <input type="hidden" id="location_link" name="location_link" value="<?= htmlspecialchars($editLocLink) ?>">
 
-            <div class="form-grid">
-                <div class="col-6 form-group">
-                    <label class="form-label required" for="store_name">Store Name</label>
-                    <input type="text" id="store_name" name="store_name" class="form-control" value="<?= htmlspecialchars($freezer['store_name']) ?>" required>
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label" for="outlet_id">Outlet ID</label>
-                    <input type="text" id="outlet_id" class="form-control" value="<?= htmlspecialchars($freezer['outlet_id']) ?>" readonly
-                           style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label" for="customer_name">Customer Account</label>
-                    <select id="customer_name" name="customer_name" class="form-select">
-                        <?php foreach ($customers as $c): ?>
-                            <option value="<?= htmlspecialchars($c) ?>" <?= ($freezer['customer_name'] === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <input type="hidden" id="state" name="state" value="<?= htmlspecialchars($freezer['store_state'] ?? '') ?>">
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="zone">Zone</label>
-                    <?php
-                    $editZoneVal = $lockZone ? $areaScope['zone'] : (string)($freezer['store_zone'] ?? 'WEST');
-                    $editZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
-                    ?>
-                    <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
-                        <?php foreach ($editZones as $z): ?>
-                            <option value="<?= htmlspecialchars($z) ?>" <?= $editZoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <?php if ($lockZone): ?>
-                        <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
-                    <?php endif; ?>
-                </div>
-                <div class="col-8 form-group">
-                    <label class="form-label required" for="city">City</label>
-                    <?php $editCityVal = $lockCity ? $areaScope['city'] : (string)($freezer['store_city'] ?? ''); ?>
-                    <input type="text" id="city" name="city" class="form-control" value="<?= htmlspecialchars($editCityVal) ?>" placeholder="Select zone, then type city…" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
-                    <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
-                </div>
-                <div class="col-12 form-group">
-                    <label class="form-label required" for="address">Address</label>
-                    <input type="text" id="address" name="address" class="form-control" value="<?= htmlspecialchars($freezer['store_address']) ?>" required>
-                </div>
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="pincode">PIN code</label>
-                    <input type="text" id="pincode" name="pincode" class="form-control" value="<?= htmlspecialchars($freezer['store_pincode']) ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
-                </div>
-                <div class="col-8 form-group">
-                    <label class="form-label" for="contact_person">Store operator name</label>
-                    <input type="text" id="contact_person" name="contact_person" class="form-control" value="<?= htmlspecialchars($freezer['contact_person'] ?? '') ?>">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="phone_number">Operator phone / mobile</label>
-                    <?php
-                        $editPhone = preg_replace('/\D/', '', (string)($freezer['phone_number'] ?? ''));
-                        if (strlen($editPhone) === 12 && str_starts_with($editPhone, '91')) {
-                            $editPhone = substr($editPhone, 2);
-                        }
-                        $editPhone = substr($editPhone, -10);
-                    ?>
-                    <div class="phone-input-group">
-                        <span class="phone-prefix" aria-hidden="true">+91</span>
-                        <input type="tel" id="phone_number" name="phone_number" class="form-control" value="<?= htmlspecialchars($editPhone) ?>" maxlength="10" inputmode="numeric" placeholder="10-digit mobile" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
-                    </div>
-                    <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="email">Store operator email ID</label>
-                    <input type="email" id="email" name="email" class="form-control" value="<?= htmlspecialchars($freezer['store_email'] ?? '') ?>" placeholder="operator@example.com" autocomplete="email">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="aadhar_number">Store operator Aadhaar number</label>
-                    <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" value="<?= htmlspecialchars($freezer['aadhar_number'] ?? '') ?>" placeholder="12-digit Aadhaar" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="fssai_number">FSSAI number</label>
-                    <input type="text" id="fssai_number" name="fssai_number" class="form-control" value="<?= htmlspecialchars($freezer['fssai_number'] ?? '') ?>" placeholder="14-digit FSSAI licence" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off">
-</div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="gst_number">GST number</label>
-                    <input type="text" id="gst_number" name="gst_number" class="form-control" value="<?= htmlspecialchars($freezer['gst_number'] ?? '') ?>" placeholder="15-character GSTIN" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;">
-</div>
-            </div>
+            <input type="hidden" id="state" name="state" value="<?= htmlspecialchars($freezer['store_state'] ?? '') ?>">
+            <table class="form-table">
+                <tr>
+                    <th><label class="form-label required" for="store_name">Store Name</label></th>
+                    <td><input type="text" id="store_name" name="store_name" class="form-control" value="<?= htmlspecialchars($freezer['store_name']) ?>" required></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="outlet_id">Outlet ID</label></th>
+                    <td><input type="text" id="outlet_id" class="form-control" value="<?= htmlspecialchars($freezer['outlet_id']) ?>" readonly style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="customer_name">Customer Account</label></th>
+                    <td>
+                        <select id="customer_name" name="customer_name" class="form-select">
+                            <?php foreach ($customers as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= ($freezer['customer_name'] === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="zone">Zone</label></th>
+                    <td>
+                        <?php
+                        $editZoneVal = $lockZone ? $areaScope['zone'] : (string)($freezer['store_zone'] ?? 'WEST');
+                        $editZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
+                        ?>
+                        <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
+                            <?php foreach ($editZones as $z): ?>
+                                <option value="<?= htmlspecialchars($z) ?>" <?= $editZoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <?php if ($lockZone): ?>
+                            <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="city">City</label></th>
+                    <td>
+                        <?php $editCityVal = $lockCity ? $areaScope['city'] : (string)($freezer['store_city'] ?? ''); ?>
+                        <input type="text" id="city" name="city" class="form-control" value="<?= htmlspecialchars($editCityVal) ?>" placeholder="Select zone, then type city…" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
+                        <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="address">Address</label></th>
+                    <td><input type="text" id="address" name="address" class="form-control" value="<?= htmlspecialchars($freezer['store_address']) ?>" required></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="pincode">PIN code</label></th>
+                    <td><input type="text" id="pincode" name="pincode" class="form-control" value="<?= htmlspecialchars($freezer['store_pincode']) ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="contact_person">Store operator name</label></th>
+                    <td><input type="text" id="contact_person" name="contact_person" class="form-control" value="<?= htmlspecialchars($freezer['contact_person'] ?? '') ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="phone_number">Operator phone / mobile</label></th>
+                    <td class="phone-cell">
+                        <?php
+                            $editPhone = preg_replace('/\D/', '', (string)($freezer['phone_number'] ?? ''));
+                            if (strlen($editPhone) === 12 && str_starts_with($editPhone, '91')) {
+                                $editPhone = substr($editPhone, 2);
+                            }
+                            $editPhone = substr($editPhone, -10);
+                        ?>
+                        <span class="phone-input-group">
+                            <span class="phone-prefix" aria-hidden="true">+91</span>
+                            <input type="tel" id="phone_number" name="phone_number" class="form-control" value="<?= htmlspecialchars($editPhone) ?>" maxlength="10" inputmode="numeric" placeholder="10-digit mobile" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
+                        </span>
+                        <span class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</span>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="email">Store operator email ID</label></th>
+                    <td><input type="email" id="email" name="email" class="form-control" value="<?= htmlspecialchars($freezer['store_email'] ?? '') ?>" placeholder="operator@example.com" autocomplete="email"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="aadhar_number">Store operator Aadhaar number</label></th>
+                    <td><input type="text" id="aadhar_number" name="aadhar_number" class="form-control" value="<?= htmlspecialchars($freezer['aadhar_number'] ?? '') ?>" placeholder="12-digit Aadhaar" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="fssai_number">FSSAI number</label></th>
+                    <td><input type="text" id="fssai_number" name="fssai_number" class="form-control" value="<?= htmlspecialchars($freezer['fssai_number'] ?? '') ?>" placeholder="14-digit FSSAI licence" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="gst_number">GST number</label></th>
+                    <td><input type="text" id="gst_number" name="gst_number" class="form-control" value="<?= htmlspecialchars($freezer['gst_number'] ?? '') ?>" placeholder="15-character GSTIN" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;"></td>
+                </tr>
+            </table>
         </div>
     </div>
 
@@ -679,76 +682,101 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
         <div class="card-body">
-            <div class="form-grid">
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="freezer_type">Freezer Type</label>
-                    <select id="freezer_type" name="freezer_type" class="form-select" required>
-                        <?php foreach ($freezerTypes as $ft): ?>
-                            <option value="<?= htmlspecialchars($ft['code']) ?>" <?= ($freezer['freezer_type'] === $ft['code']) ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-</div>
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="company_code">Brand / OEM</label>
-                    <select id="company_code" name="company_code" class="form-select" required>
-                        <?php foreach ($brands as $b): ?>
-                            <option value="<?= htmlspecialchars($b['code']) ?>" <?= ($freezer['company_code'] === $b['code']) ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-</div>
-                <div class="col-4 form-group">
-                    <label class="form-label required" for="model_number">Model Number</label>
-                    <input type="text" id="model_number" name="model_number" class="form-control" value="<?= htmlspecialchars($freezer['model_number']) ?>" required>
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label" for="location_code">Location code</label>
-                    <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
-                           value="<?= htmlspecialchars(strtoupper(trim((string)($freezer['location_code'] ?? '')))) ?>"
-                           placeholder="Auto from city"
-                           readonly tabindex="-1" autocomplete="off">
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label required" for="installation_date">Installation Date</label>
-                    <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($freezer['installation_date']) ?>" required>
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label">Unit sequence</label>
-                    <input type="text" class="form-control" value="<?= htmlspecialchars($freezer['unit_sequence'] ?? '') ?>" readonly disabled>
-</div>
-                <div class="col-3 form-group">
-                    <label class="form-label" for="freezer_status">Status</label>
-                    <select id="freezer_status" name="freezer_status" class="form-select">
-                        <option value="Active" <?= $freezer['status'] === 'Active' ? 'selected' : '' ?>>Active</option>
-                        <option value="Maintenance" <?= $freezer['status'] === 'Maintenance' ? 'selected' : '' ?>>Maintenance</option>
-                        <option value="Under Inspection" <?= $freezer['status'] === 'Under Inspection' ? 'selected' : '' ?>>Under Inspection</option>
-                    </select>
-                </div>
-                <div class="col-3 form-group">
-                    <label class="form-label" for="capacity_litres">Capacity (litres)</label>
-                    <?php $capEdit = (string)($freezer['capacity_litres'] ?? '550'); ?>
-                    <select id="capacity_litres" name="capacity_litres" class="form-select">
-                        <option value="">Select capacity</option>
-                        <?php foreach ($capacities as $cap): ?>
-                            <option value="<?= (int)$cap ?>" <?= $capEdit === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
-                        <?php endforeach; ?>
-                        <?php if ($capEdit !== '' && !in_array((int)$capEdit, $capacities, true)): ?>
-                            <option value="<?= (int)$capEdit ?>" selected><?= (int)$capEdit ?> litres</option>
-                        <?php endif; ?>
-                    </select>
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="freezer_condition">Condition</label>
-                    <select id="freezer_condition" name="freezer_condition" class="form-select">
-                        <?php foreach ($conditions as $c): ?>
-                            <option value="<?= htmlspecialchars($c) ?>" <?= ($freezer['freezer_condition'] === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
+            <table class="form-table">
+                <tr>
+                    <th><label class="form-label required" for="freezer_type">Freezer Type</label></th>
+                    <td>
+                        <select id="freezer_type" name="freezer_type" class="form-select" required>
+                            <?php foreach ($freezerTypes as $ft): ?>
+                                <option value="<?= htmlspecialchars($ft['code']) ?>" <?= ($freezer['freezer_type'] === $ft['code']) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="company_code">Brand / OEM</label></th>
+                    <td>
+                        <select id="company_code" name="company_code" class="form-select" required>
+                            <?php foreach ($brands as $b): ?>
+                                <option value="<?= htmlspecialchars($b['code']) ?>" <?= ($freezer['company_code'] === $b['code']) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="model_number">Model Number</label></th>
+                    <td><input type="text" id="model_number" name="model_number" class="form-control" value="<?= htmlspecialchars($freezer['model_number']) ?>" required></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="location_code">Location code</label></th>
+                    <td>
+                        <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
+                               value="<?= htmlspecialchars(strtoupper(trim((string)($freezer['location_code'] ?? '')))) ?>"
+                               placeholder="Auto from city" readonly tabindex="-1" autocomplete="off">
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="installation_date">Installation Date</label></th>
+                    <td><input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($freezer['installation_date']) ?>" required></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label">Unit sequence</label></th>
+                    <td><input type="text" class="form-control" value="<?= htmlspecialchars($freezer['unit_sequence'] ?? '') ?>" readonly disabled></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="freezer_status">Status</label></th>
+                    <td>
+                        <select id="freezer_status" name="freezer_status" class="form-select">
+                            <option value="Active" <?= $freezer['status'] === 'Active' ? 'selected' : '' ?>>Active</option>
+                            <option value="Maintenance" <?= $freezer['status'] === 'Maintenance' ? 'selected' : '' ?>>Maintenance</option>
+                            <option value="Under Inspection" <?= $freezer['status'] === 'Under Inspection' ? 'selected' : '' ?>>Under Inspection</option>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="capacity_litres">Capacity (litres)</label></th>
+                    <td>
+                        <?php $capEdit = (string)($freezer['capacity_litres'] ?? '550'); ?>
+                        <select id="capacity_litres" name="capacity_litres" class="form-select">
+                            <option value="">Select capacity</option>
+                            <?php foreach ($capacities as $cap): ?>
+                                <option value="<?= (int)$cap ?>" <?= $capEdit === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
+                            <?php endforeach; ?>
+                            <?php if ($capEdit !== '' && !in_array((int)$capEdit, $capacities, true)): ?>
+                                <option value="<?= (int)$capEdit ?>" selected><?= (int)$capEdit ?> litres</option>
+                            <?php endif; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="freezer_condition">Condition</label></th>
+                    <td>
+                        <select id="freezer_condition" name="freezer_condition" class="form-select">
+                            <?php foreach ($conditions as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= ($freezer['freezer_condition'] === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label required" for="freezer_placed_at">Where is the freezer kept?</label></th>
+                    <td>
+                        <select id="freezer_placed_at" name="freezer_placed_at" class="form-select" required>
+                            <option value="">Select placement…</option>
+                            <?php
+                            $placeVal = (string)($freezer['freezer_placed_at'] ?? '');
+                            foreach (Freezer::placementOptions() as $opt):
+                            ?>
+                                <option value="<?= htmlspecialchars($opt) ?>" <?= $placeVal === $opt ? 'selected' : '' ?>><?= htmlspecialchars($opt) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+            </table>
         </div>
     </div>
 
@@ -798,21 +826,14 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
-                <!-- Left Side -->
+                <!-- Freezer full -->
                 <div class="upload-box">
-                    <input type="file" name="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-left">
-                    <div class="upload-title">Change Left Side Photo</div>
-                    <div class="upload-preview-container" id="edit-preview-left" style="<?= !empty($freezer['image_left_side']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_left_side'] ?? '') ?>" alt="Left Side" loading="lazy" decoding="async">
-                    </div>
-                </div>
-
-                <!-- Right Side -->
-                <div class="upload-box">
-                    <input type="file" name="image_right_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-right">
-                    <div class="upload-title">Change Right Side Photo</div>
-                    <div class="upload-preview-container" id="edit-preview-right" style="<?= !empty($freezer['image_right_side']) ? 'display:block;' : '' ?>">
-                        <img src="<?= htmlspecialchars($freezer['image_right_side'] ?? '') ?>" alt="Right Side" loading="lazy" decoding="async">
+                    <input type="file" name="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-freezer-full">
+                    <div class="upload-title"><?= !empty($freezer['image_left_side']) ? 'Change freezer full photo' : 'Freezer full photo' ?></div>
+                    <div class="upload-hint">Whole freezer in frame</div>
+                    <div class="upload-preview-container" id="edit-preview-freezer-full" style="<?= !empty($freezer['image_left_side']) ? 'display:block;' : '' ?>">
+                        <img src="<?= htmlspecialchars($freezer['image_left_side'] ?? '') ?>" alt="Freezer Full" loading="lazy" decoding="async">
+                        <span class="preview-badge">Full</span>
                     </div>
                 </div>
 
@@ -835,41 +856,48 @@ require_once __DIR__ . '/includes/header.php';
             <div class="card-title"><span>SIM installation</span></div>
         </div>
         <div class="card-body">
-            <div class="form-grid">
-                <div class="col-6 form-group">
-                    <label class="form-label" for="sim_number">SIM number</label>
-                    <input type="text" id="sim_number" name="sim_number" class="form-control"
-                           placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
-                           value="<?= htmlspecialchars(($freezer['sim_number'] ?? '') !== '' ? $freezer['sim_number'] : AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="sim_company">SIM company</label>
-                    <?php $simCoEdit = trim((string)($freezer['sim_company'] ?? '')) ?: AppConfig::DEFAULT_SIM_COMPANY; ?>
-                    <select id="sim_company" name="sim_company" class="form-select">
-                        <option value="">Select operator</option>
-                        <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
-                            <option value="<?= $op ?>" <?= $simCoEdit === $op ? 'selected' : '' ?>><?= $op ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-12 form-group">
-                    <label class="form-label" for="image_sim">SIM number photo</label>
-                    <div class="upload-box" id="dropzone-sim">
-                        <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-sim">
-                        <div class="upload-icon">📷</div>
-                        <div class="upload-title"><?= !empty($freezer['image_sim']) ? 'Change SIM photo' : 'SIM / ICCID photo' ?></div>
-                        <div class="upload-hint">Camera · Clear SIM number</div>
-                        <div class="upload-preview-container" id="edit-preview-sim" style="<?= !empty($freezer['image_sim']) ? 'display:block;' : '' ?>">
-                            <img src="<?= htmlspecialchars($freezer['image_sim'] ?? '') ?>" alt="SIM" loading="lazy" decoding="async">
-                            <span class="preview-badge">SIM</span>
+            <table class="form-table">
+                <tr>
+                    <th><label class="form-label" for="sim_number">SIM number</label></th>
+                    <td>
+                        <input type="text" id="sim_number" name="sim_number" class="form-control"
+                               placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
+                               value="<?= htmlspecialchars(($freezer['sim_number'] ?? '') !== '' ? $freezer['sim_number'] : AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="sim_company">SIM company</label></th>
+                    <td>
+                        <?php $simCoEdit = trim((string)($freezer['sim_company'] ?? '')) ?: AppConfig::DEFAULT_SIM_COMPANY; ?>
+                        <select id="sim_company" name="sim_company" class="form-select">
+                            <option value="">Select operator</option>
+                            <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
+                                <option value="<?= $op ?>" <?= $simCoEdit === $op ? 'selected' : '' ?>><?= $op ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr class="form-row-photos">
+                    <th><span class="form-label">SIM photo</span></th>
+                    <td>
+                        <div class="photo-upload-grid photo-upload-grid-2">
+                            <label class="upload-box" id="dropzone-sim">
+                                <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="edit-preview-sim">
+                                <span class="upload-icon">📷</span>
+                                <span class="upload-title"><?= !empty($freezer['image_sim']) ? 'Change SIM photo' : 'SIM photo' ?></span>
+                                <span class="upload-hint">Camera · Clear SIM number</span>
+                                <span class="upload-preview-container" id="edit-preview-sim" style="<?= !empty($freezer['image_sim']) ? 'display:block;' : '' ?>">
+                                    <img src="<?= htmlspecialchars($freezer['image_sim'] ?? '') ?>" alt="SIM" loading="lazy" decoding="async">
+                                </span>
+                            </label>
                         </div>
-                    </div>
-                </div>
-                <div class="col-12 form-group">
-                    <label class="form-label" for="notes">Remark</label>
-                    <input type="text" id="notes" name="notes" class="form-control" value="<?= htmlspecialchars($freezer['notes'] ?? '') ?>" placeholder="Installation observations, plug location, target temp…">
-                </div>
-            </div>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="notes">Remark</label></th>
+                    <td><input type="text" id="notes" name="notes" class="form-control" value="<?= htmlspecialchars($freezer['notes'] ?? '') ?>" placeholder="Installation observations, plug location, target temp…"></td>
+                </tr>
+            </table>
         </div>
     </div>
 
@@ -882,30 +910,32 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
         <div class="card-body">
-            <div class="form-grid">
-                <div class="col-6 form-group">
-                    <label class="form-label" for="iot_serial">IoT Serial Number</label>
-                    <input type="text" id="iot_serial" name="iot_serial" class="form-control" value="<?= htmlspecialchars($freezer['device_serial'] ?? 'RF-IOT-99210') ?>">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="iot_imei">Device IMEI</label>
-                    <input type="text" id="iot_imei" name="iot_imei" class="form-control" value="<?= htmlspecialchars($freezer['imei_or_mac'] ?? '') ?>">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="iot_sim_number">SIM Number (IoT)</label>
-                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="<?= htmlspecialchars($freezer['sim_number'] ?? '') ?>">
-                </div>
-                <div class="col-6 form-group">
-                    <label class="form-label" for="iot_sim_company">SIM Company (IoT)</label>
-                    <?php $simCo = $freezer['sim_company'] ?? ''; ?>
-                    <select id="iot_sim_company" name="iot_sim_company" class="form-select">
-                        <option value="">Select operator</option>
-                        <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
-                            <option value="<?= $op ?>" <?= $simCo === $op ? 'selected' : '' ?>><?= $op ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
+            <table class="form-table">
+                <tr>
+                    <th><label class="form-label" for="iot_serial">IoT Serial Number</label></th>
+                    <td><input type="text" id="iot_serial" name="iot_serial" class="form-control" value="<?= htmlspecialchars($freezer['device_serial'] ?? 'RF-IOT-99210') ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_imei">Device IMEI</label></th>
+                    <td><input type="text" id="iot_imei" name="iot_imei" class="form-control" value="<?= htmlspecialchars($freezer['imei_or_mac'] ?? '') ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_sim_number">SIM Number (IoT)</label></th>
+                    <td><input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="8991000900123456789" value="<?= htmlspecialchars($freezer['iot_sim_number'] ?? '') ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_sim_company">SIM Company (IoT)</label></th>
+                    <td>
+                        <?php $simCo = $freezer['sim_company'] ?? ''; ?>
+                        <select id="iot_sim_company" name="iot_sim_company" class="form-select">
+                            <option value="">Select operator</option>
+                            <?php foreach (['Jio', 'Airtel', 'VI', 'BSNL', 'Other'] as $op): ?>
+                                <option value="<?= $op ?>" <?= $simCo === $op ? 'selected' : '' ?>><?= $op ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+            </table>
         </div>
     </div>
     <?php endif; ?>
@@ -929,7 +959,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const phone = document.getElementById('phone_number');
     if (phone) {
         function setPhoneErr(on) {
-            const group = phone.closest('.form-group');
+            const group = phone.closest('tr, .form-group');
             phone.classList.toggle('is-invalid', on);
             if (group) group.classList.toggle('has-error', on);
         }

@@ -116,7 +116,7 @@ $body .= p('');
 
 $body .= heading('1. How to use this list', 1);
 $body .= p('• YES = must fill — import will fail without it.');
-$body .= p('• Recommended = strongly needed for map, KYC, photos, Unique ID quality.');
+$body .= p('• Recommended = strongly needed for map, asset, photos, Unique ID quality.');
 $body .= p('• Optional = can leave blank; system uses defaults or skips.');
 $body .= p('• Photos are REQUIRED (not optional): store front + freezer left + freezer right.');
 $body .= p('• Put files in uploads/import/ and write exact file name in Excel (not full path).');

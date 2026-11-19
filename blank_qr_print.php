@@ -1,7 +1,8 @@
 <?php
 /**
- * Print sheet for blank asset tags — Logo + QR only.
- * Layout: A4 portrait, exactly 4 stickers per page (2×2).
+ * Print blank asset tags (logo + QR only).
+ * A4 portrait, 4 stickers per page (2×2).
+ * Technicians with a zone assignment only print tags for that zone.
  */
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -9,12 +10,15 @@ use App\Services\AuthService;
 use App\Models\AssetTag;
 
 AuthService::requireLogin();
+AuthService::requireRole(['super_admin', 'technician']);
 
 $zoneOptions = AssetTag::zoneTagCodes();
 $filterZone = strtoupper(trim((string)($_GET['zone'] ?? '')));
 if ($filterZone === 'ALL') {
     $filterZone = '';
 }
+
+// Force technician print filter to their assigned zone (ignore other zone query params)
 $areaScope = AuthService::areaScope();
 if (($areaScope['zone'] ?? '') !== '') {
     $filterZone = strtoupper((string)$areaScope['zone']);
@@ -22,37 +26,57 @@ if (($areaScope['zone'] ?? '') !== '') {
 if ($filterZone !== '' && !isset($zoneOptions[$filterZone])) {
     $filterZone = '';
 }
+
 $zoneLabel = $filterZone !== '' ? ucfirst(strtolower($filterZone)) : 'All zones';
 $statusRawLabel = strtolower(trim((string)($_GET['status'] ?? 'unused')));
 $statusLabel = $statusRawLabel === 'all' ? 'All' : ($statusRawLabel === 'assigned' ? 'Assigned' : 'Unused');
 
 $tags = [];
-if (!empty($_GET['ids'])) {
-    $ids = array_map('intval', explode(',', (string)$_GET['ids']));
-    $tags = AssetTag::findByIds($ids);
-    // Optional: keep only selected zone when ids mixed
-    if ($filterZone !== '') {
-        $prefix = 'RO-' . AssetTag::zoneToTagCode($filterZone) . '-';
-        $tags = array_values(array_filter($tags, static function ($t) use ($prefix) {
-            return stripos((string)($t['tag_code'] ?? ''), $prefix) === 0;
-        }));
-    }
-} else {
-    $statusRaw = strtolower(trim((string)($_GET['status'] ?? 'unused')));
-    if ($statusRaw === 'all') {
-        $status = '';
-    } elseif ($statusRaw === 'assigned') {
-        $status = 'assigned';
+try {
+    if (!empty($_GET['ids'])) {
+        $ids = array_map('intval', explode(',', (string)$_GET['ids']));
+        $ids = array_values(array_filter($ids, static fn($id) => $id > 0));
+        $tags = $ids !== [] ? AssetTag::findByIds($ids) : [];
+
+        // Drop any selected tags outside the allowed zone
+        if ($filterZone !== '') {
+            $prefix = 'RO-' . AssetTag::zoneToTagCode($filterZone) . '-';
+            $tags = array_values(array_filter($tags, static function ($t) use ($prefix) {
+                return stripos((string)($t['tag_code'] ?? ''), $prefix) === 0;
+            }));
+        }
     } else {
-        $status = 'unused';
+        $statusRaw = strtolower(trim((string)($_GET['status'] ?? 'unused')));
+        if ($statusRaw === 'all') {
+            $status = '';
+        } elseif ($statusRaw === 'assigned') {
+            $status = 'assigned';
+        } else {
+            $status = 'unused';
+        }
+        $limit = max(1, min(500, (int)($_GET['limit'] ?? 20)));
+        $tags = AssetTag::listTags($status, $limit, 0, $filterZone);
+        $tags = array_reverse($tags);
     }
-    $limit = max(1, min(500, (int)($_GET['limit'] ?? 20)));
-    $tags = AssetTag::listTags($status, $limit, 0, $filterZone);
-    $tags = array_reverse($tags);
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'blank_qr_print.load');
+    http_response_code(500);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Print error</title></head><body>'
+        . '<h1>Could not load tags to print</h1>'
+        . '<p>Please go back and try again.</p>'
+        . '<p><a href="blank_qr.php">Back to QR Management</a></p></body></html>';
+    exit;
 }
 
 if (!$tags) {
-    die('No blank QR tags to print' . ($filterZone !== '' ? ' for ' . $zoneLabel : '') . '.');
+    http_response_code(404);
+    $extra = $filterZone !== '' ? ' for ' . htmlspecialchars($zoneLabel, ENT_QUOTES, 'UTF-8') : '';
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Nothing to print</title></head><body>'
+        . '<h1>No blank QR tags to print' . $extra . '</h1>'
+        . '<p>Generate a batch in QR Management first, or change the filter.</p>'
+        . '<p><a href="blank_qr.php' . ($filterZone !== '' ? ('?zone=' . urlencode($filterZone)) : '') . '">Back to QR Management</a></p>'
+        . '</body></html>';
+    exit;
 }
 
 $pages = array_chunk($tags, 4);

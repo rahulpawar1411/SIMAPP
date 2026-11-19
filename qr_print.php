@@ -1,7 +1,7 @@
 <?php
 /**
- * Profile QR reprint — same sticker style as blank hub QR:
- * Logo + QR + tag code only (no type/store/model details).
+ * Print one freezer sticker (logo + QR + tag code).
+ * Technicians may print only freezers inside their assigned zone/city.
  */
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -13,29 +13,66 @@ use App\Services\QRCodeService;
 AuthService::requireLogin();
 
 $idParam = $_GET['id'] ?? null;
-if (!$idParam) {
-    die('Error: Missing freezer identifier.');
+if ($idParam === null || $idParam === '') {
+    http_response_code(400);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Missing ID</title></head><body>'
+        . '<h1>Missing freezer ID</h1>'
+        . '<p>Open a freezer profile first, then use Print QR.</p>'
+        . '<p><a href="profiles.php">Back to Assets</a></p></body></html>';
+    exit;
 }
 
-if (is_numeric($idParam)) {
-    $freezer = Freezer::findById((int)$idParam);
-} else {
-    $freezer = Freezer::findByUniqueId($idParam);
+// Accept numeric DB id or Unique Freezer ID string
+try {
+    if (is_numeric($idParam)) {
+        $freezer = Freezer::findById((int)$idParam);
+    } else {
+        $freezer = Freezer::findByUniqueId((string)$idParam);
+    }
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'qr_print.load');
+    http_response_code(500);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Error</title></head><body>'
+        . '<h1>Could not load freezer</h1>'
+        . '<p>Please try again. If this keeps happening, contact admin.</p>'
+        . '<p><a href="profiles.php">Back to Assets</a></p></body></html>';
+    exit;
 }
 
 if (!$freezer) {
-    die('Error: Freezer profile not found.');
+    http_response_code(404);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Not found</title></head><body>'
+        . '<h1>Freezer not found</h1>'
+        . '<p>No profile matches this ID.</p>'
+        . '<p><a href="profiles.php">Back to Assets</a></p></body></html>';
+    exit;
 }
 
-// Every profile sticker must show Tag code (RO-…) + Unique Freezer ID
-$user = AuthService::currentUser();
-$assetTag = AssetTag::ensureForFreezer((int)$freezer['id'], isset($user['id']) ? (int)$user['id'] : null);
-$tagCode = $assetTag['tag_code'];
+// Block out-of-area print for scoped technicians
+AuthService::requireAreaAccess(
+    $freezer['store_zone'] ?? $freezer['zone'] ?? null,
+    $freezer['store_city'] ?? null,
+    'profiles.php'
+);
 
-$qrPath = $assetTag['qr_code_path'] ?? ($freezer['qr_code_path'] ?? null);
-if (!$qrPath || !file_exists(__DIR__ . '/' . $qrPath)) {
-    $gen = QRCodeService::generateAndSaveTag($tagCode);
-    $qrPath = $gen['file_path'] ?? null;
+// Sticker shows asset tag (RO-…) — create one if the profile has none yet
+$user = AuthService::currentUser();
+try {
+    $assetTag = AssetTag::ensureForFreezer((int)$freezer['id'], isset($user['id']) ? (int)$user['id'] : null);
+    $tagCode = (string)($assetTag['tag_code'] ?? '');
+    $qrPath = $assetTag['qr_code_path'] ?? ($freezer['qr_code_path'] ?? null);
+    if (!$qrPath || !is_file(__DIR__ . '/' . $qrPath)) {
+        $gen = QRCodeService::generateAndSaveTag($tagCode);
+        $qrPath = $gen['file_path'] ?? null;
+    }
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'qr_print.tag');
+    http_response_code(500);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>QR error</title></head><body>'
+        . '<h1>Could not prepare QR sticker</h1>'
+        . '<p>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</p>'
+        . '<p><a href="profile_view.php?id=' . (int)$freezer['id'] . '">Back to profile</a></p></body></html>';
+    exit;
 }
 ?>
 <!DOCTYPE html>

@@ -346,7 +346,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div>
             <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; opacity:0.85; margin-bottom:0.75rem;">ReeferON DF</div>
             <h1>Deep Freezer Asset Management</h1>
-            <p>Scan QR tags, register freezers, and complete KYC — built for cold-chain field teams.</p>
+            <p>Scan QR tags and register freezers — built for cold-chain field teams.</p>
         </div>
     </section>
 

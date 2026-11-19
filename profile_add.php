@@ -95,8 +95,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (empty($_FILES['image_store_front']['name'])) {
                 throw new Exception('Store Front photo is required for KYS store profile.');
             }
-            if (empty($_FILES['image_left_side']['name']) || empty($_FILES['image_right_side']['name'])) {
-                throw new Exception('Freezer Left and Right photos are required for asset verification.');
+            if (empty($_FILES['image_left_side']['name'])) {
+                throw new Exception('Freezer full photo is required for asset verification.');
+            }
+            $placedAt = trim((string)($_POST['freezer_placed_at'] ?? ''));
+            if ($placedAt === '' || !in_array($placedAt, Freezer::placementOptions(), true)) {
+                throw new Exception('Please select where the freezer is kept.');
             }
 
             // 1. Process uploads — filename: Tag-YYYYMMDD-StoreName-ImageType.ext
@@ -125,14 +129,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_left', $imgNameMeta);
+            $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'frz_full', $imgNameMeta);
             if (!$imgLeftResult['success']) {
-                throw new Exception('Left Side Image Error: ' . $imgLeftResult['error']);
-            }
-
-            $imgRightResult = FileUploadService::handleImageUpload($_FILES['image_right_side'], 'freezers', 'frz_right', $imgNameMeta);
-            if (!$imgRightResult['success']) {
-                throw new Exception('Right Side Image Error: ' . $imgRightResult['error']);
+                throw new Exception('Freezer full photo error: ' . $imgLeftResult['error']);
             }
 
             $imgIotResult = null;
@@ -170,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'location_type' => $_POST['location_type'] ?? 'Retail Store',
             ]);
             if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
-                throw new Exception('Zone/city is outside your assigned area.');
+                throw new Exception(AuthService::areaAccessDeniedMessage());
             }
             $_POST['city'] = $storePayload['city'];
             $_POST['zone'] = $storePayload['zone'];
@@ -222,15 +221,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'model_number' => $modelNumber,
                 'capacity_litres' => !empty($_POST['capacity_litres']) ? (int)$_POST['capacity_litres'] : null,
                 'freezer_condition' => $_POST['freezer_condition'] ?? 'WORKING CONDITION',
+                'freezer_placed_at' => trim((string)($_POST['freezer_placed_at'] ?? '')),
                 'location_code' => $locationCode,
                 'pincode' => $pincode,
                 'install_month_year' => $installMmYy,
                 'unit_sequence' => null,
                 'installation_date' => $installDate,
                 'image_left_side' => $imgLeftResult['path'],
-                'image_right_side' => $imgRightResult['path'],
+                'image_right_side' => null,
                 'image_iot_device' => $imgIotResult ? $imgIotResult['path'] : null,
                 'image_sim' => $imgSimResult ? $imgSimResult['path'] : null,
+                'image_sim_back' => null,
                 'sim_number' => trim((string)($_POST['sim_number'] ?? '')) ?: null,
                 'sim_company' => trim((string)($_POST['sim_company'] ?? '')) ?: null,
                 'status' => $_POST['freezer_status'] ?? 'Active',
@@ -315,21 +316,10 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 
 <div class="checkout-card onboard-card cfg-panel">
-    <nav class="onboard-steps cfg-steps" id="checkout-methods" aria-label="Form steps">
-        <button type="button" class="onboard-step checkout-method active" data-goto="1">
-            <span class="onboard-step-num">1</span>
-            <span class="onboard-step-label">Store</span>
-        </button>
-        <span class="onboard-step-divider" aria-hidden="true"></span>
-        <button type="button" class="onboard-step checkout-method" data-goto="2">
-            <span class="onboard-step-num">2</span>
-            <span class="onboard-step-label">Freezer</span>
-        </button>
-        <span class="onboard-step-divider" aria-hidden="true"></span>
-        <button type="button" class="onboard-step checkout-method" data-goto="3">
-            <span class="onboard-step-num">3</span>
-            <span class="onboard-step-label">Review</span>
-        </button>
+    <nav class="form-step-tabs" id="checkout-methods" aria-label="Form steps">
+        <button type="button" class="form-step-tab checkout-method active" data-goto="1" aria-current="step">1. Store</button>
+        <button type="button" class="form-step-tab checkout-method" data-goto="2">2. Freezer</button>
+        <button type="button" class="form-step-tab checkout-method" data-goto="3">3. Review</button>
     </nav>
 
 <form method="POST" action="" enctype="multipart/form-data" id="onboard-form" novalidate>
@@ -434,96 +424,106 @@ require_once __DIR__ . '/includes/header.php';
                     <span>Outlet identity · address · zone</span>
                 </legend>
 
-                <div class="form-grid" id="store-fields-grid">
-                    <div class="col-6 form-group">
-                        <label class="form-label required" for="store_name">Store / Outlet name</label>
-                        <input type="text" id="store_name" name="store_name" class="form-control" placeholder="e.g. Baskin Robbins - CG Road Hub" value="<?= htmlspecialchars($_POST['store_name'] ?? '') ?>" required>
-                        <div class="form-error">Store name is required.</div>
-                    </div>
-
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="outlet_id_preview">Outlet ID / Code</label>
-                        <input type="text" id="outlet_id_preview" class="form-control"
-                               value="Auto on save" readonly
-                               style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
-                    </div>
-
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="customer_name">Customer account</label>
-                        <select id="customer_name" name="customer_name" class="form-select">
+                <table class="form-table" id="store-fields-grid">
+                    <tr>
+                        <th><label class="form-label required" for="store_name">Store / Outlet name</label></th>
+                        <td>
+                            <input type="text" id="store_name" name="store_name" class="form-control" placeholder="e.g. Baskin Robbins - CG Road Hub" value="<?= htmlspecialchars($_POST['store_name'] ?? '') ?>" required>
+                            <span class="form-error">Store name is required.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="outlet_id_preview">Outlet ID / Code</label></th>
+                        <td>
+                            <input type="text" id="outlet_id_preview" class="form-control" value="Auto on save" readonly style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="customer_name">Customer account</label></th>
+                        <td>
+                            <select id="customer_name" name="customer_name" class="form-select">
+                                <?php
+                                $custVal = $_POST['customer_name'] ?? ($customers[0] ?? 'Baskin Robbins');
+                                foreach ($customers as $c): ?>
+                                    <option value="<?= htmlspecialchars($c) ?>" <?= $custVal === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="zone">Zone</label></th>
+                        <td>
                             <?php
-                            $custVal = $_POST['customer_name'] ?? ($customers[0] ?? 'Baskin Robbins');
-                            foreach ($customers as $c): ?>
-                                <option value="<?= htmlspecialchars($c) ?>" <?= $custVal === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="zone">Zone</label>
-                        <?php
-                        $zoneVal = $lockZone ? $areaScope['zone'] : ($_POST['zone'] ?? 'WEST');
-                        $addZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
-                        ?>
-                        <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
-                            <?php foreach ($addZones as $z): ?>
-                                <option value="<?= htmlspecialchars($z) ?>" <?= $zoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <?php if ($lockZone): ?>
-                            <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
-                        <?php endif; ?>
-                    </div>
-
-                    <div class="col-8 form-group">
-                        <label class="form-label required" for="city">City</label>
-                        <?php $cityVal = $lockCity ? $areaScope['city'] : ($_POST['city'] ?? ''); ?>
-                        <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($cityVal) ?>" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
-                        <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
-                    </div>
-
-                    <div class="col-12 form-group">
-                        <label class="form-label required" for="address">Street address</label>
-                        <input type="text" id="address" name="address" class="form-control" placeholder="Shop No, Building, Street, Area" value="<?= htmlspecialchars($_POST['address'] ?? '') ?>" required>
-                        <div class="form-error">Address is required.</div>
-                    </div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="pincode">PIN code</label>
-                        <input type="text" id="pincode" name="pincode" class="form-control" placeholder="6 digits" value="<?= htmlspecialchars($_POST['pincode'] ?? '') ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
-                        <div class="form-error">Enter a valid 6-digit PIN code.</div>
-                    </div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label" for="distributor_name">Distributor</label>
-                        <input type="text" id="distributor_name" name="distributor_name" class="form-control" placeholder="Distributor / dealer name" value="<?= htmlspecialchars($_POST['distributor_name'] ?? '') ?>">
-                    </div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label" for="location_type">Location type</label>
-                        <select id="location_type" name="location_type" class="form-select">
-                            <?php
-                            $locTypes = ['Retail Store', 'Commercial Store', 'Warehouse', 'Distributor Point', 'Mall Kiosk', 'Other'];
-                            $locVal = $_POST['location_type'] ?? 'Retail Store';
-                            foreach ($locTypes as $lt):
+                            $zoneVal = $lockZone ? $areaScope['zone'] : ($_POST['zone'] ?? 'WEST');
+                            $addZones = $lockZone ? [$areaScope['zone']] : AppConfig::zones();
                             ?>
-                                <option value="<?= htmlspecialchars($lt) ?>" <?= $locVal === $lt ? 'selected' : '' ?>><?= htmlspecialchars($lt) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="fssai_number">FSSAI number</label>
-                        <input type="text" id="fssai_number" name="fssai_number" class="form-control" placeholder="14-digit FSSAI licence" value="<?= htmlspecialchars($_POST['fssai_number'] ?? '') ?>" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off">
-                        <div class="form-error">Enter a valid 14-digit FSSAI number.</div>
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="gst_number">GST number</label>
-                        <input type="text" id="gst_number" name="gst_number" class="form-control" placeholder="15-character GSTIN" value="<?= htmlspecialchars($_POST['gst_number'] ?? '') ?>" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;">
-                        <div class="form-error">Enter a valid 15-character GSTIN.</div>
-                    </div>
-                </div>
+                            <select id="zone" name="zone" class="form-select" required <?= $lockZone ? 'disabled' : '' ?>>
+                                <?php foreach ($addZones as $z): ?>
+                                    <option value="<?= htmlspecialchars($z) ?>" <?= $zoneVal === $z ? 'selected' : '' ?>><?= htmlspecialchars($z) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <?php if ($lockZone): ?>
+                                <input type="hidden" name="zone" value="<?= htmlspecialchars($areaScope['zone']) ?>">
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="city">City</label></th>
+                        <td>
+                            <?php $cityVal = $lockCity ? $areaScope['city'] : ($_POST['city'] ?? ''); ?>
+                            <input type="text" id="city" name="city" class="form-control" placeholder="Select zone, then type city…" value="<?= htmlspecialchars($cityVal) ?>" required autocomplete="off" <?= $lockCity ? 'readonly' : '' ?>>
+                            <?php if (!$lockCity): ?><datalist id="city-list"></datalist><?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="address">Street address</label></th>
+                        <td>
+                            <input type="text" id="address" name="address" class="form-control" placeholder="Shop No, Building, Street, Area" value="<?= htmlspecialchars($_POST['address'] ?? '') ?>" required>
+                            <span class="form-error">Address is required.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="pincode">PIN code</label></th>
+                        <td>
+                            <input type="text" id="pincode" name="pincode" class="form-control" placeholder="6 digits" value="<?= htmlspecialchars($_POST['pincode'] ?? '') ?>" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" required>
+                            <span class="form-error">Enter a valid 6-digit PIN code.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="distributor_name">Distributor</label></th>
+                        <td>
+                            <input type="text" id="distributor_name" name="distributor_name" class="form-control" placeholder="Distributor / dealer name" value="<?= htmlspecialchars($_POST['distributor_name'] ?? '') ?>">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="location_type">Location type</label></th>
+                        <td>
+                            <select id="location_type" name="location_type" class="form-select">
+                                <?php
+                                $locTypes = ['Retail Store', 'Commercial Store', 'Warehouse', 'Distributor Point', 'Mall Kiosk', 'Other'];
+                                $locVal = $_POST['location_type'] ?? 'Retail Store';
+                                foreach ($locTypes as $lt):
+                                ?>
+                                    <option value="<?= htmlspecialchars($lt) ?>" <?= $locVal === $lt ? 'selected' : '' ?>><?= htmlspecialchars($lt) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="fssai_number">FSSAI number</label></th>
+                        <td>
+                            <input type="text" id="fssai_number" name="fssai_number" class="form-control" placeholder="14-digit FSSAI licence" value="<?= htmlspecialchars($_POST['fssai_number'] ?? '') ?>" maxlength="14" inputmode="numeric" pattern="[0-9]{14}" title="Exactly 14 digits" autocomplete="off">
+                            <span class="form-error">Enter a valid 14-digit FSSAI number.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="gst_number">GST number</label></th>
+                        <td>
+                            <input type="text" id="gst_number" name="gst_number" class="form-control" placeholder="15-character GSTIN" value="<?= htmlspecialchars($_POST['gst_number'] ?? '') ?>" maxlength="15" pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" title="Valid 15-character GSTIN" autocomplete="off" style="text-transform: uppercase;">
+                            <span class="form-error">Enter a valid 15-character GSTIN.</span>
+                        </td>
+                    </tr>
+                </table>
             </fieldset>
 
             <!-- Sub: Store operator -->
@@ -533,50 +533,56 @@ require_once __DIR__ . '/includes/header.php';
                     <span>Name, phone, email ID &amp; Aadhaar</span>
                 </legend>
 
-                <div class="form-grid">
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="contact_person">Store operator name</label>
-                        <input type="text" id="contact_person" name="contact_person" class="form-control" placeholder="Operator / manager name" value="<?= htmlspecialchars($_POST['contact_person'] ?? '') ?>">
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="phone_number">Operator phone / mobile</label>
-                        <div class="phone-input-group">
-                            <span class="phone-prefix" aria-hidden="true">+91</span>
-                            <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars(preg_replace('/\D/', '', substr((string)($_POST['phone_number'] ?? ''), -10))) ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
-                        </div>
-                        <div class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</div>
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="email">Store operator email ID</label>
-                        <input type="email" id="email" name="email" class="form-control" placeholder="operator@example.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>" autocomplete="email">
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="aadhar_number">Store operator Aadhaar number</label>
-                        <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" placeholder="12-digit Aadhaar" value="<?= htmlspecialchars($_POST['aadhar_number'] ?? '') ?>" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
-                        <div class="form-error">Enter a valid 12-digit Aadhaar number.</div>
-                    </div>
-
-                    <div class="col-12 form-group">
-                        <label class="form-label">Store manager Aadhaar photos</label>
-                        <div class="photo-upload-grid" style="grid-template-columns: repeat(2, minmax(0, 320px)); gap: 0.85rem;">
-                            <div class="upload-box">
-                                <input type="file" name="image_aadhar_card" id="image_aadhar_card" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-card">
-                                <div class="upload-title">Aadhaar front</div>
-                                <div class="upload-hint">Optional · date-time stamp only</div>
-                                <div class="upload-preview-container" id="preview-aadhar-card"></div>
+                <table class="form-table">
+                    <tr>
+                        <th><label class="form-label" for="contact_person">Store operator name</label></th>
+                        <td>
+                            <input type="text" id="contact_person" name="contact_person" class="form-control" placeholder="Operator / manager name" value="<?= htmlspecialchars($_POST['contact_person'] ?? '') ?>">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="phone_number">Operator phone / mobile</label></th>
+                        <td class="phone-cell">
+                            <span class="phone-input-group">
+                                <span class="phone-prefix" aria-hidden="true">+91</span>
+                                <input type="tel" id="phone_number" name="phone_number" class="form-control" placeholder="10-digit mobile" value="<?= htmlspecialchars(preg_replace('/\D/', '', substr((string)($_POST['phone_number'] ?? ''), -10))) ?>" maxlength="10" inputmode="numeric" title="10-digit Indian mobile (starts with 6–9)" autocomplete="tel-national">
+                            </span>
+                            <span class="form-error">Enter a valid 10-digit mobile starting with 6, 7, 8 or 9.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="email">Store operator email ID</label></th>
+                        <td>
+                            <input type="email" id="email" name="email" class="form-control" placeholder="operator@example.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>" autocomplete="email">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="aadhar_number">Store operator Aadhaar number</label></th>
+                        <td>
+                            <input type="text" id="aadhar_number" name="aadhar_number" class="form-control" placeholder="12-digit Aadhaar" value="<?= htmlspecialchars($_POST['aadhar_number'] ?? '') ?>" maxlength="12" inputmode="numeric" pattern="[0-9]{12}" title="Exactly 12 digits" autocomplete="off">
+                            <span class="form-error">Enter a valid 12-digit Aadhaar number.</span>
+                        </td>
+                    </tr>
+                    <tr class="form-row-photos">
+                        <th><span class="form-label">Store manager Aadhaar photos</span></th>
+                        <td>
+                            <div class="photo-upload-grid photo-upload-grid-2">
+                                <label class="upload-box">
+                                    <input type="file" name="image_aadhar_card" id="image_aadhar_card" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-card">
+                                    <span class="upload-title">Aadhaar front</span>
+                                    <span class="upload-hint">Optional · date-time stamp only</span>
+                                    <span class="upload-preview-container" id="preview-aadhar-card"></span>
+                                </label>
+                                <label class="upload-box">
+                                    <input type="file" name="image_aadhar_back" id="image_aadhar_back" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-back">
+                                    <span class="upload-title">Aadhaar back</span>
+                                    <span class="upload-hint">Optional · date-time stamp only</span>
+                                    <span class="upload-preview-container" id="preview-aadhar-back"></span>
+                                </label>
                             </div>
-                            <div class="upload-box">
-                                <input type="file" name="image_aadhar_back" id="image_aadhar_back" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-aadhar-back">
-                                <div class="upload-title">Aadhaar back</div>
-                                <div class="upload-hint">Optional · date-time stamp only</div>
-                                <div class="upload-preview-container" id="preview-aadhar-back"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                        </td>
+                    </tr>
+                </table>
             </fieldset>
         </div>
     </div>
@@ -592,38 +598,44 @@ require_once __DIR__ . '/includes/header.php';
             <fieldset class="form-subsection">
                 <legend>
                     Freezer Photos
-                    <span>Left &amp; right side · required for verification</span>
+                    <span>Full freezer photo · required for verification</span>
                 </legend>
 
-                <div class="photo-upload-grid photo-upload-grid-2" style="margin-bottom: 0;">
-                    <div class="upload-box" id="dropzone-left">
-                        <input type="file" name="image_left_side" id="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-left" required>
-                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                            <circle cx="12" cy="13" r="4"/>
-                        </svg>
-                        <div class="upload-title">Freezer Left *</div>
-                        <div class="upload-hint">Required · date-time stamp only</div>
-                        <div class="upload-preview-container" id="preview-left">
-                            <img src="" alt="Left Side Preview">
-                            <span class="preview-badge">Left</span>
-                        </div>
-                    </div>
-
-                    <div class="upload-box" id="dropzone-right">
-                        <input type="file" name="image_right_side" id="image_right_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-right" required>
-                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                            <circle cx="12" cy="13" r="4"/>
-                        </svg>
-                        <div class="upload-title">Freezer Right *</div>
-                        <div class="upload-hint">Required · date-time stamp only</div>
-                        <div class="upload-preview-container" id="preview-right">
-                            <img src="" alt="Right Side Preview">
-                            <span class="preview-badge">Right</span>
-                        </div>
-                    </div>
-                </div>
+                <table class="form-table" style="margin-bottom: 1rem;">
+                    <tr>
+                        <th><label class="form-label required" for="freezer_placed_at">Where is the freezer kept?</label></th>
+                        <td>
+                            <select id="freezer_placed_at" name="freezer_placed_at" class="form-select" required>
+                                <option value="">Select placement…</option>
+                                <?php
+                                $placeVal = (string)($_POST['freezer_placed_at'] ?? '');
+                                foreach (Freezer::placementOptions() as $opt):
+                                ?>
+                                    <option value="<?= htmlspecialchars($opt) ?>" <?= $placeVal === $opt ? 'selected' : '' ?>><?= htmlspecialchars($opt) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <span class="form-error">Please select where the freezer is kept.</span>
+                        </td>
+                    </tr>
+                    <tr class="form-row-photos">
+                        <th><span class="form-label required">Freezer full photo</span></th>
+                        <td>
+                            <label class="upload-box" id="dropzone-freezer-full">
+                                <input type="file" name="image_left_side" id="image_left_side" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-freezer-full" required>
+                                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                                    <circle cx="12" cy="13" r="4"/>
+                                </svg>
+                                <span class="upload-title">Freezer full photo *</span>
+                                <span class="upload-hint">Required · whole freezer in frame</span>
+                                <span class="upload-preview-container" id="preview-freezer-full">
+                                    <img src="" alt="Freezer Full Preview">
+                                    <span class="preview-badge">Full</span>
+                                </span>
+                            </label>
+                        </td>
+                    </tr>
+                </table>
             </fieldset>
 
             <!-- Sub: Freezer specs -->
@@ -633,80 +645,88 @@ require_once __DIR__ . '/includes/header.php';
                     <span>Type / brand / model · builds Unique ID + QR</span>
                 </legend>
 
-                <div class="form-grid">
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="freezer_type">Freezer type</label>
-                        <select id="freezer_type" name="freezer_type" class="form-select" required>
-                            <?php foreach ($freezerTypes as $ft): ?>
-                                <option value="<?= htmlspecialchars($ft['code']) ?>" <?= (($_POST['freezer_type'] ?? 'DF') === $ft['code']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-</div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="company_code">Brand / company</label>
-                        <select id="company_code" name="company_code" class="form-select" required>
-                            <?php foreach ($brands as $b): ?>
-                                <option value="<?= htmlspecialchars($b['code']) ?>" <?= (($_POST['company_code'] ?? 'RW') === $b['code']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-</div>
-
-                    <div class="col-4 form-group">
-                        <label class="form-label required" for="model_number">Model number</label>
-                        <input type="text" id="model_number" name="model_number" class="form-control" placeholder="e.g. SFR550DDU" value="<?= htmlspecialchars($_POST['model_number'] ?? '') ?>" required maxlength="32" autocomplete="off">
-                        <div class="form-error">Model number is required.</div>
-</div>
-
-                <div class="col-3 form-group">
-                    <label class="form-label" for="location_code">Location code</label>
-                    <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
-                           value="<?= htmlspecialchars(strtoupper(trim((string)($_POST['location_code'] ?? '')))) ?>"
-                           placeholder="Auto from city"
-                           readonly tabindex="-1" autocomplete="off">
-                </div>
-
-                    <div class="col-3 form-group">
-                        <label class="form-label required" for="installation_date">Installation date</label>
-                        <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($_POST['installation_date'] ?? '') ?>" required>
-                        <div class="form-error">Installation date is required.</div>
-</div>
-
-                    <div class="col-3 form-group">
-                        <label class="form-label" for="capacity_litres">Capacity (litres)</label>
-                        <select id="capacity_litres" name="capacity_litres" class="form-select">
-                            <option value="">Select capacity</option>
-                            <?php
-                            $capSel = (string)($_POST['capacity_litres'] ?? '550');
-                            foreach ($capacities as $cap):
-                            ?>
-                                <option value="<?= (int)$cap ?>" <?= $capSel === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="freezer_condition">Freezer condition</label>
-                        <select id="freezer_condition" name="freezer_condition" class="form-select">
-                            <?php foreach ($conditions as $cond): ?>
-                                <option value="<?= htmlspecialchars($cond) ?>" <?= (($_POST['freezer_condition'] ?? 'WORKING CONDITION') === $cond) ? 'selected' : '' ?>><?= htmlspecialchars($cond) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="freezer_status">Operational status</label>
-                        <select id="freezer_status" name="freezer_status" class="form-select">
-                            <option value="Active" selected>Active (Online in RaaS)</option>
-                            <option value="Maintenance">Maintenance Mode</option>
-                            <option value="Under Inspection">Under Inspection</option>
-                        </select>
-                    </div>
-                </div>
+                <table class="form-table">
+                    <tr>
+                        <th><label class="form-label required" for="freezer_type">Freezer type</label></th>
+                        <td>
+                            <select id="freezer_type" name="freezer_type" class="form-select" required>
+                                <?php foreach ($freezerTypes as $ft): ?>
+                                    <option value="<?= htmlspecialchars($ft['code']) ?>" <?= (($_POST['freezer_type'] ?? 'DF') === $ft['code']) ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($ft['name']) ?> (<?= htmlspecialchars($ft['code']) ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="company_code">Brand / company</label></th>
+                        <td>
+                            <select id="company_code" name="company_code" class="form-select" required>
+                                <?php foreach ($brands as $b): ?>
+                                    <option value="<?= htmlspecialchars($b['code']) ?>" <?= (($_POST['company_code'] ?? 'RW') === $b['code']) ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($b['name']) ?> (<?= htmlspecialchars($b['code']) ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="model_number">Model number</label></th>
+                        <td>
+                            <input type="text" id="model_number" name="model_number" class="form-control" placeholder="e.g. SFR550DDU" value="<?= htmlspecialchars($_POST['model_number'] ?? '') ?>" required maxlength="32" autocomplete="off">
+                            <span class="form-error">Model number is required.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="location_code">Location code</label></th>
+                        <td>
+                            <input type="text" id="location_code" name="location_code" class="form-control form-control-display"
+                                   value="<?= htmlspecialchars(strtoupper(trim((string)($_POST['location_code'] ?? '')))) ?>"
+                                   placeholder="Auto from city" readonly tabindex="-1" autocomplete="off">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label required" for="installation_date">Installation date</label></th>
+                        <td>
+                            <input type="date" id="installation_date" name="installation_date" class="form-control" value="<?= htmlspecialchars($_POST['installation_date'] ?? '') ?>" required>
+                            <span class="form-error">Installation date is required.</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="capacity_litres">Capacity (litres)</label></th>
+                        <td>
+                            <select id="capacity_litres" name="capacity_litres" class="form-select">
+                                <option value="">Select capacity</option>
+                                <?php
+                                $capSel = (string)($_POST['capacity_litres'] ?? '550');
+                                foreach ($capacities as $cap):
+                                ?>
+                                    <option value="<?= (int)$cap ?>" <?= $capSel === (string)$cap ? 'selected' : '' ?>><?= (int)$cap ?> litres</option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="freezer_condition">Freezer condition</label></th>
+                        <td>
+                            <select id="freezer_condition" name="freezer_condition" class="form-select">
+                                <?php foreach ($conditions as $cond): ?>
+                                    <option value="<?= htmlspecialchars($cond) ?>" <?= (($_POST['freezer_condition'] ?? 'WORKING CONDITION') === $cond) ? 'selected' : '' ?>><?= htmlspecialchars($cond) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="freezer_status">Operational status</label></th>
+                        <td>
+                            <select id="freezer_status" name="freezer_status" class="form-select">
+                                <option value="Active" selected>Active (Online in RaaS)</option>
+                                <option value="Maintenance">Maintenance Mode</option>
+                                <option value="Under Inspection">Under Inspection</option>
+                            </select>
+                        </td>
+                    </tr>
+                </table>
             </fieldset>
         </div>
     </div>
@@ -761,95 +781,105 @@ require_once __DIR__ . '/includes/header.php';
             </div>
 
             <p class="photo-step-sub">Device details</p>
-            <div class="form-grid">
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_serial">IoT Device Serial / Asset Tag</label>
-                    <input type="text" id="iot_serial" name="iot_serial" class="form-control" placeholder="RF-IOT-99215" value="RF-IOT-<?= rand(10000, 99999) ?>">
-                </div>
-
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_imei">Device IMEI / MAC</label>
-                    <input type="text" id="iot_imei" name="iot_imei" class="form-control" placeholder="864201048291050" value="86420104829<?= rand(1000, 9999) ?>">
-                </div>
-
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_sim_number">SIM Number</label>
-                    <input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" value="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>">
-                </div>
-
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_sim_company">SIM Company</label>
-                    <select id="iot_sim_company" name="iot_sim_company" class="form-select">
-                        <option value="">Select operator</option>
-                        <option value="Jio">Jio</option>
-                        <option value="Airtel" selected>Airtel</option>
-                        <option value="VI">VI</option>
-                        <option value="BSNL">BSNL</option>
-                        <option value="Other">Other</option>
-                    </select>
-                </div>
-
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_type">IoT Device Type</label>
-                    <select id="iot_type" name="iot_type" class="form-select">
-                        <option value="Temperature & GPS" selected>Temperature & GPS (Standard)</option>
-                        <option value="Temperature Only">Temperature Only</option>
-                        <option value="GPU & Compressor Status">GPU & Compressor Status</option>
-                        <option value="Door & Power Monitor">Door & Power Monitor</option>
-                    </select>
-                </div>
-
-                <div class="col-4 form-group">
-                    <label class="form-label" for="iot_owner">Hardware Ownership</label>
-                    <select id="iot_owner" name="iot_owner" class="form-select">
-                        <option value="ReeferON Own Device" selected>ReeferON Own Device</option>
-                        <option value="Outsourced Device">Outsourced OEM Device</option>
-                    </select>
-                </div>
-            </div>
+            <table class="form-table">
+                <tr>
+                    <th><label class="form-label" for="iot_serial">IoT Device Serial / Asset Tag</label></th>
+                    <td><input type="text" id="iot_serial" name="iot_serial" class="form-control" placeholder="RF-IOT-99215" value="RF-IOT-<?= rand(10000, 99999) ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_imei">Device IMEI / MAC</label></th>
+                    <td><input type="text" id="iot_imei" name="iot_imei" class="form-control" placeholder="864201048291050" value="86420104829<?= rand(1000, 9999) ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_sim_number">SIM Number</label></th>
+                    <td><input type="text" id="iot_sim_number" name="iot_sim_number" class="form-control" placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" value="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>"></td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_sim_company">SIM Company</label></th>
+                    <td>
+                        <select id="iot_sim_company" name="iot_sim_company" class="form-select">
+                            <option value="">Select operator</option>
+                            <option value="Jio">Jio</option>
+                            <option value="Airtel" selected>Airtel</option>
+                            <option value="VI">VI</option>
+                            <option value="BSNL">BSNL</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_type">IoT Device Type</label></th>
+                    <td>
+                        <select id="iot_type" name="iot_type" class="form-select">
+                            <option value="Temperature & GPS" selected>Temperature & GPS (Standard)</option>
+                            <option value="Temperature Only">Temperature Only</option>
+                            <option value="GPU & Compressor Status">GPU & Compressor Status</option>
+                            <option value="Door & Power Monitor">Door & Power Monitor</option>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label class="form-label" for="iot_owner">Hardware Ownership</label></th>
+                    <td>
+                        <select id="iot_owner" name="iot_owner" class="form-select">
+                            <option value="ReeferON Own Device" selected>ReeferON Own Device</option>
+                            <option value="Outsourced Device">Outsourced OEM Device</option>
+                        </select>
+                    </td>
+                </tr>
+            </table>
             <?php endif; ?>
 
             <fieldset class="form-subsection">
                 <legend>
                     SIM Installation
-                    <span>Number + photo of SIM / ICCID</span>
+                    <span>Number + one photo of SIM / ICCID</span>
                 </legend>
-                <div class="form-grid" style="margin-bottom:0;">
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="sim_number">SIM number</label>
-                        <input type="text" id="sim_number" name="sim_number" class="form-control"
-                               placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
-                               value="<?= htmlspecialchars($_POST['sim_number'] ?? AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
-                    </div>
-                    <div class="col-6 form-group">
-                        <label class="form-label" for="sim_company">SIM company</label>
-                        <select id="sim_company" name="sim_company" class="form-select">
-                            <?php
-                            $simCo = $_POST['sim_company'] ?? AppConfig::DEFAULT_SIM_COMPANY;
-                            foreach (['' => 'Select operator', 'Jio' => 'Jio', 'Airtel' => 'Airtel', 'VI' => 'VI', 'BSNL' => 'BSNL', 'Other' => 'Other'] as $val => $label):
-                            ?>
-                                <option value="<?= htmlspecialchars($val) ?>" <?= $simCo === $val ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="col-12 form-group">
-                        <label class="form-label" for="image_sim">SIM number photo</label>
-                        <div class="upload-box" id="dropzone-sim">
-                            <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-sim">
-                            <div class="upload-icon">📷</div>
-                            <div class="upload-title">SIM / ICCID photo</div>
-                            <div class="upload-hint">Camera · Date stamp · Clear SIM number</div>
-                            <div class="upload-preview-container" id="preview-sim">
-                                <img src="" alt="SIM Preview">
-                                <span class="preview-badge">SIM</span>
+                <table class="form-table" style="margin-bottom:0;">
+                    <tr>
+                        <th><label class="form-label" for="sim_number">SIM number</label></th>
+                        <td>
+                            <input type="text" id="sim_number" name="sim_number" class="form-control"
+                                   placeholder="<?= htmlspecialchars(AppConfig::DEFAULT_SIM_NUMBER) ?>" maxlength="40"
+                                   value="<?= htmlspecialchars($_POST['sim_number'] ?? AppConfig::DEFAULT_SIM_NUMBER) ?>" inputmode="numeric">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="sim_company">SIM company</label></th>
+                        <td>
+                            <select id="sim_company" name="sim_company" class="form-select">
+                                <?php
+                                $simCo = $_POST['sim_company'] ?? AppConfig::DEFAULT_SIM_COMPANY;
+                                foreach (['' => 'Select operator', 'Jio' => 'Jio', 'Airtel' => 'Airtel', 'VI' => 'VI', 'BSNL' => 'BSNL', 'Other' => 'Other'] as $val => $label):
+                                ?>
+                                    <option value="<?= htmlspecialchars($val) ?>" <?= $simCo === $val ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr class="form-row-photos">
+                        <th><span class="form-label">SIM photo</span></th>
+                        <td>
+                            <div class="photo-upload-grid photo-upload-grid-2">
+                                <label class="upload-box" id="dropzone-sim">
+                                    <input type="file" name="image_sim" id="image_sim" class="upload-input" accept="image/*" capture="environment" data-preview-target="preview-sim">
+                                    <span class="upload-icon">📷</span>
+                                    <span class="upload-title">SIM photo</span>
+                                    <span class="upload-hint">Camera · Clear SIM number</span>
+                                    <span class="upload-preview-container" id="preview-sim">
+                                        <img src="" alt="SIM Preview">
+                                    </span>
+                                </label>
                             </div>
-                        </div>
-                    </div>
-                    <div class="col-12 form-group">
-                        <label class="form-label" for="notes">Remark</label>
-                        <input type="text" id="notes" name="notes" class="form-control" placeholder="Installation observations, plug location, target temp…" value="<?= htmlspecialchars($_POST['notes'] ?? '') ?>">
-                    </div>
-                </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label class="form-label" for="notes">Remark</label></th>
+                        <td>
+                            <input type="text" id="notes" name="notes" class="form-control" placeholder="Installation observations, plug location, target temp…" value="<?= htmlspecialchars($_POST['notes'] ?? '') ?>">
+                        </td>
+                    </tr>
+                </table>
             </fieldset>
         </div>
     </div>
@@ -868,15 +898,11 @@ require_once __DIR__ . '/includes/header.php';
     </div><!-- /checkout-body -->
 
     <div class="checkout-footer onboard-footer">
-        <button type="button" class="btn btn-checkout" id="checkout-next-btn">
-            Continue
-        </button>
-        <button type="submit" class="btn btn-checkout" id="checkout-submit-btn" style="display:none;">
-            Save &amp; link to QR
-        </button>
+        <button type="button" class="btn btn-checkout" id="checkout-next-btn">Continue to Freezer</button>
+        <button type="submit" class="btn btn-checkout" id="checkout-submit-btn" hidden>Save &amp; link to QR</button>
         <div class="checkout-nav-row">
-            <button type="button" class="btn btn-secondary" id="checkout-back-btn" style="flex:1; display:none;">Back</button>
-            <a href="qr_scanner.php" class="btn btn-outline" style="flex:1; justify-content:center;">Cancel</a>
+            <button type="button" class="btn btn-secondary" id="checkout-back-btn" hidden>Back</button>
+            <a href="qr_scanner.php" class="btn btn-outline">Cancel</a>
         </div>
     </div>
 </form>
@@ -899,7 +925,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function setFieldError(el, on) {
         if (!el) return;
-        const group = el.closest('.form-group');
+        const group = el.closest('tr, .form-group');
         el.classList.toggle('is-invalid', on);
         if (group) group.classList.toggle('has-error', on);
     }
@@ -990,13 +1016,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         if (n === 2) {
-            const leftOk = hasFile('image_left_side');
-            const rightOk = hasFile('image_right_side');
-            const leftBox = document.getElementById('dropzone-left');
-            const rightBox = document.getElementById('dropzone-right');
-            if (leftBox) leftBox.classList.toggle('is-invalid', !leftOk);
-            if (rightBox) rightBox.classList.toggle('is-invalid', !rightOk);
-            if (!leftOk || !rightOk) ok = false;
+            const placed = document.getElementById('freezer_placed_at');
+            if (placed) {
+                const placedBad = !placed.value.trim();
+                setFieldError(placed, placedBad);
+                if (placedBad) ok = false;
+            }
+
+            const fullOk = hasFile('image_left_side');
+            const fullBox = document.getElementById('dropzone-freezer-full');
+            if (fullBox) fullBox.classList.toggle('is-invalid', !fullOk);
+            if (!fullOk) ok = false;
 
             const model = document.getElementById('model_number');
             const date = document.getElementById('installation_date');
@@ -1013,19 +1043,33 @@ document.addEventListener('DOMContentLoaded', function() {
     function goStep(n) {
         step = Math.max(1, Math.min(maxStep, n));
         steps.forEach(s => s.classList.toggle('active', Number(s.dataset.step) === step));
-        methods.forEach(m => m.classList.toggle('active', Number(m.dataset.goto) === step));
-        backBtn.style.display = step > 1 ? 'inline-flex' : 'none';
-        nextBtn.style.display = step < maxStep ? 'inline-flex' : 'none';
-        submitBtn.style.display = step === maxStep ? 'inline-flex' : 'none';
+        methods.forEach(m => {
+            const goto = Number(m.dataset.goto);
+            const isActive = goto === step;
+            m.classList.toggle('active', isActive);
+            m.classList.toggle('is-done', goto < step);
+            if (isActive) m.setAttribute('aria-current', 'step');
+            else m.removeAttribute('aria-current');
+        });
+        if (backBtn) backBtn.hidden = step <= 1;
         if (nextBtn) {
-            nextBtn.textContent = step === 1 ? 'Continue to Freezer' : (step === 2 ? 'Continue to Review' : 'Continue');
+            nextBtn.hidden = step >= maxStep;
+            nextBtn.textContent = step === 1 ? 'Continue to Freezer' : 'Continue to Review';
         }
+        if (submitBtn) submitBtn.hidden = step !== maxStep;
         if (step === 3) updateSummary();
+        try {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        } catch (e) {
+            window.scrollTo(0, 0);
+        }
     }
 
-    // Tabs: free jump to Store Info / Freezer Info / Review & QR
     methods.forEach(m => m.addEventListener('click', () => {
-        goStep(Number(m.dataset.goto));
+        const target = Number(m.dataset.goto);
+        if (!target || target === step) return;
+        // Tabs: free move between Store / Freezer / Review
+        goStep(target);
     }));
 
     nextBtn.addEventListener('click', () => {
@@ -1037,16 +1081,10 @@ document.addEventListener('DOMContentLoaded', function() {
         goStep(step + 1);
     });
     backBtn.addEventListener('click', () => goStep(step - 1));
+    goStep(1);
 
-    window.goCheckoutStep = function (n, skipValidate) {
-        if (skipValidate || Number(n) === step) {
-            goStep(Number(n));
-            return;
-        }
-        // Programmatic forward still validates current step; tabs use goStep directly
-        if (Number(n) < step || validateStep(step)) {
-            goStep(Number(n));
-        }
+    window.goCheckoutStep = function (n) {
+        goStep(Number(n));
     };
 
     document.getElementById('onboard-form').addEventListener('submit', function (e) {
@@ -1069,7 +1107,7 @@ document.addEventListener('DOMContentLoaded', function() {
         el.addEventListener('change', () => setFieldError(el, false));
     });
 
-    ['image_left_side', 'image_right_side', 'image_store_front', 'image_aadhar_card', 'image_aadhar_back', 'image_sim'].forEach(id => {
+    ['image_left_side', 'image_store_front', 'image_aadhar_card', 'image_aadhar_back', 'image_sim'].forEach(id => {
         const input = document.getElementById(id);
         if (!input) return;
         input.addEventListener('change', () => {

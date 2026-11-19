@@ -7,12 +7,12 @@ use PDO;
 
 /**
  * Freezer can move between stores (same owner / other outlet).
- * Unique Freezer ID stays fixed. KYC required every 6 months per store.
+ * Unique Freezer ID stays fixed. AMC required every 12 months per store.
  */
 class FreezerLifecycle {
 
-    /** Months between KYC visits for the same store. */
-    public const KYC_GAP_MONTHS = 6;
+    /** Months between AMC service visits for the same store. */
+    public const KYC_GAP_MONTHS = 12; // AMC annual cycle
 
     /** Upgrade verified_at from DATE to DATETIME so submit time is stored. */
     public static function ensureKycVerifiedAtDateTime(): void {
@@ -49,7 +49,7 @@ class FreezerLifecycle {
 
     /**
      * Anchor for the 6-month clock:
-     * last KYC at store if any, otherwise installation date.
+     * last AMC at store if any, otherwise installation date.
      */
     public static function kycAnchorDate(?string $lastVerifiedAt, ?string $installationDate = null): ?string {
         if ($lastVerifiedAt !== null && trim($lastVerifiedAt) !== '') {
@@ -71,8 +71,8 @@ class FreezerLifecycle {
     }
 
     /**
-     * Due when last KYC (or installation if never KYC'd) + 6 months has passed.
-     * First KYC window starts from installation date.
+     * Due when last AMC (or installation if never AMC'd) + 6 months has passed.
+     * First AMC window starts from installation date.
      */
     public static function isKycDue(?string $lastVerifiedAt, ?string $asOf = null, ?string $installationDate = null): bool {
         $anchor = self::kycAnchorDate($lastVerifiedAt, $installationDate);
@@ -122,7 +122,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * Create a brand-new outlet (auto outlet_id) then optionally use it for transfer/KYC.
+     * Create a brand-new outlet (auto outlet_id) then optionally use it for transfer/AMC.
      * Returns ['store_id' => int, 'outlet_id' => string].
      */
     public static function createNewOutlet(array $data, int $createdBy): array {
@@ -272,7 +272,7 @@ class FreezerLifecycle {
         $year = (int)($data['cycle_year'] ?? $cycle['year']);
         $half = (int)($data['cycle_half'] ?? $cycle['half']);
         if ($half !== 1 && $half !== 2) {
-            throw new Exception('KYC cycle half must be 1 (Jan–Jun) or 2 (Jul–Dec).');
+            throw new Exception('AMC cycle half must be 1 (Jan–Jun) or 2 (Jul–Dec).');
         }
 
         $result = strtoupper(trim($data['result'] ?? 'PASS'));
@@ -283,7 +283,7 @@ class FreezerLifecycle {
         $pdo = Database::getConnection();
         $storeId = (int)$freezer['store_id'];
 
-        // One KYC per store every 6 months (same freezer at this outlet)
+        // One AMC per store every 6 months (same freezer at this outlet)
         $lastAtStore = $pdo->prepare("SELECT `id`, `verified_at` FROM `kyc_verifications`
             WHERE `freezer_id` = :fid AND `store_id` = :sid
             ORDER BY `verified_at` DESC, `id` DESC LIMIT 1");
@@ -292,7 +292,7 @@ class FreezerLifecycle {
         if ($prev && !self::isKycDue((string)$prev['verified_at'], $verifiedAt)) {
             $nextDue = self::nextKycDueDate((string)$prev['verified_at']);
             throw new Exception(
-                'KYC already done for this store on ' . $prev['verified_at']
+                'AMC already done for this store on ' . $prev['verified_at']
                 . '. Next due after ' . self::KYC_GAP_MONTHS . ' months'
                 . ($nextDue ? " (from {$nextDue})" : '') . '.'
             );
@@ -303,7 +303,7 @@ class FreezerLifecycle {
             WHERE `freezer_id` = :fid AND `cycle_year` = :y AND `cycle_half` = :h LIMIT 1");
         $existing->execute(['fid' => $freezerId, 'y' => $year, 'h' => $half]);
         if ($existing->fetch()) {
-            throw new Exception("KYC for {$year}-H{$half} already recorded. Next visit after " . self::KYC_GAP_MONTHS . " months.");
+            throw new Exception("AMC for {$year}-H{$half} already recorded. Next visit after " . self::KYC_GAP_MONTHS . " months.");
         }
 
         $stmt = $pdo->prepare("INSERT INTO `kyc_verifications`
@@ -332,18 +332,18 @@ class FreezerLifecycle {
             'KYC_VERIFY',
             $freezerId,
             $freezer['unique_freezer_id'],
-            "KYC {$year}-H{$half} = {$result} at store #{$freezer['store_id']}"
+            "AMC {$year}-H{$half} = {$result} at store #{$freezer['store_id']}"
         );
         return $id;
     }
 
     /**
-     * Delete a KYC verification row (toast undo). Only removes that id.
+     * Delete a AMC verification row (toast undo). Only removes that id.
      * @return array{success:bool,error?:string,freezer_id?:int,unique_freezer_id?:string}
      */
     public static function deleteKycVerification(int $kycId): array {
         if ($kycId <= 0) {
-            return ['success' => false, 'error' => 'Invalid KYC id.'];
+            return ['success' => false, 'error' => 'Invalid AMC id.'];
         }
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare("SELECT k.*, f.unique_freezer_id
@@ -353,7 +353,7 @@ class FreezerLifecycle {
         $stmt->execute(['id' => $kycId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
-            return ['success' => false, 'error' => 'KYC record already removed.'];
+            return ['success' => false, 'error' => 'AMC record already removed.'];
         }
         $del = $pdo->prepare("DELETE FROM `kyc_verifications` WHERE `id` = :id LIMIT 1");
         $del->execute(['id' => $kycId]);
@@ -363,7 +363,7 @@ class FreezerLifecycle {
             'UNDO_KYC',
             $freezerId > 0 ? $freezerId : null,
             $uid !== '' ? $uid : null,
-            'KYC verification #' . $kycId . ' undone'
+            'AMC verification #' . $kycId . ' undone'
         );
         return [
             'success' => true,
@@ -391,7 +391,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * Combined timeline: placements + KYC (newest first) — where freezer was, when, new outlets.
+     * Combined timeline: placements + AMC (newest first) — where freezer was, when, new outlets.
      */
     public static function buildTimeline(int $freezerId): array {
         $events = [];
@@ -451,7 +451,7 @@ class FreezerLifecycle {
                 'sort_key' => $k['verified_at'] . '-K' . str_pad((string)$k['id'], 8, '0', STR_PAD_LEFT),
                 'date' => $k['verified_at'],
                 'end_date' => null,
-                'title' => 'KYC ' . $k['cycle_year'] . '-H' . $k['cycle_half'],
+                'title' => 'AMC ' . $k['cycle_year'] . '-H' . $k['cycle_half'],
                 'outlet_id' => $k['outlet_id'],
                 'store_name' => $k['store_name'],
                 'city' => $k['city'] ?? '',
@@ -476,7 +476,7 @@ class FreezerLifecycle {
 
     /**
      * Single activity log for History tab / export:
-     * Installation, Store move, KYC — Same store, KYC — New store.
+     * Installation, Store move, AMC — Same store, AMC — New store.
      * Newest first.
      *
      * @return list<array{
@@ -503,7 +503,7 @@ class FreezerLifecycle {
                 || stripos((string)($p['notes'] ?? ''), 'new outlet_id=') !== false
                 || stripos((string)($p['transfer_reason'] ?? ''), 'auto ID') !== false
                 || stripos((string)($p['transfer_reason'] ?? ''), 'moved') !== false
-                || stripos((string)($p['transfer_reason'] ?? ''), 'KYC') !== false;
+                || stripos((string)($p['transfer_reason'] ?? ''), 'AMC') !== false;
             if ($idx > 0 || $isNewOutlet) {
                 $d = substr((string)($p['started_at'] ?? ''), 0, 10);
                 if ($d !== '') {
@@ -588,12 +588,12 @@ class FreezerLifecycle {
             ];
         }
 
-        // 3) KYC — same store / new store
+        // 3) AMC — same store / new store
         foreach (self::kycHistory($fid, 200) as $k) {
             $vDate = substr((string)($k['verified_at'] ?? ''), 0, 10);
             $sid = (int)($k['store_id'] ?? 0);
             $isNew = !empty($moveDates[$vDate]) || (!empty($sid) && !empty($moveStoreIds[$sid]) && isset($moveDates[$vDate]));
-            // Also: KYC store differs from earliest placement store and placement started same day
+            // Also: AMC store differs from earliest placement store and placement started same day
             if (!$isNew && $vDate !== '') {
                 foreach ($byStart as $idx => $p) {
                     if ($idx === 0) {
@@ -609,7 +609,7 @@ class FreezerLifecycle {
 
             $rows[] = [
                 'date' => (string)($k['verified_at'] ?? ''),
-                'activity' => $isNew ? 'KYC — New store' : 'KYC — Same store',
+                'activity' => $isNew ? 'AMC — New store' : 'AMC — Same store',
                 'activity_key' => $isNew ? 'kyc_new_store' : 'kyc_same_store',
                 'store_id' => $k['outlet_id'] ?? null,
                 'store_name' => $k['store_name'] ?? null,
@@ -631,7 +631,7 @@ class FreezerLifecycle {
             ];
         }
 
-        // 4) Rejected KYC requests (no profile KYC record — from notifications)
+        // 4) Rejected AMC requests (no profile AMC record — from notifications)
         try {
             AppNotification::ensureTable();
             $pdo = Database::getConnection();
@@ -655,7 +655,7 @@ class FreezerLifecycle {
                 $rejectNote = trim((string)($n['review_notes'] ?? ''));
                 $rows[] = [
                     'date' => $date,
-                    'activity' => $isMove ? 'KYC — Rejected (new store)' : 'KYC — Rejected (same store)',
+                    'activity' => $isMove ? 'AMC — Rejected (new store)' : 'AMC — Rejected (same store)',
                     'activity_key' => 'kyc_rejected',
                     'store_id' => $isMove ? '—' : ($from['outlet_id'] ?? null),
                     'store_name' => $isMove
@@ -709,7 +709,7 @@ class FreezerLifecycle {
             'State',
             'PIN',
             'Zone',
-            'KYC result',
+            'AMC result',
             'Cycle',
             'Reason',
             'Notes',
@@ -737,7 +737,7 @@ class FreezerLifecycle {
                 'State' => (string)($r['state'] ?? ''),
                 'PIN' => (string)($r['pincode'] ?? ''),
                 'Zone' => (string)($r['zone'] ?? ''),
-                'KYC result' => (string)($r['result'] ?? ''),
+                'AMC result' => (string)($r['result'] ?? ''),
                 'Cycle' => (string)($r['cycle'] ?? ''),
                 'Reason' => (string)($r['reason'] ?? ''),
                 'Notes' => (string)($r['notes'] ?? ''),
@@ -829,7 +829,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * History export: unified activity / implementation / KYC sheets.
+     * History export: unified activity / implementation / AMC sheets.
      * @param string $sheet all|activity|implementation|kyc
      * @param string $format csv|xlsx  (xlsx supported for sheet=kyc|activity)
      */
@@ -879,12 +879,12 @@ class FreezerLifecycle {
             return;
         }
 
-        // Excel export for KYC verifications table
+        // Excel export for AMC verifications table
         if ($format === 'xlsx' && $sheet === 'kyc') {
             $cols = self::kycExportColumns();
             $rows = self::kycExportRows($freezer, $tagCode);
             $writer = new \App\Services\ExcelXlsxWriter(static fn(string $c): string => 'store');
-            $writer->setSheetName('KYC verifications')
+            $writer->setSheetName('AMC verifications')
                 ->setColumns($cols)
                 ->setRows($rows)
                 ->stream('kyc_verifications_' . $safeName . '_' . date('Ymd_His') . '.xlsx');
@@ -956,7 +956,7 @@ class FreezerLifecycle {
         }
 
         if ($sheet === 'all' || $sheet === 'kyc') {
-            fputcsv($out, ['=== KYC VERIFICATIONS ===']);
+            fputcsv($out, ['=== AMC VERIFICATIONS ===']);
             $kycCols = self::kycExportColumns();
             fputcsv($out, $kycCols);
             foreach (self::kycExportRows($freezer, $tagCode) as $row) {
@@ -969,7 +969,7 @@ class FreezerLifecycle {
 
             // Year grid appendix
             fputcsv($out, []);
-            fputcsv($out, ['=== KYC BY YEAR (H1 / H2) ===']);
+            fputcsv($out, ['=== AMC BY YEAR (H1 / H2) ===']);
             fputcsv($out, [
                 'year',
                 'h1_result', 'h1_date', 'h1_outlet', 'h1_store',
@@ -1015,7 +1015,7 @@ class FreezerLifecycle {
         $freezer = Freezer::findById($freezerId);
         $storeId = $freezer ? (int)$freezer['store_id'] : 0;
 
-        // Last KYC for this freezer at the current store (6-month gap is per store)
+        // Last AMC for this freezer at the current store (6-month gap is per store)
         $atStore = null;
         if ($storeId > 0) {
             $stmt = $pdo->prepare("SELECT * FROM `kyc_verifications`
@@ -1057,7 +1057,7 @@ class FreezerLifecycle {
         ];
     }
 
-    /** SQL expression: DATE_ADD(COALESCE(last KYC at store, installation_date), INTERVAL N MONTH) */
+    /** SQL expression: DATE_ADD(COALESCE(last AMC at store, installation_date), INTERVAL N MONTH) */
     public static function kycDueSqlExpr(string $freezerAlias = 'f', int $gapMonths = 0): string {
         $gap = $gapMonths > 0 ? $gapMonths : self::KYC_GAP_MONTHS;
         $anchor = "COALESCE(
@@ -1073,8 +1073,8 @@ class FreezerLifecycle {
     }
 
     /**
-     * Technician work queue: KYC due on freezers this user last verified (re-visits),
-     * plus their KYC completed today.
+     * Technician work queue: AMC due on freezers this user last verified (re-visits),
+     * plus their AMC completed today.
      *
      * @return array{due:list<array>,today:list<array>,due_count:int,today_count:int}
      */
@@ -1115,7 +1115,7 @@ class FreezerLifecycle {
             $areaParams['city'] = $city;
         }
 
-        // Due re-visits: latest KYC at current store was by this technician, and due date passed
+        // Due re-visits: latest AMC at current store was by this technician, and due date passed
         $lastByExpr = "(SELECT k2.verified_by FROM `kyc_verifications` k2
              WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
              ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
@@ -1191,7 +1191,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * KYC-due freezers with store GPS for the map (nearby / list).
+     * AMC-due freezers with store GPS for the map (nearby / list).
      * Caps at $limit for load safety.
      *
      * @return list<array{
@@ -1294,7 +1294,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * Dashboard KYC counts — pending when install/last KYC + 6 months has passed.
+     * Dashboard AMC counts — pending when install/last AMC + 6 months has passed.
      * @param array{zone?:string,city?:string} $filters  empty zone/city = All
      * @return array{done:int,pending:int,pending_list:array,cutoff:string,gap_months:int}
      */
@@ -1375,7 +1375,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * Date-wise KYC activity for the Activity section.
+     * Date-wise AMC activity for the Activity section.
      * Pass $from/$to (Y-m-d) for calendar range, or $days for a rolling window.
      * @return list<array{
      *   date:string,label:string,total:int,same_store:int,new_store:int,pass:int,fail:int,
@@ -1438,7 +1438,7 @@ class FreezerLifecycle {
                           )
                     ) THEN 1 ELSE 0 END";
 
-        // Hard page cap — Activity never loads unbounded KYC history.
+        // Hard page cap — Activity never loads unbounded AMC history.
         $maxRows = 500;
         $stmt = $pdo->prepare(
             "SELECT k.id, k.freezer_id, k.store_id, k.verified_at, k.result, k.notes, k.verified_by,

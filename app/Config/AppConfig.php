@@ -31,7 +31,7 @@ class AppConfig {
     public static function getUserRoles(): array {
         return [
             ['value' => self::ROLE_SUPER_ADMIN, 'label' => 'Super Admin — Full access'],
-            ['value' => self::ROLE_TECHNICIAN, 'label' => 'Technician — Field scan / register / KYC'],
+            ['value' => self::ROLE_TECHNICIAN, 'label' => 'Technician — Field scan / register'],
             ['value' => self::ROLE_VIEWER, 'label' => 'Viewer — View only'],
         ];
     }
@@ -51,6 +51,19 @@ class AppConfig {
 
     /** IoT capture / telemetry UI (serial, SIM, photos, dashboard) — next phase */
     public const IOT_ENABLED = false;
+
+    /**
+     * Elixia VTS live tracking (warehouse / freezer GPS + status + temp).
+     * Shown as a separate tab on the same store profile — not mixed with app fields.
+     * Use HTTP: HTTPS on this host returns the web app HTML instead of JSON.
+     */
+    public const ELIXIA_VTS_ENABLED = true;
+    public const ELIXIA_VTS_BASE_URL = 'http://speed.elixiatech.com/modules/api/vts/api.php';
+    /** Rotate this key in production; do not commit real secrets long-term. */
+    public const ELIXIA_VTS_USERKEY = '2c104e67604b1b88d8a7f17673084effba0b57b0';
+    public const ELIXIA_VTS_PAGE_SIZE = 40; // API rejects larger page sizes
+    public const ELIXIA_VTS_CACHE_SECONDS = 180; // 3 minutes
+    public const ELIXIA_VTS_CACHE_FILE = __DIR__ . '/../../uploads/cache/elixia_vts_warehouse.json';
 
     /**
      * Optional outbound notify webhook (WhatsApp/SMS gateway).
@@ -73,7 +86,7 @@ class AppConfig {
     public const DEFAULT_ADMIN_PASSWORD = 'Admin@123';
 
     /** Default SIM / ICCID prefill (user can edit) */
-    public const DEFAULT_SIM_NUMBER = '89919225034008649';
+    public const DEFAULT_SIM_NUMBER = '89919225034008649389';
     public const DEFAULT_SIM_COMPANY = 'Airtel';
 
     public static function getBaseUrl(): string {

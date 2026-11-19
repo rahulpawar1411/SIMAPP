@@ -1,7 +1,7 @@
 <?php
 /**
  * Approvals (Super Admin).
- * Review pending edit / KYC requests, filter by zone/city/tech, paginate lists.
+ * Review pending edit requests, filter by zone/city/tech, paginate lists.
  * Approve or reject can offer a short Undo in the toast.
  */
 require_once __DIR__ . '/vendor/autoload.php';
@@ -383,7 +383,7 @@ require_once __DIR__ . '/includes/header.php';
                                 $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
                                 $editRemark = trim((string)($payload['remark'] ?? ''));
                                 $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
-                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move');
+                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'Store move');
                                 $freezerId = (string)($n['unique_freezer_id'] ?? '');
                                 $tech = (string)($n['created_by_name'] ?? 'Technician');
                                 $title = (string)($n['title'] ?? 'Request');
@@ -449,7 +449,7 @@ require_once __DIR__ . '/includes/header.php';
                                                 'Reject discards the request.',
                                             ]
                                             : [
-                                                'Technician requested a KYC store move.',
+                                                'Technician requested a store move.',
                                                 'Approve links the new store to the freezer.',
                                                 'Reject keeps the current store assignment.',
                                             ]),
@@ -570,7 +570,7 @@ require_once __DIR__ . '/includes/header.php';
                                 $isEdit = (($n['type'] ?? '') === AppNotification::TYPE_PROFILE_EDIT);
                                 $editRemark = trim((string)($payload['remark'] ?? ''));
                                 $isAccessRequest = $isEdit && (($payload['request_kind'] ?? '') === 'edit_access' || $editRemark !== '');
-                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'KYC move');
+                                $typeLabel = $isAccessRequest ? 'Edit access' : ($isEdit ? 'Profile edit' : 'Store move');
                                 $status = strtolower((string)($n['status'] ?? ''));
                                 $statusClass = $status === 'approved' ? 'badge-success' : 'badge-danger';
                                 $freezerId = (string)($n['unique_freezer_id'] ?? '');

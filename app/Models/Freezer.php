@@ -23,8 +23,10 @@ class Freezer {
             'sim_number' => "ALTER TABLE `freezers` ADD COLUMN `sim_number` VARCHAR(40) NULL",
             'sim_company' => "ALTER TABLE `freezers` ADD COLUMN `sim_company` VARCHAR(50) NULL",
             'image_sim' => "ALTER TABLE `freezers` ADD COLUMN `image_sim` VARCHAR(500) NULL",
+            'image_sim_back' => "ALTER TABLE `freezers` ADD COLUMN `image_sim_back` VARCHAR(500) NULL COMMENT 'SIM card / ICCID back photo'",
             'deleted_at' => "ALTER TABLE `freezers` ADD COLUMN `deleted_at` DATETIME NULL DEFAULT NULL",
             'created_by_name' => "ALTER TABLE `freezers` ADD COLUMN `created_by_name` VARCHAR(120) NULL",
+            'freezer_placed_at' => "ALTER TABLE `freezers` ADD COLUMN `freezer_placed_at` VARCHAR(120) NULL COMMENT 'Where freezer is kept at store'",
         ];
         foreach ($cols as $name => $sql) {
             $exists = $pdo->query("SHOW COLUMNS FROM `freezers` LIKE " . $pdo->quote($name))->fetch();
@@ -39,6 +41,19 @@ class Freezer {
     private static function notDeletedSql(string $alias = 'f'): string {
         self::ensureSimColumns();
         return "({$alias}.deleted_at IS NULL)";
+    }
+
+    /** Options for “Where is the freezer kept?” on add/edit forms. */
+    public static function placementOptions(): array {
+        return [
+            'Inside shop (sales floor)',
+            'Shop entrance / front',
+            'Back room / storage',
+            'Kitchen / prep area',
+            'Outside / verandah',
+            'Godown / warehouse',
+            'Other',
+        ];
     }
 
     public static function create(array $data): int {
@@ -104,18 +119,23 @@ class Freezer {
             }
         }
 
+        $placedAt = trim((string)($data['freezer_placed_at'] ?? ''));
+        if ($placedAt === '') {
+            $placedAt = null;
+        }
+
         $sql = "INSERT INTO `freezers` (
             `unique_freezer_id`, `store_id`, `freezer_type`, `company_code`,
-            `model_number`, `capacity_litres`, `freezer_condition`, `location_code`,
+            `model_number`, `capacity_litres`, `freezer_condition`, `freezer_placed_at`, `location_code`,
             `pincode_last3`, `install_month_year`, `unit_sequence`, `installation_date`,
-            `image_left_side`, `image_right_side`, `image_iot_device`, `image_sim`,
+            `image_left_side`, `image_right_side`, `image_iot_device`, `image_sim`, `image_sim_back`,
             `qr_code_path`, `qr_code_data`, `status`, `notes`, `sim_number`, `sim_company`,
             `created_by`, `created_by_name`
         ) VALUES (
             :unique_freezer_id, :store_id, :freezer_type, :company_code,
-            :model_number, :capacity_litres, :freezer_condition, :location_code,
+            :model_number, :capacity_litres, :freezer_condition, :freezer_placed_at, :location_code,
             :pincode_last3, :install_month_year, :unit_sequence, :installation_date,
-            :image_left_side, :image_right_side, :image_iot_device, :image_sim,
+            :image_left_side, :image_right_side, :image_iot_device, :image_sim, :image_sim_back,
             :qr_code_path, :qr_code_data, :status, :notes, :sim_number, :sim_company,
             :created_by, :created_by_name
         )";
@@ -129,6 +149,7 @@ class Freezer {
             'model_number' => FreezerIdGenerator::sanitizeModel($data['model_number']),
             'capacity_litres' => !empty($data['capacity_litres']) ? (int)$data['capacity_litres'] : null,
             'freezer_condition' => $data['freezer_condition'] ?? 'WORKING CONDITION',
+            'freezer_placed_at' => $placedAt,
             'location_code' => strtoupper(trim($data['location_code'])),
             'pincode_last3' => $pinLast3,
             'install_month_year' => $installMmYy,
@@ -138,6 +159,7 @@ class Freezer {
             'image_right_side' => $data['image_right_side'] ?? null,
             'image_iot_device' => $data['image_iot_device'] ?? null,
             'image_sim' => $data['image_sim'] ?? null,
+            'image_sim_back' => $data['image_sim_back'] ?? null,
             'qr_code_path' => $qrPath,
             'qr_code_data' => $qrData,
             'status' => $data['status'] ?? 'Active',
@@ -216,6 +238,13 @@ class Freezer {
         $imgSim = array_key_exists('image_sim', $data) && !empty($data['image_sim'])
             ? $data['image_sim']
             : ($existing['image_sim'] ?? null);
+        $imgSimBack = array_key_exists('image_sim_back', $data) && !empty($data['image_sim_back'])
+            ? $data['image_sim_back']
+            : ($existing['image_sim_back'] ?? null);
+
+        $placedAt = array_key_exists('freezer_placed_at', $data)
+            ? (trim((string)$data['freezer_placed_at']) ?: null)
+            : ($existing['freezer_placed_at'] ?? null);
 
         $sql = "UPDATE `freezers` SET
             `unique_freezer_id` = :unique_freezer_id,
@@ -225,6 +254,7 @@ class Freezer {
             `model_number` = :model_number,
             `capacity_litres` = :capacity_litres,
             `freezer_condition` = :freezer_condition,
+            `freezer_placed_at` = :freezer_placed_at,
             `location_code` = :location_code,
             `pincode_last3` = :pincode_last3,
             `install_month_year` = :install_month_year,
@@ -234,6 +264,7 @@ class Freezer {
             `image_right_side` = :image_right_side,
             `image_iot_device` = :image_iot_device,
             `image_sim` = :image_sim,
+            `image_sim_back` = :image_sim_back,
             `qr_code_path` = :qr_code_path,
             `qr_code_data` = :qr_code_data,
             `status` = :status,
@@ -252,6 +283,7 @@ class Freezer {
             'model_number' => FreezerIdGenerator::sanitizeModel($data['model_number'] ?? $existing['model_number']),
             'capacity_litres' => !empty($data['capacity_litres']) ? (int)$data['capacity_litres'] : $existing['capacity_litres'],
             'freezer_condition' => $data['freezer_condition'] ?? $existing['freezer_condition'],
+            'freezer_placed_at' => $placedAt,
             'location_code' => strtoupper(trim($data['location_code'] ?? $existing['location_code'])),
             'pincode_last3' => $data['pincode_last3'] ?? $existing['pincode_last3'],
             'install_month_year' => $data['install_month_year'] ?? $existing['install_month_year'],
@@ -261,6 +293,7 @@ class Freezer {
             'image_right_side' => $imgRight,
             'image_iot_device' => $imgIot,
             'image_sim' => $imgSim,
+            'image_sim_back' => $imgSimBack,
             'qr_code_path' => $qrPath,
             'qr_code_data' => $qrData,
             'status' => $data['status'] ?? $existing['status'],
@@ -347,6 +380,7 @@ class Freezer {
             `image_right_side` = :image_right_side,
             `image_iot_device` = :image_iot_device,
             `image_sim` = :image_sim,
+            `image_sim_back` = :image_sim_back,
             `qr_code_path` = :qr_code_path,
             `qr_code_data` = :qr_code_data,
             `status` = :status,
@@ -375,6 +409,7 @@ class Freezer {
             'image_right_side' => $data['image_right_side'] ?? null,
             'image_iot_device' => $data['image_iot_device'] ?? null,
             'image_sim' => $data['image_sim'] ?? null,
+            'image_sim_back' => $data['image_sim_back'] ?? null,
             'qr_code_path' => $data['qr_code_path'] ?? null,
             'qr_code_data' => $data['qr_code_data'] ?? null,
             'status' => $data['status'] ?? 'Active',
@@ -466,7 +501,8 @@ class Freezer {
                        s.image_store_front, s.image_aadhar_card, s.image_aadhar_back,
                        ft.name as type_name,
                        b.name as brand_name,
-                       iot.device_serial, iot.imei_or_mac, iot.sim_number, iot.sim_company,
+                       iot.device_serial, iot.imei_or_mac,
+                       iot.sim_number AS iot_sim_number, iot.sim_company AS iot_sim_company,
                        iot.device_type, iot.device_owner,
                        iot.oem_model as iot_model, iot.battery_percentage, iot.power_status as iot_power_status,
                        iot.last_ping_at as iot_last_ping
@@ -631,8 +667,7 @@ class Freezer {
                         break;
                     case 'photos':
                         $gapParts[] = "(s.image_store_front IS NULL OR s.image_store_front = ''
-                                 OR f.image_left_side IS NULL OR f.image_left_side = ''
-                                 OR f.image_right_side IS NULL OR f.image_right_side = '')";
+                                 OR f.image_left_side IS NULL OR f.image_left_side = '')";
                         break;
                     case 'iot':
                         if (AppConfig::IOT_ENABLED) {
@@ -644,8 +679,7 @@ class Freezer {
                         $anyGaps = "s.latitude IS NULL OR s.longitude IS NULL
                                  OR (s.gps_accuracy IS NOT NULL AND s.gps_accuracy >= 1000)
                                  OR s.image_store_front IS NULL OR s.image_store_front = ''
-                                 OR f.image_left_side IS NULL OR f.image_left_side = ''
-                                 OR f.image_right_side IS NULL OR f.image_right_side = ''";
+                                 OR f.image_left_side IS NULL OR f.image_left_side = ''";
                         if (AppConfig::IOT_ENABLED) {
                             $needsIotJoin = true;
                             $anyGaps .= ' OR iot.id IS NULL';
@@ -659,7 +693,7 @@ class Freezer {
             }
         }
 
-        // KYC filter — exclusive meanings for Assets tabs:
+        // AMC filter — exclusive meanings for Assets tabs:
         // pending = due date passed; done/OK = within window & not FAIL; failed/Issue = latest FAIL
         $kycList = self::normalizeFilterList($filters['kyc'] ?? null);
         $kycList = array_values(array_intersect($kycList, ['pending', 'done', 'failed']));
@@ -916,7 +950,7 @@ class Freezer {
         $topStmt->execute($params);
         $topStores = $topStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        // Recent activities: latest KYC + recent registrations
+        // Recent activities: latest AMC + recent registrations
         $activities = [];
         $kycAct = $pdo->prepare(
             "SELECT k.result, k.verified_at, k.notes, f.unique_freezer_id,
@@ -935,7 +969,7 @@ class Freezer {
             $res = strtoupper(trim((string)($r['result'] ?? 'PASS')));
             $activities[] = [
                 'kind' => $res === 'FAIL' ? 'issue' : 'success',
-                'title' => $res === 'FAIL' ? 'KYC Failed' : 'KYC Passed',
+                'title' => $res === 'FAIL' ? 'AMC Failed' : 'AMC Passed',
                 'subtitle' => trim(($r['store_name'] ?? '') . ($r['city'] ? ' · ' . $r['city'] : '')),
                 'meta' => (string)($r['unique_freezer_id'] ?? ''),
                 'when' => (string)($r['verified_at'] ?? ''),

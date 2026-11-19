@@ -10,6 +10,7 @@ try {
         'sim_number' => "ALTER TABLE `freezers` ADD COLUMN `sim_number` VARCHAR(40) NULL AFTER `notes`",
         'sim_company' => "ALTER TABLE `freezers` ADD COLUMN `sim_company` VARCHAR(50) NULL AFTER `sim_number`",
         'image_sim' => "ALTER TABLE `freezers` ADD COLUMN `image_sim` VARCHAR(500) NULL AFTER `image_iot_device`",
+        'image_sim_back' => "ALTER TABLE `freezers` ADD COLUMN `image_sim_back` VARCHAR(500) NULL AFTER `image_sim`",
     ];
 
     foreach ($cols as $name => $sql) {

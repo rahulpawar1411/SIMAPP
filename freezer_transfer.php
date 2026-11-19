@@ -1,8 +1,8 @@
 <?php
 /**
- * Transfer is folded into KYC verification.
- * Old bookmarks / links redirect here.
+ * Standalone transfer page removed with AMC/KYC.
+ * Keep old bookmarks working.
  */
 $id = (int)($_GET['id'] ?? 0);
-header('Location: freezer_kyc.php' . ($id > 0 ? '?id=' . $id : ''));
+header('Location: ' . ($id > 0 ? ('profile_view.php?id=' . $id) : 'profiles.php'));
 exit;

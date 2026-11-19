@@ -1,7 +1,8 @@
 <?php
 /**
  * Blank QR / Tag inventory.
- * Create unused tags by zone, filter, and print Logo + QR only.
+ * Create unused tags by zone, filter them, and print logo + QR only.
+ * Technicians with an assigned zone can only create/list/print tags for that zone.
  */
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -11,9 +12,10 @@ use App\Models\AssetTag;
 AuthService::requireRole(['super_admin', 'technician']);
 $currentUser = AuthService::currentUser();
 $areaScope = AuthService::areaScope();
-// Zone users can only create tags in their assigned zone
+
+// When true, zone dropdown is locked to the technician's assigned zone
 $lockZone = ($areaScope['zone'] ?? '') !== '';
-$zoneOptions = AssetTag::zoneTagCodes(); // SOUTH => SO, …
+$zoneOptions = AssetTag::zoneTagCodes(); // e.g. WEST => WE for tag codes RO-WE-…
 
 $error = null;
 $success = null;
@@ -67,6 +69,7 @@ $zoneFilter = strtoupper(trim((string)($_GET['zone'] ?? '')));
 if ($zoneFilter === 'ALL') {
     $zoneFilter = '';
 }
+// Scoped technicians cannot switch inventory/print filter to another zone
 if ($lockZone) {
     $zoneFilter = strtoupper((string)$areaScope['zone']);
 }

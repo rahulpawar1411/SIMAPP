@@ -1501,7 +1501,8 @@ body {
     line-height: 1.35;
 }
 
-.form-group.has-error .form-error {
+.form-group.has-error .form-error,
+tr.has-error .form-error {
     display: block;
 }
 
@@ -1660,6 +1661,72 @@ body {
 .cfg-steps {
     background: #f8faf9 !important;
     border-bottom: 1px solid #d0d5dd;
+}
+
+/* Flat 3-step tabs (Store / Freezer / Review) — equal horizontal row */
+.form-step-tabs {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    border-bottom: 1px solid #c5cad3;
+    background: #f1f5f9;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+.form-step-tab {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+    margin: 0;
+    padding: 0.75rem 0.4rem;
+    min-height: 48px;
+    border: none;
+    border-right: 1px solid #c5cad3;
+    border-radius: 0;
+    background: #f1f5f9;
+    color: #475569;
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.form-step-tab:last-child {
+    border-right: none;
+}
+
+.form-step-tab:hover {
+    background: #e8edf3;
+    color: #0f172a;
+}
+
+.form-step-tab.active {
+    background: #fff;
+    color: var(--primary-dark, #166534);
+    box-shadow: inset 0 -2px 0 var(--primary, #16a34a);
+}
+
+.form-step-tab.is-done {
+    color: #166534;
+    background: #f0fdf4;
+}
+
+.form-step-tab.is-done:not(.active) {
+    box-shadow: none;
 }
 
 /* Step 2 — onboard form hero + progress */
@@ -1970,9 +2037,16 @@ body {
 }
 
 .checkout-nav-row .btn {
+    flex: 1 1 0;
     min-height: 42px;
     border-radius: 6px;
     font-weight: 600;
+    justify-content: center;
+}
+
+.checkout-nav-row .btn[hidden],
+.checkout-footer .btn[hidden] {
+    display: none !important;
 }
 
 .checkout-powered {
@@ -2086,6 +2160,116 @@ fieldset.form-subsection > legend span::before,
     font-weight: 500;
     color: #475467;
     margin-bottom: 0.3rem;
+}
+
+/* ---------------- Flat table forms (th label | td control) ---------------- */
+table.form-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid #c5cad3;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+    margin-top: 0.45rem;
+    table-layout: fixed;
+}
+
+table.form-table th,
+table.form-table td {
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid #e2e8f0;
+    vertical-align: middle;
+    text-align: left;
+}
+
+table.form-table tr:last-child th,
+table.form-table tr:last-child td {
+    border-bottom: none;
+}
+
+table.form-table tr:nth-child(even) th,
+table.form-table tr:nth-child(even) td {
+    background: #f8fafc;
+}
+
+table.form-table th {
+    width: 32%;
+    background: #f1f5f9;
+    font-weight: 600;
+    color: #334155;
+}
+
+table.form-table tr:nth-child(even) th {
+    background: #eef2f7;
+}
+
+table.form-table .form-label {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #334155;
+    line-height: 1.3;
+}
+
+table.form-table td .form-control,
+table.form-table td .form-select {
+    width: 100%;
+    border-radius: 3px;
+    min-height: 2.45rem;
+}
+
+table.form-table .form-error {
+    display: none;
+    margin-top: 0.25rem;
+}
+
+table.form-table tr.has-error .form-error,
+table.form-table .form-group.has-error .form-error {
+    display: block;
+}
+
+table.form-table td.phone-cell .phone-input-group {
+    width: 100%;
+}
+
+table.form-table td.phone-cell .form-error {
+    display: none;
+    margin-top: 0.25rem;
+}
+
+table.form-table tr.has-error td.phone-cell .form-error {
+    display: block;
+}
+
+table.form-table tr.form-row-photos th,
+table.form-table tr.form-row-photos td {
+    vertical-align: top;
+}
+
+table.form-table label.upload-box {
+    cursor: pointer;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.onboard-card table.form-table .form-label,
+.cfg-form table.form-table .form-label {
+    margin-bottom: 0;
+}
+
+@media (max-width: 480px) {
+    table.form-table th {
+        width: 36%;
+        padding: 0.45rem 0.5rem;
+    }
+
+    table.form-table td {
+        padding: 0.45rem 0.5rem;
+    }
+
+    table.form-table .form-label {
+        font-size: 0.7rem;
+    }
 }
 
 /* Soften nested cards so fieldsets carry the grouping */
@@ -2451,22 +2635,18 @@ input.form-control[readonly].form-control-display {
         overflow: hidden;
         max-width: 100%;
     }
-    body.profile-add-page .onboard-steps {
-        gap: 0.15rem;
-        padding: 0.45rem 0.4rem;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
+    body.profile-add-page .form-step-tabs {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        width: 100%;
     }
-    body.profile-add-page .onboard-step {
+    body.profile-add-page .form-step-tab {
+        flex: 1 1 0;
         min-width: 0;
-        flex: 1;
-        padding: 0.4rem 0.25rem;
-    }
-    body.profile-add-page .onboard-step-label {
-        font-size: 0.68rem;
-    }
-    body.profile-add-page .onboard-step-divider {
-        display: none;
+        padding: 0.65rem 0.25rem;
+        min-height: 44px;
+        font-size: 0.78rem;
     }
     body.profile-add-page .checkout-card .card-body {
         padding: 0.75rem 0.7rem 1rem;
@@ -4737,51 +4917,19 @@ input.form-control[readonly].form-control-display {
         margin-bottom: 0.65rem;
         padding: 0 0.15rem;
     }
-    /* New freezer — 3 steps equal width, one row, no overflow */
-    .onboard-steps.cfg-steps,
-    .onboard-steps {
+    /* New freezer — Store / Freezer / Review equal horizontal tabs */
+    .form-step-tabs {
         display: flex;
+        flex-direction: row;
         flex-wrap: nowrap;
-        align-items: stretch;
-        gap: 0;
         width: 100%;
-        max-width: 100%;
-        box-sizing: border-box;
-        padding: 0.4rem 0.45rem;
-        overflow: hidden;
     }
-    .onboard-step.checkout-method,
-    .onboard-step {
+    .form-step-tab {
         flex: 1 1 0;
         min-width: 0;
-        width: auto;
-        max-width: none;
+        padding: 0.6rem 0.2rem;
         min-height: 44px;
-        padding: 0.35rem 0.25rem;
-        border-radius: 8px;
-        flex-direction: column;
-        gap: 0.15rem;
-        box-sizing: border-box;
-    }
-    .onboard-step-num {
-        width: 1.35rem;
-        height: 1.35rem;
-        font-size: 0.7rem;
-    }
-    .onboard-step-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        line-height: 1.1;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 100%;
-    }
-    .onboard-step-divider {
-        width: 1px;
-        margin: 0.4rem 0.1rem;
-        flex: 0 0 1px;
-        align-self: stretch;
+        font-size: 0.75rem;
     }
     .checkout-methods:not(.onboard-steps) {
         grid-template-columns: repeat(3, 1fr);
@@ -5010,13 +5158,15 @@ input.form-control[readonly].form-control-display {
         font-size: 0.65rem;
         min-height: 34px;
     }
-    .onboard-steps {
+    .form-step-tabs {
+        display: flex;
+        flex-wrap: nowrap;
         overflow: hidden;
     }
-    .onboard-step.checkout-method {
+    .form-step-tab {
         flex: 1 1 0;
         min-width: 0;
-        font-size: inherit;
+        font-size: 0.72rem;
     }
 
     .id-preview-display {
@@ -7765,12 +7915,26 @@ body.admin-dash-page .page-title {
 }
 .adash-lower-grid {
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 1rem;
-    align-items: start;
+    align-items: stretch;
+    width: 100%;
+}
+.adash-lower-grid > .adash-card {
+    min-width: 0;
+    width: 100%;
+    max-width: none;
+}
+.adash-lower-grid-2 {
+    grid-template-columns: 1.15fr 0.85fr;
 }
 .adash-lower-grid-3 {
     grid-template-columns: 1.35fr 1.1fr 0.85fr;
+}
+.adash-activity-card,
+.adash-zone-compare-card {
+    width: 100%;
+    max-width: none;
 }
 .adash-card {
     background: var(--adash-card);
@@ -7892,6 +8056,7 @@ body.admin-dash-page .page-title {
     max-width: none;
     width: 100%;
     justify-self: stretch;
+    align-self: stretch;
 }
 .adash-zone-compare-card .adash-card-head {
     margin-bottom: 0.35rem;
@@ -8107,21 +8272,30 @@ body.admin-dash-page .page-title {
 }
 
 @media (max-width: 1200px) {
+    .adash-lower-grid-2,
     .adash-lower-grid-3 {
         grid-template-columns: 1fr 1fr;
     }
+    .adash-lower-grid-2 .adash-zone-compare-card,
     .adash-lower-grid-3 .adash-zone-compare-card {
-        grid-column: 1 / -1;
-        max-width: 420px;
+        grid-column: auto;
+        max-width: none;
+        width: 100%;
     }
 }
 @media (max-width: 1100px) {
     .adash-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .adash-mid-grid,
-    .adash-lower-grid { grid-template-columns: 1fr; }
+    .adash-lower-grid,
+    .adash-lower-grid-2,
+    .adash-lower-grid-3 {
+        grid-template-columns: 1fr;
+    }
+    .adash-lower-grid-2 .adash-zone-compare-card,
     .adash-lower-grid-3 .adash-zone-compare-card {
         grid-column: auto;
         max-width: none;
+        width: 100%;
     }
     .adash-qa-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

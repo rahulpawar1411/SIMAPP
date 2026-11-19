@@ -1,6 +1,6 @@
 <?php
 /**
- * One-shot: seed 2 pending KYC notifications for Notifications menu testing.
+ * One-shot: seed 2 pending AMC notifications for Notifications menu testing.
  * Run: php scripts/seed_sample_notifications.php
  */
 require_once __DIR__ . '/../vendor/autoload.php';
@@ -50,8 +50,8 @@ $idSame = AppNotification::create([
     'type' => AppNotification::TYPE_KYC_SAME_STORE,
     'freezer_id' => $freezerId,
     'unique_freezer_id' => $ufid,
-    'title' => 'SAMPLE — same store KYC',
-    'message' => 'Sample same-place KYC (PASS) for ' . ($row['store_name'] ?? 'store')
+    'title' => 'SAMPLE — same store AMC',
+    'message' => 'Sample same-place AMC (PASS) for ' . ($row['store_name'] ?? 'store')
         . ' [' . ($row['outlet_id'] ?? '') . ']. Profile not updated until admin approves.',
     'created_by' => $adminBy,
     'payload' => [
@@ -60,7 +60,7 @@ $idSame = AppNotification::create([
             'cycle_year' => (int)date('Y'),
             'cycle_half' => ((int)date('n') <= 6) ? 1 : 2,
             'result' => 'PASS',
-            'notes' => 'Sample same-store KYC for notification testing.',
+            'notes' => 'Sample same-store AMC for notification testing.',
             'image_store_front' => null,
             'image_freezer' => null,
             'latitude' => null,
@@ -107,7 +107,7 @@ $idMove = AppNotification::create([
             'cycle_year' => (int)date('Y'),
             'cycle_half' => ((int)date('n') <= 6) ? 1 : 2,
             'result' => 'PASS',
-            'notes' => 'Sample new-store KYC for notification testing.',
+            'notes' => 'Sample new-store AMC for notification testing.',
             'image_store_front' => null,
             'image_freezer' => null,
             'latitude' => '19.076090',

@@ -80,7 +80,7 @@ class AppNotification {
         return self::findPendingForFreezer($freezerId, self::TYPE_KYC_SAME_STORE);
     }
 
-    /** Any pending KYC notification (same store or move) for this freezer. */
+    /** Any pending AMC notification (same store or move) for this freezer. */
     public static function findPendingKycForFreezer(int $freezerId): ?array {
         self::ensureTable();
         $pdo = Database::getConnection();
@@ -529,7 +529,7 @@ class AppNotification {
         return (int)$stmt->fetchColumn();
     }
 
-    /** Technicians who have created edit/KYC approval requests (for filter dropdown). */
+    /** Technicians who have created edit/AMC approval requests (for filter dropdown). */
     public static function listRequesterTechnicians(): array {
         self::ensureTable();
         $pdo = Database::getConnection();
@@ -629,7 +629,7 @@ class AppNotification {
     }
 
     /**
-     * Approve any pending notification (profile edit / KYC).
+     * Approve any pending notification (profile edit / AMC).
      * @return array{type:string,outlet_id?:string,store_id?:int,freezer_id?:int}
      */
     public static function approve(int $id, int $adminId, ?string $notes = null): array {
@@ -672,12 +672,12 @@ class AppNotification {
         throw new Exception('Unsupported notification type.');
     }
 
-    /** Outbound notify for KYC approve/reject (log + optional webhook). */
+    /** Outbound notify for AMC approve/reject (log + optional webhook). */
     private static function notifyKycDecision(array $row, bool $approved, ?string $notes = null): void {
         try {
             $userId = (int)($row['created_by'] ?? 0);
             $tag = (string)($row['unique_freezer_id'] ?? ('#' . (int)($row['freezer_id'] ?? 0)));
-            $msg = ($approved ? 'KYC approved for ' : 'KYC rejected for ') . $tag . '.';
+            $msg = ($approved ? 'AMC approved for ' : 'AMC rejected for ') . $tag . '.';
             if ($notes !== null && trim($notes) !== '') {
                 $msg .= ' Note: ' . trim($notes);
             }
@@ -765,14 +765,14 @@ class AppNotification {
         return ['legacy_applied' => $legacyApplied];
     }
 
-    /** Approve same-store KYC — record verification on current profile only. @return int kyc verification id */
+    /** Approve same-store AMC — record verification on current profile only. @return int kyc verification id */
     public static function approveKycSameStore(int $id, int $adminId, ?string $notes = null): int {
         $row = self::findById($id);
         if (!$row) {
             throw new Exception('Notification not found.');
         }
         if (($row['type'] ?? '') !== self::TYPE_KYC_SAME_STORE) {
-            throw new Exception('Not a same-store KYC notification.');
+            throw new Exception('Not a same-store AMC notification.');
         }
         if (($row['status'] ?? '') !== self::STATUS_PENDING) {
             throw new Exception('This request is already ' . ($row['status'] ?? 'closed') . '.');
@@ -806,7 +806,7 @@ class AppNotification {
     }
 
     /**
-     * Approve a pending KYC store-move: create outlet, transfer freezer, record KYC.
+     * Approve a pending AMC store-move: create outlet, transfer freezer, record AMC.
      * @return array{outlet_id:string,store_id:int}
      */
     public static function approveKycStoreMove(int $id, int $adminId, ?string $notes = null): array {
@@ -854,7 +854,7 @@ class AppNotification {
         FreezerLifecycle::transfer(
             $freezerId,
             $created['store_id'],
-            'KYC — moved to new outlet (admin approved, auto ID ' . $created['outlet_id'] . ')',
+            'AMC — moved to new outlet (admin approved, auto ID ' . $created['outlet_id'] . ')',
             $kycData['notes'] ?? null,
             $adminId,
             $verifiedAt

@@ -105,12 +105,12 @@ class NotifyService {
         ]);
     }
 
-    /** Optional digest when KYC due count is high (admin/ops webhook). */
+    /** Optional digest when AMC due count is high (admin/ops webhook). */
     public static function kycDueDigest(int $pendingCount, array $meta = []): void {
         if ($pendingCount <= 0) {
             return;
         }
-        $msg = $pendingCount . ' freezer(s) have KYC due.';
+        $msg = $pendingCount . ' freezer(s) have AMC due.';
         self::send('kyc_due_digest', $msg, array_merge([
             'channel' => 'log',
             'pending_count' => $pendingCount,

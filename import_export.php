@@ -223,8 +223,7 @@ require_once __DIR__ . '/includes/header.php';
                         Freezer ID parts + photos:
                     </p>
                     <p style="font-size:0.75rem; color:#0f172a; margin:0 0 0.85rem; line-height:1.45;">
-                        <code>image_left_side</code><br>
-                        <code>image_right_side</code>
+                        <code>image_left_side</code> (freezer full)
                     </p>
                     <a href="import_export.php?action=template_freezer" class="btn btn-secondary btn-sm">Download Freezer Excel</a>
                 </div>
@@ -309,7 +308,7 @@ require_once __DIR__ . '/includes/header.php';
                         <tr><td><code>fssai_number</code> / <code>gst_number</code></td><td>Optional compliance IDs</td></tr>
                         <tr><td><code>phone_number</code></td><td>10-digit Indian mobile</td></tr>
                         <tr><td><code>image_store_front</code> *</td><td>REQUIRED · store photo filename in <code>uploads/import/</code></td></tr>
-                        <tr><td><code>image_left_side</code> / <code>image_right_side</code> *</td><td>REQUIRED · freezer photos — same folder, exact filename</td></tr>
+                        <tr><td><code>image_left_side</code> *</td><td>REQUIRED · freezer full photo — same folder, exact filename</td></tr>
                         <tr><td><code>image_aadhar_card</code> / <code>image_aadhar_back</code></td><td>Optional Aadhaar photos</td></tr>
                         <?php if (AppConfig::IOT_ENABLED): ?>
                         <tr><td><code>iot_serial</code></td><td>Optional · e.g. <code>RF-IOT-99210</code> (blank = no IoT)</td></tr>
@@ -339,7 +338,7 @@ require_once __DIR__ . '/includes/header.php';
                         <li><code>image_store_front</code> → that store’s front photo</li>
                         <li><code>image_aadhar_card</code> → Aadhaar front</li>
                         <li><code>image_aadhar_back</code> → Aadhaar back</li>
-                        <li><code>image_left_side</code> / <code>image_right_side</code> → that freezer’s photos</li>
+                        <li><code>image_left_side</code> → that freezer’s full photo</li>
                         <?php if (AppConfig::IOT_ENABLED): ?>
                         <li><code>image_iot_device</code> → that IoT device photo</li>
                         <?php endif; ?>
@@ -348,8 +347,8 @@ require_once __DIR__ . '/includes/header.php';
                 <li>Import the CSV — each row attaches only the files named on that row (same store/freezer as that row’s data).</li>
             </ol>
             <p style="margin: 0; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.75rem; font-size:0.8rem;">
-                Example: <code>image_left_side=freezer_1_left.jpg</code> → photo must be
-                <code>uploads/import/freezer_1_left.jpg</code>. Blank image cells = no photo for that row.
+                Example: <code>image_left_side=freezer_1_full.jpg</code> → photo must be
+                <code>uploads/import/freezer_1_full.jpg</code>. Blank image cells = no photo for that row.
             </p>
         </div>
     </div>

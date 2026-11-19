@@ -2,7 +2,6 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
-use App\Services\KycScanGate;
 use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\FreezerLifecycle;
@@ -30,13 +29,20 @@ if (is_numeric($idParam)) {
 }
 
 if (!$freezer) {
-    die("<h1>Profile Not Found</h1><p>The requested freezer profile could not be found.</p><p><a href='profiles.php'>Back to Profiles</a></p>");
+    http_response_code(404);
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Not found</title></head><body>'
+        . '<h1>Profile not found</h1>'
+        . '<p>The requested freezer profile could not be found.</p>'
+        . '<p><a href="profiles.php">Back to Assets</a></p></body></html>';
+    exit;
 }
 
-if (!AuthService::canAccessArea($freezer['store_zone'] ?? $freezer['zone'] ?? null, $freezer['store_city'] ?? null)) {
-    http_response_code(403);
-    die("<h1>403 Forbidden</h1><p>This store is outside your assigned zone/city.</p><p><a href='profiles.php'>Back to Assets</a></p>");
-}
+// Technicians with zone/city assignment cannot open out-of-area profiles
+AuthService::requireAreaAccess(
+    $freezer['store_zone'] ?? $freezer['zone'] ?? null,
+    $freezer['store_city'] ?? null,
+    'profiles.php'
+);
 
 // Generate QR Code if file doesn't exist
 $qrPath = $freezer['qr_code_path'];
@@ -54,11 +60,7 @@ if (AppConfig::IOT_ENABLED) {
 }
 
 FreezerLifecycle::ensureOpenPlacement($freezer);
-// On this freezer's profile → KYC may skip QR scan
-KycScanGate::markFromProfile((int)$freezer['id']);
 $placementHistory = FreezerLifecycle::placementHistory((int)$freezer['id']);
-$kycStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
-$kycHistory = FreezerLifecycle::kycHistory((int)$freezer['id'], 50);
 $lifecycleTimeline = FreezerLifecycle::buildTimeline((int)$freezer['id']);
 $isAdminUser = AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN);
 
@@ -162,7 +164,11 @@ $activeTab = $_GET['tab'] ?? 'overview';
 if ($activeTab === 'documents' || $activeTab === 'location') {
     $activeTab = 'overview'; // Location merged into Overview map card
 }
-if (!in_array($activeTab, ['overview', 'freezers', 'history'], true)) {
+$allowedTabs = ['overview', 'freezers', 'history'];
+if (AppConfig::ELIXIA_VTS_ENABLED) {
+    $allowedTabs[] = 'elixia';
+}
+if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'overview';
 }
 
@@ -210,18 +216,11 @@ require_once __DIR__ . '/includes/header.php';
 $homeHref = $isTechnician ? 'field_home.php' : ($isAdminUser ? 'index.php' : 'profiles.php');
 $galleryPhotos = [
     ['path' => $freezer['image_store_front'] ?? '', 'label' => 'Store front'],
-    ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer left'],
-    ['path' => $freezer['image_right_side'] ?? '', 'label' => 'Freezer right'],
+    ['path' => $freezer['image_left_side'] ?? '', 'label' => 'Freezer full'],
     ['path' => $freezer['image_aadhar_card'] ?? '', 'label' => 'Aadhaar front'],
     ['path' => $freezer['image_aadhar_back'] ?? '', 'label' => 'Aadhaar back'],
-    ['path' => $freezer['image_sim'] ?? '', 'label' => 'SIM photo'],
+    ['path' => $freezer['image_sim'] ?? '', 'label' => 'SIM'],
 ];
-if (!empty($kycHistory[0]['image_store_front'])) {
-    $galleryPhotos[] = ['path' => $kycHistory[0]['image_store_front'], 'label' => 'Latest KYC store'];
-}
-if (!empty($kycHistory[0]['image_freezer'])) {
-    $galleryPhotos[] = ['path' => $kycHistory[0]['image_freezer'], 'label' => 'Latest KYC freezer'];
-}
 ?>
 
 <nav class="sp-breadcrumb" aria-label="Breadcrumb">
@@ -236,10 +235,6 @@ if (!empty($kycHistory[0]['image_freezer'])) {
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= htmlspecialchars($editBtnLabel) ?></a>
-    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-sm <?= !empty($kycStatus['due']) ? 'btn-primary' : 'btn-outline' ?>" title="<?= !empty($kycStatus['due']) ? 'KYC due' : 'KYC verify' ?>">
-        <span class="btn-label-full">KYC <?= !empty($kycStatus['due']) ? '(due)' : 'verify' ?></span>
-        <span class="btn-label-short">KYC<?= !empty($kycStatus['due']) ? '*' : '' ?></span>
-    </a>
     <?php if (AuthService::hasRole('super_admin')): ?>
         <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm sp-actions-delete" title="Password required">
             <span class="btn-label-full">Delete</span><span class="btn-label-short">Del</span>
@@ -249,7 +244,7 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 
 <?php if ($isTechnician): ?>
 <div class="tech-sticky-bar no-print" aria-label="Technician actions">
-    <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary"><?= !empty($kycStatus['due']) ? 'Do KYC now' : 'KYC verify' ?></a>
+    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary"><?= htmlspecialchars($editBtnLabel) ?></a>
     <a href="field_home.php" class="btn btn-secondary">Home</a>
 </div>
 <?php endif; ?>
@@ -342,35 +337,7 @@ if (!empty($kycHistory[0]['image_freezer'])) {
 <?php endif; ?>
 <?php if (!empty($_GET['from_scan'])): ?>
     <div class="alert alert-success" style="margin-bottom:1rem;">
-        QR scan successful — this is the freezer profile. Use the <strong>KYC</strong> button to verify (no rescan required).
-    </div>
-<?php endif; ?>
-<?php if (!empty($_GET['kyc'])): ?>
-    <?php if (strtoupper((string)($_GET['kyc_result'] ?? '')) === 'FAIL'): ?>
-        <div class="alert alert-danger" style="margin-bottom:1rem;">
-            KYC saved as <strong>FAIL</strong> for this cycle. Admin can find this profile under Freezer Assets → Filter → KYC failed.
-        </div>
-    <?php else: ?>
-        <div class="alert alert-success" style="margin-bottom:1rem;">
-            KYC verification saved for this cycle.
-            <?php if (!empty($_GET['new_outlet'])): ?>
-                New outlet created with Store ID: <strong style="font-family:var(--font-mono);"><?= htmlspecialchars($_GET['new_outlet']) ?></strong>
-            <?php endif; ?>
-        </div>
-    <?php endif; ?>
-<?php endif; ?>
-<?php
-$kycLastResult = strtoupper(trim((string)(($kycStatus['last_at_store']['result'] ?? $kycStatus['current']['result'] ?? ''))));
-if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
-?>
-    <div class="alert alert-danger" style="margin-bottom:1rem;">
-        Latest KYC result is <strong>FAIL</strong>
-        <?php if (!empty($kycStatus['last_at_store']['verified_at'] ?? $kycStatus['current']['verified_at'] ?? null)): ?>
-            on <?= htmlspecialchars((string)($kycStatus['last_at_store']['verified_at'] ?? $kycStatus['current']['verified_at'])) ?>.
-        <?php endif; ?>
-        <?php if (!empty($kycStatus['last_at_store']['notes'] ?? $kycStatus['current']['notes'] ?? null)): ?>
-            Note: <?= htmlspecialchars((string)($kycStatus['last_at_store']['notes'] ?? $kycStatus['current']['notes'])) ?>
-        <?php endif; ?>
+        QR scan successful — this is the freezer profile.
     </div>
 <?php endif; ?>
 
@@ -460,10 +427,13 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
 <div class="sp-tabs" role="tablist">
     <?php
     $tabs = [
-        'overview' => 'Overview',
+        'overview' => 'Store info',
         'freezers' => 'Freezers (' . count($storeFreezers) . ')',
         'history' => 'History',
     ];
+    if (AppConfig::ELIXIA_VTS_ENABLED) {
+        $tabs['elixia'] = 'Freezer location';
+    }
     $baseUrl = 'profile_view.php?id=' . urlencode($freezer['unique_freezer_id']);
     foreach ($tabs as $key => $label):
     ?>
@@ -533,12 +503,8 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
 
     <div class="sp-side-stack">
         <div class="card">
-            <div class="card-header"><div class="card-title"><span>Store status &amp; KYC</span></div></div>
+            <div class="card-header"><div class="card-title"><span>Store status</span></div></div>
             <div class="card-body">
-                <?php
-                $kycLastAtStore = $kycStatus['last_at_store'] ?? $kycStatus['current'] ?? null;
-                $kycLastDate = $kycLastAtStore['verified_at'] ?? ($kycStatus['last']['verified_at'] ?? null);
-                ?>
                 <div class="profile-kv-grid" style="grid-template-columns:1fr 1fr;">
                     <div class="profile-kv">
                         <span class="profile-kv-label">Store / unit status</span>
@@ -549,38 +515,10 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
                         <?php endif; ?>
                     </div>
                     <div class="profile-kv">
-                        <span class="profile-kv-label">Gap</span>
-                        <strong class="profile-kv-value">Every <?= (int)($kycStatus['gap_months'] ?? 6) ?> months</strong>
-                    </div>
-                    <div class="profile-kv profile-kv-wide">
-                        <span class="profile-kv-label">KYC window</span>
-                        <strong class="profile-kv-value">
-                            <?= $kycLastDate
-                                ? 'Last KYC: ' . htmlspecialchars((string)$kycLastDate)
-                                : 'Last KYC: —' ?>
-                            <?php if (!empty($kycLastAtStore['result'])): ?>
-                                · <?= htmlspecialchars((string)$kycLastAtStore['result']) ?>
-                            <?php endif; ?>
-                        </strong>
-                    </div>
-                    <?php if (!$kycLastDate && ($kycStatus['anchor_source'] ?? '') === 'installation' && !empty($kycStatus['anchor_date'])): ?>
-                        <div class="profile-kv profile-kv-wide">
-                            <span class="profile-kv-label">From install</span>
-                            <strong class="profile-kv-value"><?= htmlspecialchars((string)$kycStatus['anchor_date']) ?></strong>
-                        </div>
-                    <?php endif; ?>
-                    <div class="profile-kv profile-kv-wide">
-                        <span class="profile-kv-label"><?= !empty($kycStatus['due']) ? 'KYC due' : 'Next KYC due' ?></span>
-                        <strong class="profile-kv-value<?= !empty($kycStatus['due']) ? ' text-warn' : '' ?>">
-                            <?php if (!empty($kycStatus['due'])): ?>
-                                Overdue<?= !empty($kycStatus['next_due_at']) ? ' · since ' . htmlspecialchars((string)$kycStatus['next_due_at']) : '' ?>
-                            <?php else: ?>
-                                <?= htmlspecialchars((string)($kycStatus['next_due_at'] ?? '—')) ?>
-                            <?php endif; ?>
-                        </strong>
+                        <span class="profile-kv-label">Install date</span>
+                        <strong class="profile-kv-value"><?= htmlspecialchars((string)($freezer['installation_date'] ?? '—')) ?></strong>
                     </div>
                 </div>
-                <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary btn-sm" style="margin-top:0.75rem;"><?= !empty($kycStatus['due']) ? 'Complete KYC' : 'KYC verify' ?></a>
             </div>
         </div>
 
@@ -663,47 +601,6 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
         </div>
     </div>
 
-    <div class="card tech-kyc-timeline-card">
-        <div class="card-header">
-            <div class="card-title"><span>KYC timeline</span></div>
-            <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="adash-link">Verify</a>
-        </div>
-        <div class="card-body">
-            <?php if (empty($kycHistory)): ?>
-                <p class="mapp-empty" style="margin:0;">No KYC recorded yet for this freezer.</p>
-            <?php else: ?>
-                <ul class="tech-kyc-timeline">
-                    <?php foreach (array_slice($kycHistory, 0, 8) as $kh): ?>
-                        <?php
-                        $res = strtoupper(trim((string)($kh['result'] ?? 'PASS')));
-                        $kind = $res === 'FAIL' ? 'issue' : 'success';
-                        ?>
-                        <li class="tech-kyc-item tech-kyc-<?= $kind ?>">
-                            <span class="mapp-dot mapp-dot-<?= $kind ?>"></span>
-                            <div class="tech-kyc-body">
-                                <div class="tech-kyc-top">
-                                    <strong><?= htmlspecialchars($res) ?></strong>
-                                    <span class="mapp-pill mapp-pill-<?= $kind ?>"><?= $res === 'FAIL' ? 'Issue' : 'Success' ?></span>
-                                </div>
-                                <div class="tech-kyc-meta">
-                                    <?= htmlspecialchars((string)($kh['verified_at'] ?? '')) ?>
-                                    <?php if (!empty($kh['verified_by_name'])): ?>
-                                        · <?= htmlspecialchars((string)$kh['verified_by_name']) ?>
-                                    <?php endif; ?>
-                                    <?php if (!empty($kh['store_name'])): ?>
-                                        · <?= htmlspecialchars((string)$kh['store_name']) ?>
-                                    <?php endif; ?>
-                                </div>
-                                <?php if (!empty($kh['notes'])): ?>
-                                    <div class="tech-kyc-notes"><?= htmlspecialchars((string)$kh['notes']) ?></div>
-                                <?php endif; ?>
-                            </div>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
-            <?php endif; ?>
-        </div>
-    </div>
         </div>
 
 <div class="sp-main-grid sp-main-grid-2">
@@ -760,6 +657,7 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
                 ?>
                 <div class="profile-kv"><span class="profile-kv-label">Installed by</span><strong class="profile-kv-value"><?= htmlspecialchars($installerDisplay !== '' ? $installerDisplay : '—') ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">Condition</span><span class="badge badge-neutral"><?= htmlspecialchars($valOrDash($freezer['freezer_condition'] ?? '')) ?></span></div>
+                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Freezer kept at</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['freezer_placed_at'] ?? '')) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">Sequence</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['unit_sequence'] ?? '')) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['status'] ?? '')) ?></strong></div>
                 <div class="profile-kv"><span class="profile-kv-label">SIM number</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
@@ -772,8 +670,8 @@ if ($kycLastResult === 'FAIL' && empty($_GET['kyc'])):
                 <div class="profile-kv-grid">
                     <div class="profile-kv"><span class="profile-kv-label">Serial</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['device_serial'] ?? '')) ?></strong></div>
                     <div class="profile-kv"><span class="profile-kv-label">IMEI / MAC</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['imei_or_mac'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">SIM</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_number'] ?? '')) ?></strong></div>
-                    <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['sim_company'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">SIM</span><strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($valOrDash($freezer['iot_sim_number'] ?? $freezer['sim_number'] ?? '')) ?></strong></div>
+                    <div class="profile-kv"><span class="profile-kv-label">SIM company</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_sim_company'] ?? $freezer['sim_company'] ?? '')) ?></strong></div>
                     <div class="profile-kv"><span class="profile-kv-label">Power</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_power_status'] ?? '')) ?></strong></div>
                     <div class="profile-kv"><span class="profile-kv-label">Last ping</span><strong class="profile-kv-value"><?= htmlspecialchars($valOrDash($freezer['iot_last_ping'] ?? '')) ?></strong></div>
                 </div>
@@ -853,13 +751,10 @@ $activityRowClass = static function (string $key): string {
         <div>
             <div class="card-title"><span>Store activity</span></div>
             <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
-                Installation, store moves, KYC (same store / new store) — one table.
+                Installation and store moves — one table.
             </p>
         </div>
         <div class="sp-history-actions">
-            <a href="<?= htmlspecialchars(KycScanGate::profileKycUrl($freezer)) ?>" class="btn btn-primary btn-sm">
-                <?= $kycStatus['due'] ? 'Complete KYC now' : 'KYC verify' ?>
-            </a>
             <?php if ($isAdmin): ?>
                 <a href="<?= $exportBase ?>&sheet=activity&format=csv" class="btn btn-outline btn-sm">Export CSV</a>
                 <a href="<?= $exportBase ?>&sheet=activity&format=xlsx" class="btn btn-outline btn-sm">Export Excel</a>
@@ -867,31 +762,9 @@ $activityRowClass = static function (string $key): string {
         </div>
     </div>
     <div class="card-body">
-        <?php if ($kycStatus['due']): ?>
-            <div class="alert alert-warning" style="margin-bottom:1rem;">
-                KYC due (every <?= (int)($kycStatus['gap_months'] ?? 6) ?> months).
-                Current store: <code><?= htmlspecialchars($freezer['outlet_id']) ?></code>
-                — <?= htmlspecialchars($freezer['store_name']) ?>.
-            </div>
-        <?php else: ?>
-            <div class="alert alert-success" style="margin-bottom:1rem;">
-                <?php if (!empty($kycStatus['current'])): ?>
-                    Last KYC <?= htmlspecialchars($kycStatus['current']['result'] ?? '') ?>
-                    on <?= htmlspecialchars($kycStatus['current']['verified_at'] ?? '') ?>.
-                <?php else: ?>
-                    Within KYC window from installation
-                    <?= htmlspecialchars((string)($kycStatus['anchor_date'] ?? $freezer['installation_date'] ?? '')) ?>.
-                <?php endif; ?>
-                Next due <?= htmlspecialchars((string)($kycStatus['next_due_at'] ?? '—')) ?>.
-            </div>
-        <?php endif; ?>
-
         <div class="excel-legend">
             <span><i class="excel-swatch" style="background:#dbeafe;"></i> Installation</span>
             <span><i class="excel-swatch" style="background:#fef3c7;"></i> Store move</span>
-            <span><i class="excel-swatch" style="background:#dcfce7;"></i> KYC same store</span>
-            <span><i class="excel-swatch" style="background:#ffedd5;"></i> KYC new store</span>
-            <span><i class="excel-swatch" style="background:#fee2e2;"></i> KYC rejected</span>
             <span>Freezer: <code><?= htmlspecialchars($freezer['unique_freezer_id']) ?></code></span>
             <span>Tag: <code><?= htmlspecialchars($tagCodeHist) ?></code></span>
         </div>
@@ -1016,6 +889,156 @@ try {
         <?php endif; ?>
     </div>
 </div>
+<?php elseif ($activeTab === 'elixia' && AppConfig::ELIXIA_VTS_ENABLED): ?>
+<?php
+$elixiaUniqueId = (string)($freezer['unique_freezer_id'] ?? '');
+?>
+<div class="card" id="elixia-live-panel">
+    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
+        <div>
+            <div class="card-title"><span>Freezer location</span></div>
+            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
+                Live GPS / status / temperature from Elixia VTS for this freezer only — separate from store info.
+            </p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline" id="elixia-refresh-btn">Refresh</button>
+    </div>
+    <div class="card-body">
+        <div class="profile-kv-grid" style="margin-bottom:1rem;">
+            <div class="profile-kv">
+                <span class="profile-kv-label">Matched by Unique Freezer ID</span>
+                <strong class="profile-kv-value profile-kv-mono"><?= htmlspecialchars($elixiaUniqueId) ?></strong>
+            </div>
+            <div class="profile-kv">
+                <span class="profile-kv-label">Source</span>
+                <strong class="profile-kv-value">Elixia VTS API</strong>
+            </div>
+        </div>
+
+        <div id="elixia-live-status" class="alert" style="margin-bottom:1rem;">Loading Elixia data…</div>
+
+        <div id="elixia-live-body" hidden>
+            <div class="profile-kv-grid" id="elixia-kv-grid">
+                <div class="profile-kv"><span class="profile-kv-label">Vehicle / Freezer no.</span><strong class="profile-kv-value profile-kv-mono" data-elixia="vehicleno">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Unit no.</span><strong class="profile-kv-value profile-kv-mono" data-elixia="unitno">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Status</span><strong class="profile-kv-value" data-elixia="status">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Ignition</span><strong class="profile-kv-value" data-elixia="ignition">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Temperature 1</span><strong class="profile-kv-value" data-elixia="temperature1">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Temperature 2</span><strong class="profile-kv-value" data-elixia="temperature2">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Latitude</span><strong class="profile-kv-value profile-kv-mono" data-elixia="lat">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Longitude</span><strong class="profile-kv-value profile-kv-mono" data-elixia="lng">—</strong></div>
+                <div class="profile-kv profile-kv-wide"><span class="profile-kv-label">Location</span><strong class="profile-kv-value" data-elixia="location">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Last updated</span><strong class="profile-kv-value" data-elixia="lastupdated">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Timestamp</span><strong class="profile-kv-value" data-elixia="timestamp">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Door sensor 1</span><strong class="profile-kv-value" data-elixia="doorSensor1">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Door sensor 2</span><strong class="profile-kv-value" data-elixia="doorSensor2">—</strong></div>
+                <div class="profile-kv"><span class="profile-kv-label">Odometer</span><strong class="profile-kv-value" data-elixia="odometer">—</strong></div>
+            </div>
+            <div id="elixia-maps-row" style="margin-top:1rem;" hidden>
+                <a href="#" target="_blank" rel="noopener" class="btn btn-sm btn-primary" id="elixia-maps-link">Open in Google Maps</a>
+                <a href="#" target="_blank" rel="noopener" class="btn btn-sm btn-outline" id="elixia-short-link" hidden>Elixia short link</a>
+            </div>
+            <div id="elixia-live-map" style="height:280px;margin-top:1rem;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;" hidden></div>
+        </div>
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const uniqueId = <?= json_encode($elixiaUniqueId, JSON_UNESCAPED_UNICODE) ?>;
+    const statusEl = document.getElementById('elixia-live-status');
+    const bodyEl = document.getElementById('elixia-live-body');
+    const refreshBtn = document.getElementById('elixia-refresh-btn');
+    let elixiaMap = null;
+    let elixiaMarker = null;
+
+    function setKv(key, value) {
+        const el = document.querySelector('[data-elixia="' + key + '"]');
+        if (!el) return;
+        const text = (value === null || value === undefined || value === '') ? '—' : String(value);
+        el.textContent = text;
+    }
+
+    function renderDevice(device) {
+        bodyEl.hidden = false;
+        ['vehicleno','unitno','status','ignition','temperature1','temperature2','location','lastupdated','timestamp','doorSensor1','doorSensor2','odometer'].forEach(function (k) {
+            setKv(k, device[k]);
+        });
+        setKv('lat', device.lat != null ? Number(device.lat).toFixed(6) : '');
+        setKv('lng', device.lng != null ? Number(device.lng).toFixed(6) : '');
+
+        const mapsRow = document.getElementById('elixia-maps-row');
+        const mapsLink = document.getElementById('elixia-maps-link');
+        const shortLink = document.getElementById('elixia-short-link');
+        const mapBox = document.getElementById('elixia-live-map');
+
+        if (device.lat != null && device.lng != null && !isNaN(device.lat) && !isNaN(device.lng)) {
+            mapsRow.hidden = false;
+            mapsLink.href = 'https://maps.google.com/?q=' + encodeURIComponent(device.lat + ',' + device.lng);
+            mapBox.hidden = false;
+            if (typeof L !== 'undefined') {
+                if (!elixiaMap) {
+                    elixiaMap = L.map(mapBox).setView([device.lat, device.lng], 15);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '&copy; OpenStreetMap'
+                    }).addTo(elixiaMap);
+                    elixiaMarker = L.marker([device.lat, device.lng]).addTo(elixiaMap);
+                } else {
+                    elixiaMap.setView([device.lat, device.lng], 15);
+                    elixiaMarker.setLatLng([device.lat, device.lng]);
+                }
+                setTimeout(function () { elixiaMap.invalidateSize(); }, 80);
+            }
+        } else {
+            mapsRow.hidden = true;
+            mapBox.hidden = true;
+        }
+
+        if (device.shorturl) {
+            shortLink.hidden = false;
+            shortLink.href = device.shorturl;
+        } else {
+            shortLink.hidden = true;
+        }
+    }
+
+    function loadElixia(force) {
+        statusEl.className = 'alert';
+        statusEl.textContent = 'Loading Elixia data…';
+        bodyEl.hidden = true;
+        refreshBtn.disabled = true;
+
+        const url = 'api/elixia_live.php?unique_id=' + encodeURIComponent(uniqueId) + (force ? '&refresh=1' : '');
+        fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                refreshBtn.disabled = false;
+                if (!data || !data.ok) {
+                    statusEl.className = 'alert alert-danger';
+                    statusEl.textContent = (data && data.error) ? data.error : 'Could not load Elixia data.';
+                    return;
+                }
+                if (!data.found || !data.device) {
+                    statusEl.className = 'alert alert-warning';
+                    statusEl.textContent = 'No Elixia device matched this Unique Freezer ID yet.';
+                    return;
+                }
+                statusEl.className = 'alert alert-success';
+                statusEl.textContent = 'Live match found in Elixia VTS.';
+                renderDevice(data.device);
+            })
+            .catch(function () {
+                refreshBtn.disabled = false;
+                statusEl.className = 'alert alert-danger';
+                statusEl.textContent = 'Network error while calling Elixia API.';
+            });
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', function () { loadElixia(true); });
+    }
+    loadElixia(false);
+});
+</script>
 <?php endif; ?>
 
 <!-- Map Script for Store View -->

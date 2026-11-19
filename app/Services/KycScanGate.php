@@ -5,7 +5,7 @@ use App\Models\AssetTag;
 use App\Models\Freezer;
 
 /**
- * KYC from outside a profile (list / dashboard) requires QR/Tag scan first.
+ * AMC from outside a profile (list / dashboard) requires QR/Tag scan first.
  * Inside that freezer's profile, scan is skipped — user is already on that asset.
  */
 class KycScanGate {
@@ -21,7 +21,7 @@ class KycScanGate {
         $_SESSION['kyc_scan_ok'][$freezerId] = time();
     }
 
-    /** Unlock KYC because user is on this freezer's store profile. */
+    /** Unlock AMC because user is on this freezer's store profile. */
     public static function markFromProfile(int $freezerId): void {
         self::mark($freezerId);
     }
@@ -44,13 +44,13 @@ class KycScanGate {
         unset($_SESSION['kyc_scan_ok'][$freezerId]);
     }
 
-    /** Outside profile: force QR scan then open KYC. */
+    /** Outside profile: force QR scan then open AMC. */
     public static function scannerUrl(array $freezer): string {
         $uid = (string)($freezer['unique_freezer_id'] ?? '');
-        return 'qr_scanner.php?purpose=kyc&expect=' . rawurlencode($uid);
+        return 'qr_scanner.php?purpose=amc&expect=' . rawurlencode($uid);
     }
 
-    /** From profile page: open KYC form directly (no scan). */
+    /** From profile page: open AMC form directly (no scan). */
     public static function profileKycUrl(array $freezer): string {
         $id = (int)($freezer['id'] ?? 0);
         return 'freezer_kyc.php?id=' . $id . '&from=profile';
@@ -106,7 +106,7 @@ class KycScanGate {
     }
 
     /**
-     * Unlock KYC if scanned code matches the expected Unique Freezer ID.
+     * Unlock AMC if scanned code matches the expected Unique Freezer ID.
      * @return array{ok:bool, freezer:?array, error:?string}
      */
     public static function tryUnlock(string $scannedRaw, string $expectUniqueId): array {
@@ -117,18 +117,18 @@ class KycScanGate {
         }
         $uid = (string)($freezer['unique_freezer_id'] ?? '');
         if ($expectUniqueId !== '' && strcasecmp($uid, $expectUniqueId) !== 0) {
-            AppLogger::failed('kyc.scan_mismatch', 'Wrong asset scanned for KYC', [
+            AppLogger::failed('kyc.scan_mismatch', 'Wrong asset scanned for AMC', [
                 'expected' => $expectUniqueId,
                 'scanned' => $uid,
             ]);
             return [
                 'ok' => false,
                 'freezer' => $freezer,
-                'error' => 'Wrong asset. Scanned ' . $uid . ' but KYC is for ' . $expectUniqueId . '.',
+                'error' => 'Wrong asset. Scanned ' . $uid . ' but AMC is for ' . $expectUniqueId . '.',
             ];
         }
         self::mark((int)$freezer['id']);
-        AppLogger::info('kyc.scan_ok', 'KYC unlocked after QR scan', [
+        AppLogger::info('kyc.scan_ok', 'AMC unlocked after QR scan', [
             'freezer_id' => (int)$freezer['id'],
             'unique_freezer_id' => $uid,
         ]);

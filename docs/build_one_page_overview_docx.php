@@ -82,24 +82,24 @@ $body .= p('One-page overview · Features · Users · Field & Admin working proc
 
 $body .= mixedP([
     ['t' => 'What it is: ', 'b' => true, 'c' => '1E3A8A'],
-    ['t' => 'Mobile + web app to register deep freezers with QR tags, capture store/freezer photos & GPS, run KYC checks, and manage assets by zone/city.', 'c' => '334155'],
+    ['t' => 'Mobile + web app to register deep freezers with QR tags, capture store/freezer photos & GPS, run asset checks, and manage assets by zone/city.', 'c' => '334155'],
 ], 14, 60);
 
 $body .= p('1) User roles — who does what', true, 18, '1E3A8A', 'left', 40);
 $body .= table([
     ['Role', 'Access', 'Main work'],
-    ['Super Admin', 'Full system', 'Users, Approvals, Blank QR, Import/Export, Logs, KYC Activity, all zones'],
-    ['Technician', 'Assigned zone/city', 'Scan QR → register / update store & freezer → photos + GPS → KYC on site'],
-    ['Viewer', 'View only', 'Dashboard & profiles view / print QR — no add, edit, KYC, or user management'],
+    ['Super Admin', 'Full system', 'Users, Approvals, Blank QR, Import/Export, Logs, asset Activity, all zones'],
+    ['Technician', 'Assigned zone/city', 'Scan QR → register / update store & freezer → photos + GPS → asset on site'],
+    ['Viewer', 'View only', 'Dashboard & profiles view / print QR — no add, edit, asset, or user management'],
 ], [1600, 2200, 6280], '1E3A8A');
 
 $body .= p('2) Field working process (Technician)', true, 18, '1E3A8A', 'left', 50);
 $body .= mixedP([
-    ['t' => '1. Login  →  2. Scan Blank QR / open asset  →  3. Fill store + freezer details  →  4. Capture photos (store / freezer / IoT-SIM)  →  5. Capture GPS  →  6. Save profile  →  7. Do KYC (Pass/Fail) with photos & notes  →  8. Pending KYC appears on Home / Profiles for follow-up.', 'c' => '334155'],
+    ['t' => '1. Login  →  2. Scan Blank QR / open asset  →  3. Fill store + freezer details  →  4. Capture photos (store / freezer / IoT-SIM)  →  5. Capture GPS  →  6. Save profile  →  7. Do asset (Pass/Fail) with photos & notes  →  8. Pending asset appears on Home / Profiles for follow-up.', 'c' => '334155'],
 ], 13, 40);
 $body .= mixedP([
     ['t' => 'Rules: ', 'b' => true, 'c' => '0F172A'],
-    ['t' => 'Technician sees only their zone/city. Edit of existing profiles may need Super Admin approval (password-gated unlock / 1 save window). KYC due / failed assets show clear next action (Do KYC / Re-verify).', 'c' => '475569'],
+    ['t' => 'Technician sees only their zone/city. Edit of existing profiles may need Super Admin approval (password-gated unlock / 1 save window). asset due / failed assets show clear next action (Do asset / Re-verify).', 'c' => '475569'],
 ], 13, 60);
 
 $body .= p('3) Admin powers & working process', true, 18, '1E3A8A', 'left', 40);
@@ -109,18 +109,18 @@ $body .= table([
     ['Approvals', 'Approve / reject technician edit-access & store-move requests · bulk actions'],
     ['Blank QR', 'Generate zone tags (RO-ZONE-XXXXXX) · filter · print selected / by zone'],
     ['Assets', 'View all zones · export CSV/Excel · print stickers · open any profile'],
-    ['KYC Activity', 'Pending / Complete / Failed history · filters · export · map'],
+    ['asset Activity', 'Pending / Complete / Failed history · filters · export · map'],
     ['System', 'Import/Export · System Logs · password-protected sensitive actions'],
 ], [2200, 7880], '0F766E');
 
 $body .= p('4) Core product features (short)', true, 18, '1E3A8A', 'left', 50);
 $body .= mixedP([
-    ['t' => 'QR lifecycle · Store/freezer profile · Photos + GPS · KYC Pass/Fail · Zone/city scope · Approvals + Undo · Blank QR print · Excel/CSV export · Mobile field UI · Role-based login (JWT + bcrypt).', 'c' => '334155'],
+    ['t' => 'QR lifecycle · Store/freezer profile · Photos + GPS · asset Pass/Fail · Zone/city scope · Approvals + Undo · Blank QR print · Excel/CSV export · Mobile field UI · Role-based login (JWT + bcrypt).', 'c' => '334155'],
 ], 13, 50);
 
 $body .= p('5) Simple flow map', true, 18, '1E3A8A', 'left', 40);
 $body .= mixedP([
-    ['t' => 'Admin generates Blank QR  →  Field scans & registers freezer  →  KYC on site  →  Admin monitors Approvals / KYC Activity / Assets  →  Export or print when needed.', 'c' => '334155'],
+    ['t' => 'Admin generates Blank QR  →  Field scans & registers freezer  →  asset on site  →  Admin monitors Approvals / asset Activity / Assets  →  Export or print when needed.', 'c' => '334155'],
 ], 13, 70);
 
 $body .= p('ReeferON DF  ·  Confidential internal overview  ·  Fits 1 page', false, 12, '94A3B8', 'center', 0);

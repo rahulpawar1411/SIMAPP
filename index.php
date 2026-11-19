@@ -4,7 +4,6 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
-use App\Models\FreezerLifecycle;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
@@ -61,34 +60,7 @@ try {
     );
 }
 
-$kycDone = 0;
-$kycPending = 0;
-$kycPendingList = [];
-$kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
-try {
-    $kycDash = FreezerLifecycle::dashboardKycStats(10, $dashFilters);
-    $kycDone = (int)$kycDash['done'];
-    $kycPending = (int)$kycDash['pending'];
-    $kycPendingList = $kycDash['pending_list'] ?? [];
-} catch (Throwable $e) {
-    \App\Services\AppLogger::exception($e, 'dashboard.kyc_stats');
-    $kycPending = (int)$stats['total_freezers'];
-}
 $hasDashFilter = ($filterZone !== '' || $filterCity !== '');
-
-$kycFailedCount = 0;
-try {
-    $failFilters = ['kyc' => ['failed']];
-    if ($filterCity !== '') {
-        $failFilters['city'] = [$filterCity];
-    } elseif ($filterZone !== '' && !empty($cityOptions)) {
-        $failFilters['city'] = $cityOptions;
-    }
-    $kycFailedCount = Freezer::countFiltered($failFilters);
-} catch (Throwable $e) {
-    \App\Services\AppLogger::exception($e, 'dashboard.kyc_failed');
-    $kycFailedCount = 0;
-}
 
 $byZone = $stats['by_zone'] ?? [];
 $topStores = $stats['top_stores'] ?? [];
@@ -135,7 +107,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="adash-welcome">
         <div>
             <h1 class="adash-welcome-title">Welcome, <?= htmlspecialchars($currentUser['name'] ?? 'Admin') ?>!</h1>
-            <p class="adash-welcome-sub">Overview of freezers, outlets, and KYC verification status.</p>
+            <p class="adash-welcome-sub">Overview of freezers and outlets.</p>
         </div>
         <form method="GET" action="index.php" class="adash-filters" id="dash-filter-form">
             <select id="dash-zone" name="zone" class="adash-select" onchange="document.getElementById('dash-city').value=''; this.form.submit();" aria-label="Zone">
@@ -167,88 +139,43 @@ require_once __DIR__ . '/includes/header.php';
                 <span class="adash-kpi-meta"><?= number_format($stats['total_stores']) ?> active outlets</span>
             </div>
         </a>
-        <a class="adash-kpi adash-kpi-green" href="profiles.php?kyc[]=done">
+        <a class="adash-kpi adash-kpi-green" href="profiles.php">
             <div class="adash-kpi-icon" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             </div>
             <div class="adash-kpi-body">
-                <span class="adash-kpi-label">KYC Passed</span>
-                <strong class="adash-kpi-value"><?= number_format($kycDone) ?></strong>
-                <span class="adash-kpi-meta up">Within <?= (int)$kycGapMonths ?> mo window</span>
+                <span class="adash-kpi-label">Active Outlets</span>
+                <strong class="adash-kpi-value"><?= number_format($stats['total_stores']) ?></strong>
+                <span class="adash-kpi-meta up">Linked stores</span>
             </div>
         </a>
-        <a class="adash-kpi adash-kpi-orange" href="profiles.php?kyc[]=pending">
+        <a class="adash-kpi adash-kpi-orange" href="qr_scanner.php">
             <div class="adash-kpi-icon" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             </div>
             <div class="adash-kpi-body">
-                <span class="adash-kpi-label">KYC Pending</span>
-                <strong class="adash-kpi-value"><?= number_format($kycPending) ?></strong>
-                <span class="adash-kpi-meta">Due for verification</span>
+                <span class="adash-kpi-label">Scan QR</span>
+                <strong class="adash-kpi-value">Register</strong>
+                <span class="adash-kpi-meta">Add or open asset</span>
             </div>
         </a>
-        <a class="adash-kpi adash-kpi-red" href="profiles.php?kyc[]=failed">
+        <a class="adash-kpi adash-kpi-red" href="notifications.php">
             <div class="adash-kpi-icon" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             </div>
             <div class="adash-kpi-body">
-                <span class="adash-kpi-label">KYC Issues</span>
-                <strong class="adash-kpi-value"><?= number_format($kycFailedCount) ?></strong>
-                <span class="adash-kpi-meta <?= $kycFailedCount > 0 ? 'down' : '' ?>">Failed verifications</span>
+                <span class="adash-kpi-label">Approvals</span>
+                <strong class="adash-kpi-value">Open</strong>
+                <span class="adash-kpi-meta">Edit requests</span>
             </div>
         </a>
     </div>
 
-    <div class="adash-lower-grid adash-lower-grid-3">
-        <div class="adash-card">
-            <div class="adash-card-head">
-                <h2>Nearby KYC Due</h2>
-                <a href="profiles.php?kyc[]=pending" class="adash-link">View all (<?= number_format($kycPending) ?>)</a>
-            </div>
-            <div class="adash-table-wrap">
-                <table class="adash-table">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Freezer / Store</th>
-                            <th>Location</th>
-                            <th>Due</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (empty($kycPendingList)): ?>
-                            <tr><td colspan="4" class="adash-empty">No KYC due right now</td></tr>
-                        <?php else: ?>
-                            <?php foreach ($kycPendingList as $i => $row): ?>
-                                <?php
-                                $due = (string)($row['next_kyc_due'] ?? '');
-                                $dueLabel = $due !== '' ? $due : '—';
-                                $fid = (string)($row['unique_freezer_id'] ?? '');
-                                ?>
-                                <tr>
-                                    <td><?= $i + 1 ?></td>
-                                    <td>
-                                        <a href="profile_view.php?id=<?= urlencode($fid) ?>" class="adash-row-link">
-                                            <strong><?= htmlspecialchars($fid !== '' ? $fid : '—') ?></strong>
-                                        </a>
-                                        <div class="adash-sub"><?= htmlspecialchars((string)($row['store_name'] ?? '—')) ?></div>
-                                    </td>
-                                    <td><?= htmlspecialchars((string)($row['city'] ?? '—')) ?></td>
-                                    <td>
-                                        <span class="adash-pill adash-pill-pending"><?= htmlspecialchars($dueLabel) ?></span>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="adash-card">
+    <div class="adash-lower-grid adash-lower-grid-2">
+        <div class="adash-card adash-activity-card">
             <div class="adash-card-head">
                 <h2>Recent Activities</h2>
-                <a href="kyc_activity.php" class="adash-link">KYC Activity</a>
+                <a href="profiles.php" class="adash-link">Assets</a>
             </div>
             <ul class="adash-activity">
                 <?php if (empty($activities)): ?>

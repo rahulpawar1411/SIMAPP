@@ -1,7 +1,7 @@
 <?php
 /**
  * Freezer Profiles list (Assets).
- * Search, KYC status tabs, filters, export, and mobile card layout.
+ * Search, filters, export, and mobile card layout.
  */
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -10,7 +10,6 @@ use App\Services\ImportExportService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
 use App\Models\MasterData;
-use App\Models\FreezerLifecycle;
 use App\Models\AssetTag;
 
 AuthService::requireLogin();
@@ -42,7 +41,7 @@ $brandList = $asList($_GET['brand'] ?? []);
 $statusList = $asList($_GET['status'] ?? []);
 $cityList = $asList($_GET['city'] ?? []);
 $missingList = $asList($_GET['missing'] ?? []);
-$kycList = array_values(array_intersect($asList($_GET['kyc'] ?? []), ['pending', 'done', 'failed']));
+$kycList = []; // AMC/KYC filters removed
 
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20; // Fixed page size — keeps Assets list light under load
@@ -57,7 +56,7 @@ $filters = [
     'missing' => $missingList,
     'kyc' => $kycList,
 ];
-// Technician / Viewer with assigned zone/city only see that area
+// Technicians with assigned zone/city only see freezers in that area
 $areaScope = AuthService::areaScope();
 $filters = AuthService::applyAreaToFilters($filters);
 if ($areaScope['city'] !== '') {
@@ -69,13 +68,10 @@ if ($mineOnly) {
     $filters['created_by'] = (int)($currentUser['id'] ?? 0);
 }
 
-$kycGapMonths = FreezerLifecycle::KYC_GAP_MONTHS;
 $activeFilterCount = count($typeList) + count($brandList) + count($statusList)
-    + count($cityList) + count($missingList) + count($kycList);
+    + count($cityList) + count($missingList);
 $hasActiveFilters = $search !== '' || $activeFilterCount > 0;
 
-/* Single-value helpers for labels that still expect one KYC mode */
-$kyc = count($kycList) === 1 ? $kycList[0] : '';
 $city = count($cityList) === 1 ? $cityList[0] : '';
 $status = count($statusList) === 1 ? $statusList[0] : '';
 
@@ -95,18 +91,9 @@ if (!empty($_GET['export'])) {
 
 $isAdmin = AuthService::hasRole(AppConfig::ROLE_SUPER_ADMIN);
 
-// Base filters for tab counts (same search/area/mine, without KYC tab)
-$baseFilters = $filters;
-$baseFilters['kyc'] = [];
 $tabCountAll = 0;
-$tabCountOk = 0;
-$tabCountPending = 0;
-$tabCountIssue = 0;
 try {
-    $tabCountAll = Freezer::countFiltered($baseFilters);
-    $tabCountOk = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['done']]));
-    $tabCountPending = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['pending']]));
-    $tabCountIssue = Freezer::countFiltered(array_merge($baseFilters, ['kyc' => ['failed']]));
+    $tabCountAll = Freezer::countFiltered($filters);
 } catch (Throwable $e) {
     \App\Services\AppLogger::exception($e, 'profiles.tab_counts');
     $tabCountAll = 0;
@@ -149,7 +136,7 @@ $profilesKeepParams = static function () use ($search, $typeList, $brandList, $s
     ], static fn($v) => $v !== null && $v !== '' && $v !== []);
 };
 
-/** Build page URL keeping current filters + active KYC tab */
+/** Build page URL keeping current filters */
 $profilesPageUrl = static function (int $p) use ($profilesKeepParams, $kycList): string {
     $params = $profilesKeepParams();
     if ($kycList) {
@@ -192,7 +179,7 @@ if (AppConfig::IOT_ENABLED) {
     $missingOptions['iot'] = 'Missing IoT';
 }
 
-/** Build Assets tab URL keeping search + non-KYC filters (+ mine) */
+/** Build Assets tab URL keeping search + filters (+ mine) */
 $profilesTabUrl = static function (string $tab) use ($profilesKeepParams): string {
     $params = $profilesKeepParams();
     if ($tab === 'pending') {
@@ -228,7 +215,7 @@ require_once __DIR__ . '/includes/header.php';
         <a href="qr_print_bulk.php?<?= http_build_query(array_filter(['q' => $search, 'city' => $cityList, 'status' => $statusList], static fn($v) => $v !== '' && $v !== [])) ?>" class="btn btn-outline" target="_blank">
             Print all stickers (PDF)
         </a>
-        <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-secondary" title="Full store + freezer + KYC + IoT data">
+        <a href="profiles.php?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-secondary" title="Full store + freezer + IoT data">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                 <polyline points="7 10 12 15 17 10"/>
@@ -252,29 +239,10 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 <?php endif; ?>
 
-<!-- Status tabs: All / OK / Pending / Issue — counts match list + pagination -->
-<nav class="assets-status-tabs" id="assets-status-tabs" aria-label="KYC status">
-    <a href="<?= htmlspecialchars($profilesTabUrl('all')) ?>" data-profiles-loading data-assets-tab="all" class="<?= $activeTab === 'all' ? 'is-active' : '' ?>">
-        All <em><?= number_format($tabCountAll) ?></em>
-    </a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('done')) ?>" data-profiles-loading data-assets-tab="done" class="<?= $activeTab === 'done' ? 'is-active is-ok' : '' ?>">
-        OK <em><?= number_format($tabCountOk) ?></em>
-    </a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('pending')) ?>" data-profiles-loading data-assets-tab="pending" class="<?= $activeTab === 'pending' ? 'is-active is-pending' : '' ?>">
-        Pending <em><?= number_format($tabCountPending) ?></em>
-    </a>
-    <a href="<?= htmlspecialchars($profilesTabUrl('failed')) ?>" data-profiles-loading data-assets-tab="failed" class="<?= $activeTab === 'failed' ? 'is-active is-issue' : '' ?>">
-        Issue <em><?= number_format($tabCountIssue) ?></em>
-    </a>
-</nav>
-
 <!-- Search + Filter button (Flipkart-style drawer) -->
 <div class="card profiles-filter-bar">
     <div class="card-body">
         <form method="GET" action="" class="profiles-search-row" id="profiles-search-form">
-            <?php foreach ($kycList as $kv): ?>
-                <input type="hidden" name="kyc[]" value="<?= htmlspecialchars($kv) ?>">
-            <?php endforeach; ?>
             <?php if ($mineOnly): ?>
                 <input type="hidden" name="mine" value="1">
             <?php endif; ?>
@@ -317,9 +285,6 @@ require_once __DIR__ . '/includes/header.php';
                 <?php endforeach; ?>
                 <?php foreach ($missingList as $m): ?>
                     <span class="profiles-chip"><?= htmlspecialchars($missingOptions[$m] ?? $m) ?></span>
-                <?php endforeach; ?>
-                <?php foreach ($kycList as $kv): ?>
-                    <span class="profiles-chip">KYC: <?= $kv === 'pending' ? 'Pending' : ($kv === 'failed' ? 'Failed' : ('Within ' . (int)$kycGapMonths . ' mo')) ?></span>
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>
@@ -406,23 +371,6 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </section>
 
-            <section class="filter-section">
-                <h3 class="filter-section-title">KYC status</h3>
-                <div class="filter-check-list">
-                    <label class="filter-check">
-                        <input type="checkbox" name="kyc[]" value="pending" <?= in_array('pending', $kycList, true) ? 'checked' : '' ?>>
-                        <span>KYC pending</span>
-                    </label>
-                    <label class="filter-check">
-                        <input type="checkbox" name="kyc[]" value="done" <?= in_array('done', $kycList, true) ? 'checked' : '' ?>>
-                        <span>KYC within <?= (int)$kycGapMonths ?> months</span>
-                    </label>
-                    <label class="filter-check">
-                        <input type="checkbox" name="kyc[]" value="failed" <?= in_array('failed', $kycList, true) ? 'checked' : '' ?>>
-                        <span>KYC failed</span>
-                    </label>
-                </div>
-            </section>
         </div>
         <footer class="filter-drawer-foot">
             <a href="profiles.php<?= $search !== '' ? ('?q=' . urlencode($search)) : '' ?>" class="btn btn-secondary">Clear all</a>
@@ -444,8 +392,8 @@ require_once __DIR__ . '/includes/header.php';
 <div class="card profiles-list-card" id="profiles-list-card">
     <div class="card-header">
         <div class="card-title">
-            <span><?= $kyc === 'pending' ? 'KYC pending freezers' : ($kyc === 'done' ? 'KYC within window' : ($kyc === 'failed' ? 'KYC failed freezers' : 'Registered Freezers')) ?></span>
-            <span class="badge <?= $kyc === 'pending' ? 'badge-warning' : ($kyc === 'failed' ? 'badge-danger' : 'badge-neutral') ?>" style="margin-left: 0.5rem;"><?= number_format($totalCount) ?> record<?= $totalCount === 1 ? '' : 's' ?></span>
+            <span>Registered Freezers</span>
+            <span class="badge badge-neutral" style="margin-left: 0.5rem;"><?= number_format($totalCount) ?> record<?= $totalCount === 1 ? '' : 's' ?></span>
             <?php if ($totalPages > 1): ?>
                 <span class="badge badge-neutral" style="margin-left:0.35rem;">Page <?= (int)$page ?> / <?= (int)$totalPages ?></span>
             <?php endif; ?>
@@ -462,7 +410,6 @@ require_once __DIR__ . '/includes/header.php';
                     <th>Type</th>
                     <th>Brand</th>
                     <th>Tag code</th>
-                    <th>KYC</th>
                     <?php if (AppConfig::IOT_ENABLED): ?><th>IoT Status</th><?php endif; ?>
                     <th>Condition</th>
                     <th style="text-align: right;">Actions</th>
@@ -471,7 +418,7 @@ require_once __DIR__ . '/includes/header.php';
             <tbody>
                 <?php if (empty($freezers)): ?>
                     <tr>
-                        <td colspan="<?= AppConfig::IOT_ENABLED ? 9 : 8 ?>" style="text-align: center; padding: 3rem 1rem; color: #94a3b8;">
+                        <td colspan="<?= AppConfig::IOT_ENABLED ? 8 : 7 ?>" style="text-align: center; padding: 3rem 1rem; color: #94a3b8;">
                             <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">No freezer profiles matched your search</div>
                             <p style="font-size: 0.85rem;">Try modifying your keyword filter or register a new freezer.</p>
                             <a href="qr_scanner.php" class="btn btn-primary" style="margin-top: 1rem;">Scan QR → Register</a>
@@ -479,13 +426,6 @@ require_once __DIR__ . '/includes/header.php';
                     </tr>
                 <?php else: ?>
                     <?php foreach ($freezers as $row): ?>
-                        <?php
-                        $rowInstall = !empty($row['installation_date']) ? (string)$row['installation_date'] : null;
-                        $rowLastKyc = !empty($row['last_kyc_at']) ? (string)$row['last_kyc_at'] : null;
-                        $rowKycDue = FreezerLifecycle::isKycDue($rowLastKyc, null, $rowInstall);
-                        $rowAnchor = FreezerLifecycle::kycAnchorDate($rowLastKyc, $rowInstall);
-                        $rowNextDue = FreezerLifecycle::nextKycDueDate($rowAnchor);
-                        ?>
                         <tr>
                             <td>
                                 <a href="profile_view.php?id=<?= urlencode($row['unique_freezer_id']) ?>" class="table-id-link">
@@ -518,47 +458,6 @@ require_once __DIR__ . '/includes/header.php';
                                     <?php if (!empty($row['store_city'])): ?>
                                         <div style="font-size:0.7rem; color:#94a3b8;"><?= htmlspecialchars($row['store_city']) ?></div>
                                     <?php endif; ?>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php
-                                $rowLastResult = strtoupper(trim((string)($row['last_kyc_result'] ?? '')));
-                                $rowFailed = $rowLastResult === 'FAIL';
-                                ?>
-                                <?php if ($rowFailed): ?>
-                                    <span class="badge badge-danger">FAIL</span>
-                                    <div class="kyc-pending-date" style="margin-top:0.25rem;">
-                                        <?= $rowLastKyc ? 'On ' . htmlspecialchars($rowLastKyc) : 'Failed KYC' ?>
-                                    </div>
-                                    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
-                                        <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($row)) ?>" class="btn btn-sm btn-outline" style="margin-top:0.35rem;">Re-verify</a>
-                                    <?php endif; ?>
-                                <?php elseif ($rowKycDue): ?>
-                                    <div class="kyc-pending-date">
-                                        <?php if ($rowLastKyc): ?>
-                                            Last <?= htmlspecialchars($rowLastKyc) ?>
-                                            <?php if ($rowLastResult !== ''): ?>
-                                                · <?= htmlspecialchars($rowLastResult) ?>
-                                            <?php endif; ?>
-                                        <?php elseif ($rowInstall): ?>
-                                            Install <?= htmlspecialchars($rowInstall) ?>
-                                        <?php else: ?>
-                                            Never done
-                                        <?php endif; ?>
-                                    </div>
-                                    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
-                                        <a href="<?= htmlspecialchars(\App\Services\KycScanGate::scannerUrl($row)) ?>" class="btn btn-sm btn-primary" style="margin-top:0.35rem;">KYC</a>
-                                    <?php endif; ?>
-                                <?php else: ?>
-                                    <div class="kyc-ok-date">
-                                        <?php if ($rowLastResult === 'PASS'): ?>
-                                            <span class="badge badge-success" style="margin-bottom:0.2rem;">PASS</span>
-                                        <?php endif; ?>
-                                        Due <?= htmlspecialchars((string)($rowNextDue ?? '—')) ?>
-                                        <?php if (!$rowLastKyc && $rowInstall): ?>
-                                            <span style="display:block;">from install</span>
-                                        <?php endif; ?>
-                                    </div>
                                 <?php endif; ?>
                             </td>
                             <?php if (AppConfig::IOT_ENABLED): ?>
@@ -596,35 +495,16 @@ require_once __DIR__ . '/includes/header.php';
         <?php else: ?>
             <?php foreach ($freezers as $row): ?>
                 <?php
-                $rowInstall = !empty($row['installation_date']) ? (string)$row['installation_date'] : null;
-                $rowLastKyc = !empty($row['last_kyc_at']) ? (string)$row['last_kyc_at'] : null;
-                $rowKycDue = FreezerLifecycle::isKycDue($rowLastKyc, null, $rowInstall);
-                $rowLastResult = strtoupper(trim((string)($row['last_kyc_result'] ?? '')));
-                $rowFailed = $rowLastResult === 'FAIL';
-                if ($rowFailed) {
-                    $pillClass = 'issue';
-                    $pillLabel = 'Issue';
-                    $nextAction = 'Re-verify';
-                    $nextHref = \App\Services\KycScanGate::scannerUrl($row);
-                } elseif ($rowKycDue) {
-                    $pillClass = 'pending';
-                    $pillLabel = 'Pending';
-                    $nextAction = 'Do KYC';
-                    $nextHref = \App\Services\KycScanGate::scannerUrl($row);
-                } else {
-                    $pillClass = 'success';
-                    $pillLabel = $rowLastResult === 'PASS' ? 'Completed' : 'OK';
-                    $nextAction = '';
-                    $nextHref = '';
-                }
                 $fid = (string)($row['unique_freezer_id'] ?? '');
                 $canEdit = AuthService::hasRole(['super_admin', 'technician']);
+                $statusLabel = (string)($row['status'] ?? 'Active');
+                $pillClass = strcasecmp($statusLabel, 'Active') === 0 ? 'success' : 'pending';
                 ?>
                 <article class="mapp-asset-card">
                     <a class="mapp-asset-main" href="profile_view.php?id=<?= urlencode($fid) ?>">
                         <div class="mapp-asset-top">
                             <strong><?= htmlspecialchars((string)($row['store_name'] ?? 'Store')) ?></strong>
-                            <span class="mapp-pill mapp-pill-<?= $pillClass ?>"><?= htmlspecialchars($pillLabel) ?></span>
+                            <span class="mapp-pill mapp-pill-<?= $pillClass ?>"><?= htmlspecialchars($statusLabel) ?></span>
                         </div>
                         <div class="mapp-asset-id"><?= htmlspecialchars($fid) ?></div>
                         <div class="mapp-asset-meta">
@@ -632,10 +512,7 @@ require_once __DIR__ . '/includes/header.php';
                             <span><?= htmlspecialchars((string)($row['tag_code'] ?? $row['freezer_type'] ?? '')) ?></span>
                         </div>
                     </a>
-                    <div class="mapp-asset-actions<?= $nextAction !== '' ? ' has-primary' : '' ?>">
-                        <?php if ($nextAction !== ''): ?>
-                            <a href="<?= htmlspecialchars($nextHref) ?>" class="btn btn-sm btn-primary mapp-action-primary"><?= htmlspecialchars($nextAction) ?></a>
-                        <?php endif; ?>
+                    <div class="mapp-asset-actions">
                         <?php if ($canEdit): ?>
                             <a href="profile_edit.php?id=<?= (int)$row['id'] ?>" class="btn btn-sm btn-outline">Edit</a>
                         <?php endif; ?>
@@ -795,7 +672,7 @@ require_once __DIR__ . '/includes/header.php';
                 return;
             }
             var label = (tabLink.getAttribute('data-assets-tab') || tabLink.textContent || 'list').trim();
-            var msgMap = { all: 'Loading all freezers…', done: 'Loading OK freezers…', pending: 'Loading pending KYC…', failed: 'Loading KYC issues…' };
+            var msgMap = { all: 'Loading all freezers…', done: 'Loading freezers…', pending: 'Loading freezers…', failed: 'Loading freezers…' };
             showProfilesLoading(msgMap[label] || ('Loading ' + tabLink.textContent.trim() + '…'));
             return;
         }

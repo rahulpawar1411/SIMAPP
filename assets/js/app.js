@@ -258,13 +258,14 @@ function imageFieldLabel(input) {
     const map = {
         image_store_front: 'Store Front',
         image_new_store_front: 'Store Front (new outlet)',
-        image_left_side: 'Freezer Left Side',
+        image_left_side: 'Freezer Full',
         image_right_side: 'Freezer Right Side',
         image_aadhar_card: 'Aadhaar Front',
         image_aadhar_back: 'Aadhaar Back',
         image_iot_device: 'IoT Device',
-        image_sim: 'SIM Number',
-        image_freezer: 'Freezer (KYC)',
+        image_sim: 'SIM',
+        image_sim_back: 'SIM',
+        image_freezer: 'Freezer photo',
     };
     return map[name] || 'Photo';
 }
@@ -976,7 +977,7 @@ function initCascadingLocationSelector() {
     }
 
     function ensureCityAutocomplete() {
-        const group = cityInput.closest('.form-group') || cityInput.parentElement;
+        const group = cityInput.closest('tr, .form-group') || cityInput.parentElement;
         if (!group) return null;
         group.classList.add('city-autocomplete-wrap');
         if (getComputedStyle(group).position === 'static') {
@@ -1683,7 +1684,7 @@ async function compressImageBlob(blob, opts) {
 }
 
 /**
- * Other images (Aadhaar, freezer sides, KYC freezer, IoT): stamp date-time only — no GPS/map.
+ * Other images (Aadhaar, freezer sides, AMC freezer, IoT): stamp date-time only — no GPS/map.
  */
 async function stampDateTimeOnlyOnBlob(blob) {
     if (!blob) return blob;
@@ -2262,7 +2263,7 @@ function setExifStatus(message, type) {
 }
 
 /**
- * Resolve upload box for any image input (profile, edit, KYC).
+ * Resolve upload box for any image input (profile, edit, AMC).
  * @param {HTMLElement|string|null} inputOrBox
  */
 function resolveUploadBox(inputOrBox) {

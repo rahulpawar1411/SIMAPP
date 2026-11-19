@@ -937,7 +937,7 @@ require_once __DIR__ . '/includes/header.php';
                 <ul class="role-access-list">
                     <li>Full system access</li>
                     <li>Add / edit / delete profiles</li>
-                    <li>QR scan, KYC, blank tags</li>
+                    <li>QR scan, blank tags</li>
                     <li>Manage Users + Import / Export</li>
                 </ul>
             </div>
@@ -948,7 +948,7 @@ require_once __DIR__ . '/includes/header.php';
                 <ul class="role-access-list">
                     <li>Field: Scan QR → fill store / freezer / photos / GPS → Save</li>
                     <li>Edit existing profiles (update data &amp; photos)</li>
-                    <li>KYC verify on site</li>
+                    <li>Register / update freezers on site</li>
                     <li>Zone/City at create — only that area’s data &amp; fills</li>
                     <li>View / print QR · no Users, Import, Delete, Blank tags</li>
                 </ul>
@@ -961,7 +961,7 @@ require_once __DIR__ . '/includes/header.php';
                     <li>Dashboard &amp; profiles view — All areas</li>
                     <li>QR print / view only</li>
                     <li>No zone lock (same as Admin view)</li>
-                    <li>No add / edit / KYC</li>
+                    <li>No add / edit</li>
                     <li>No user management</li>
                 </ul>
             </div>
