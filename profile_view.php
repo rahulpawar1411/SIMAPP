@@ -9,6 +9,7 @@ use App\Models\AssetTag;
 use App\Models\AppNotification;
 use App\Models\IoTDevice;
 use App\Services\QRCodeService;
+use App\Services\KycScanGate;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
@@ -164,13 +165,20 @@ $activeTab = $_GET['tab'] ?? 'overview';
 if ($activeTab === 'documents' || $activeTab === 'location') {
     $activeTab = 'overview'; // Location merged into Overview map card
 }
-$allowedTabs = ['overview', 'freezers', 'history'];
+$allowedTabs = ['overview', 'freezers', 'amc', 'history'];
 if (AppConfig::ELIXIA_VTS_ENABLED) {
     $allowedTabs[] = 'freezer_location';
 }
 if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'overview';
 }
+$amcHistory = [];
+try {
+    $amcHistory = FreezerLifecycle::kycHistory((int)$freezer['id'], 50);
+} catch (Throwable $e) {
+    $amcHistory = [];
+}
+$amcDoHref = KycScanGate::profileKycUrl($freezer);
 
 $isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
 $pendingEdit = null;
@@ -233,6 +241,9 @@ $galleryPhotos = [
 
 <div class="sp-actions field-actions-row">
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
+    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
+        <a href="<?= htmlspecialchars($amcDoHref) ?>" class="btn btn-primary btn-sm"><span class="btn-label-full">Do AMC</span><span class="btn-label-short">AMC</span></a>
+    <?php endif; ?>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= htmlspecialchars($editBtnLabel) ?></a>
     <?php if (AuthService::hasRole('super_admin')): ?>
@@ -244,9 +255,16 @@ $galleryPhotos = [
 
 <?php if ($isTechnician): ?>
 <div class="tech-sticky-bar no-print" aria-label="Technician actions">
-    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-primary"><?= htmlspecialchars($editBtnLabel) ?></a>
-    <a href="field_home.php" class="btn btn-secondary">Home</a>
+    <a href="<?= htmlspecialchars($amcDoHref) ?>" class="btn btn-primary">Do AMC</a>
+    <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary"><?= htmlspecialchars($editBtnLabel) ?></a>
+    <a href="field_home.php" class="btn btn-outline">Home</a>
 </div>
+<?php endif; ?>
+
+<?php if (!empty($_GET['amc_ok'])): ?>
+    <div class="alert alert-success app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="AMC saved." data-app-flash-variant="success">
+        AMC saved. See <a href="profile_view.php?id=<?= urlencode((string)$freezer['unique_freezer_id']) ?>&tab=amc">AMC verify history</a>.
+    </div>
 <?php endif; ?>
 
 <?php if (!empty($_GET['edit_pending'])): ?>
@@ -433,6 +451,7 @@ $galleryPhotos = [
         $tabs['freezer_location'] = 'Freezer location';
     }
     $tabs['freezers'] = 'Freezers (' . count($storeFreezers) . ')';
+    $tabs['amc'] = 'AMC history (' . count($amcHistory) . ')';
     $tabs['history'] = 'History';
     $baseUrl = 'profile_view.php?id=' . urlencode($freezer['unique_freezer_id']);
     foreach ($tabs as $key => $label):
@@ -915,6 +934,293 @@ $elixiaAutoRefresh = !empty($_GET['refresh']);
     </div>
 </div>
 
+<?php elseif ($activeTab === 'amc'): ?>
+<?php
+$amcLastDue = null;
+if ($amcHistory) {
+    $amcLastDue = FreezerLifecycle::nextKycDueDate((string)($amcHistory[0]['verified_at'] ?? ''));
+} elseif (!empty($freezer['installation_date'])) {
+    $amcLastDue = FreezerLifecycle::nextKycDueDate((string)$freezer['installation_date']);
+}
+$canDoAmc = AuthService::hasRole(['super_admin', 'technician']);
+$amcFmtWhen = static function (?array $row): string {
+    if (!$row) {
+        return '—';
+    }
+    $raw = (string)($row['verified_at'] ?? '');
+    if ($raw !== '' && strtotime($raw)) {
+        return date('d M Y, H:i', strtotime($raw));
+    }
+    return $raw !== '' ? $raw : '—';
+};
+$amcFmtAddr = static function (?array $row): string {
+    if (!$row) {
+        return '—';
+    }
+    $parts = array_filter([
+        trim((string)($row['address'] ?? '')),
+        trim((string)($row['city'] ?? '')),
+        trim((string)($row['state'] ?? '')),
+        trim((string)($row['pincode'] ?? '')),
+    ], static fn($x) => $x !== '');
+    return $parts ? implode(', ', $parts) : '—';
+};
+// Oldest → newest so each entry knows its previous visit
+$amcChrono = array_reverse($amcHistory);
+$amcChangeMap = [];
+$prevAmc = null;
+foreach ($amcChrono as $amcRow) {
+    $aid = (int)($amcRow['id'] ?? 0);
+    $notesLower = strtolower((string)($amcRow['notes'] ?? ''));
+    $outletChanged = str_contains($notesLower, 'outlet change')
+        || str_contains($notesLower, 'new store')
+        || str_contains($notesLower, 'store move');
+    $diffRows = [];
+    if ($prevAmc !== null) {
+        $pairs = [
+            ['Outlet', (string)($prevAmc['outlet_id'] ?? '—'), (string)($amcRow['outlet_id'] ?? '—')],
+            ['Store', (string)($prevAmc['store_name'] ?? '—'), (string)($amcRow['store_name'] ?? '—')],
+            ['City', (string)($prevAmc['city'] ?? '—'), (string)($amcRow['city'] ?? '—')],
+            ['Zone', (string)($prevAmc['zone'] ?? '—'), (string)($amcRow['zone'] ?? '—')],
+            ['Address', $amcFmtAddr($prevAmc), $amcFmtAddr($amcRow)],
+            ['Result', strtoupper(trim((string)($prevAmc['result'] ?? '—'))), strtoupper(trim((string)($amcRow['result'] ?? '—')))],
+            ['Verified', $amcFmtWhen($prevAmc), $amcFmtWhen($amcRow)],
+            ['By', (string)($prevAmc['verified_by_name'] ?? '—'), (string)($amcRow['verified_by_name'] ?? '—')],
+        ];
+        foreach ($pairs as [$label, $oldVal, $newVal]) {
+            $changed = strcasecmp(trim($oldVal), trim($newVal)) !== 0;
+            if ($label === 'Outlet' && $changed) {
+                $outletChanged = true;
+            }
+            if ($label === 'Store' && $changed) {
+                $outletChanged = true;
+            }
+            $diffRows[] = [
+                'label' => $label,
+                'previous' => $oldVal !== '' ? $oldVal : '—',
+                'new' => $newVal !== '' ? $newVal : '—',
+                'changed' => $changed,
+            ];
+        }
+    }
+    $amcChangeMap[$aid] = [
+        'outlet_changed' => $outletChanged,
+        'has_previous' => $prevAmc !== null,
+        'previous' => $prevAmc,
+        'diff_rows' => $diffRows,
+    ];
+    $prevAmc = $amcRow;
+}
+?>
+<?php
+$amcPhotoOk = static function (string $p): bool {
+    if ($p === '') {
+        return false;
+    }
+    $rel = ltrim(str_replace('\\', '/', $p), '/');
+    return is_file($p)
+        || file_exists(__DIR__ . '/' . $rel)
+        || file_exists(__DIR__ . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $p));
+};
+$amcPassCount = 0;
+$amcFailCount = 0;
+foreach ($amcHistory as $ah) {
+    if (strtoupper(trim((string)($ah['result'] ?? ''))) === 'FAIL') {
+        $amcFailCount++;
+    } else {
+        $amcPassCount++;
+    }
+}
+?>
+<div class="card sp-history-card" id="amc-history">
+    <div class="card-header sp-history-header">
+        <div>
+            <div class="card-title"><span>AMC verify history</span></div>
+            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
+                Visits: <?= (int)count($amcHistory) ?>
+                · PASS <?= (int)$amcPassCount ?>
+                · FAIL <?= (int)$amcFailCount ?>
+                · Next due <?= htmlspecialchars($amcLastDue ?: '—') ?>
+            </p>
+        </div>
+        <div class="sp-history-actions">
+            <a href="profile_view.php?id=<?= urlencode((string)$freezer['unique_freezer_id']) ?>&tab=history" class="btn btn-outline btn-sm">Store history</a>
+            <?php if ($canDoAmc): ?>
+                <a href="<?= htmlspecialchars($amcDoHref) ?>" class="btn btn-sm btn-primary">Do AMC</a>
+            <?php endif; ?>
+        </div>
+    </div>
+    <div class="card-body">
+        <?php if (!$amcHistory): ?>
+            <p style="margin:0;color:#94a3b8;">No AMC verify yet.
+                <?php if ($canDoAmc): ?>
+                    <a href="<?= htmlspecialchars($amcDoHref) ?>">Do first AMC</a>
+                <?php endif; ?>
+            </p>
+        <?php else: ?>
+            <div class="excel-legend">
+                <span><i class="excel-swatch" style="background:#dcfce7;"></i> Same outlet</span>
+                <span><i class="excel-swatch" style="background:#dbeafe;"></i> Outlet moved</span>
+                <span><i class="excel-swatch" style="background:#fee2e2;"></i> FAIL</span>
+                <span><i class="excel-swatch" style="background:#ffedd5;"></i> Changed field</span>
+            </div>
+
+            <?php
+            $amcIndex = 0;
+            foreach ($amcHistory as $amc):
+                $amcIndex++;
+                $aid = (int)($amc['id'] ?? 0);
+                $meta = $amcChangeMap[$aid] ?? [
+                    'outlet_changed' => false,
+                    'has_previous' => false,
+                    'previous' => null,
+                    'diff_rows' => [],
+                ];
+                $prevRow = is_array($meta['previous'] ?? null) ? $meta['previous'] : null;
+                $res = strtoupper(trim((string)($amc['result'] ?? 'PASS')));
+                $vAt = (string)($amc['verified_at'] ?? '');
+                $vDisp = $vAt !== '' && strtotime($vAt) ? date('d M Y, H:i', strtotime($vAt)) : ($vAt ?: '—');
+                $cycle = ((int)($amc['cycle_year'] ?? 0)) . '-H' . ((int)($amc['cycle_half'] ?? 0));
+                $lat = $amc['latitude'] ?? null;
+                $lng = $amc['longitude'] ?? null;
+                $hasGps = $lat !== null && $lat !== '' && $lng !== null && $lng !== '';
+                $mapsUrl = $hasGps
+                    ? ('https://maps.google.com/?q=' . rawurlencode($lat . ',' . $lng))
+                    : '';
+                $hasPrev = !empty($meta['has_previous']);
+                $changedCount = 0;
+                foreach ($meta['diff_rows'] as $dr) {
+                    if (!empty($dr['changed'])) {
+                        $changedCount++;
+                    }
+                }
+                $storeFront = (string)($amc['image_store_front'] ?? '');
+                $freezerImg = (string)($amc['image_freezer'] ?? '');
+                $prevStoreFront = (string)($prevRow['image_store_front'] ?? '');
+                $prevFreezerImg = (string)($prevRow['image_freezer'] ?? '');
+            ?>
+                <h3 class="amc-table-visit-title">
+                    Visit <?= (int)$amcIndex ?> / <?= count($amcHistory) ?>
+                    · <?= htmlspecialchars($vDisp) ?>
+                    · <?= htmlspecialchars($res !== '' ? $res : 'PASS') ?>
+                    · <?= htmlspecialchars($cycle) ?>
+                    · <?= htmlspecialchars((string)($amc['verified_by_name'] ?? '—')) ?>
+                    <?php if ($hasPrev): ?>
+                        · <?= !empty($meta['outlet_changed']) ? 'Outlet moved' : 'Same outlet' ?>
+                        · <?= (int)$changedCount ?> changed
+                    <?php else: ?>
+                        · First verify
+                    <?php endif; ?>
+                </h3>
+
+                <div class="excel-wrap amc-compare-wrap">
+                    <table class="excel-sheet amc-compare-table">
+                        <thead>
+                            <tr>
+                                <th>Field</th>
+                                <?php if ($hasPrev): ?>
+                                    <th>Previous</th>
+                                    <th>New</th>
+                                <?php else: ?>
+                                    <th>Value</th>
+                                <?php endif; ?>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if ($hasPrev): ?>
+                                <?php if (!$meta['diff_rows']): ?>
+                                    <tr>
+                                        <td colspan="3" class="excel-cell-empty">No compare data.</td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($meta['diff_rows'] as $diff):
+                                        $isChanged = !empty($diff['changed']);
+                                    ?>
+                                        <tr class="<?= $isChanged ? 'amc-row-changed' : '' ?>">
+                                            <td><?= htmlspecialchars((string)$diff['label']) ?><?= $isChanged ? ' ★' : '' ?></td>
+                                            <td title="<?= htmlspecialchars((string)$diff['previous']) ?>"><?= htmlspecialchars((string)$diff['previous']) ?></td>
+                                            <td title="<?= htmlspecialchars((string)$diff['new']) ?>"><?= htmlspecialchars((string)$diff['new']) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <?php
+                                $firstRows = [
+                                    ['Outlet', (string)($amc['outlet_id'] ?? '—')],
+                                    ['Store', (string)($amc['store_name'] ?? '—')],
+                                    ['City', (string)($amc['city'] ?? '—')],
+                                    ['Zone', (string)($amc['zone'] ?? '—')],
+                                    ['Address', $amcFmtAddr($amc)],
+                                    ['Result', $res !== '' ? $res : 'PASS'],
+                                    ['Verified', $vDisp],
+                                    ['By', (string)($amc['verified_by_name'] ?? '—')],
+                                ];
+                                foreach ($firstRows as [$fl, $fv]):
+                                ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($fl) ?></td>
+                                        <td title="<?= htmlspecialchars($fv) ?>"><?= htmlspecialchars($fv) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+
+                            <tr class="amc-photo-row">
+                                <td>Store front</td>
+                                <?php if ($hasPrev): ?>
+                                    <td>
+                                        <?php if ($amcPhotoOk($prevStoreFront)): ?>
+                                            <img src="<?= htmlspecialchars($prevStoreFront) ?>" alt="Previous store" class="lightbox-trigger amc-table-thumb" loading="lazy"
+                                                 data-caption="Previous store · <?= htmlspecialchars($amcFmtWhen($prevRow)) ?>">
+                                        <?php else: ?>—<?php endif; ?>
+                                    </td>
+                                <?php endif; ?>
+                                <td>
+                                    <?php if ($amcPhotoOk($storeFront)): ?>
+                                        <img src="<?= htmlspecialchars($storeFront) ?>" alt="Store front" class="lightbox-trigger amc-table-thumb" loading="lazy"
+                                             data-caption="Store front · <?= htmlspecialchars($vDisp) ?>">
+                                    <?php else: ?>—<?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr class="amc-photo-row">
+                                <td>Freezer</td>
+                                <?php if ($hasPrev): ?>
+                                    <td>
+                                        <?php if ($amcPhotoOk($prevFreezerImg)): ?>
+                                            <img src="<?= htmlspecialchars($prevFreezerImg) ?>" alt="Previous freezer" class="lightbox-trigger amc-table-thumb" loading="lazy"
+                                                 data-caption="Previous freezer · <?= htmlspecialchars($amcFmtWhen($prevRow)) ?>">
+                                        <?php else: ?>—<?php endif; ?>
+                                    </td>
+                                <?php endif; ?>
+                                <td>
+                                    <?php if ($amcPhotoOk($freezerImg)): ?>
+                                        <img src="<?= htmlspecialchars($freezerImg) ?>" alt="Freezer" class="lightbox-trigger amc-table-thumb" loading="lazy"
+                                             data-caption="Freezer · <?= htmlspecialchars($vDisp) ?>">
+                                    <?php else: ?>—<?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php if (trim((string)($amc['notes'] ?? '')) !== ''): ?>
+                                <tr>
+                                    <td>Notes</td>
+                                    <td colspan="<?= $hasPrev ? 2 : 1 ?>"><?= htmlspecialchars((string)$amc['notes']) ?></td>
+                                </tr>
+                            <?php endif; ?>
+                            <?php if ($hasGps): ?>
+                                <tr>
+                                    <td>GPS</td>
+                                    <td colspan="<?= $hasPrev ? 2 : 1 ?>">
+                                        <code><?= htmlspecialchars(number_format((float)$lat, 6) . ', ' . number_format((float)$lng, 6)) ?></code>
+                                        <a class="sp-pro-link" href="<?= htmlspecialchars($mapsUrl) ?>" target="_blank" rel="noopener">Maps</a>
+                                    </td>
+                                </tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </div>
+</div>
+
 <?php elseif ($activeTab === 'history'): ?>
 <?php
 $exportBase = 'profile_export.php?id=' . urlencode($freezer['unique_freezer_id']);
@@ -931,29 +1237,38 @@ $activityRowClass = static function (string $key): string {
         default => '',
     };
 };
+$editAuditLogs = [];
+try {
+    $editAuditLogs = Freezer::listAuditForFreezer((int)$freezer['id'], 25);
+} catch (Throwable $e) {
+    $editAuditLogs = [];
+}
 ?>
-<!-- ========== Store activity (single table) ========== -->
 <div class="card sp-history-card" id="store-history">
     <div class="card-header sp-history-header">
         <div>
-            <div class="card-title"><span>Store activity</span></div>
+            <div class="card-title"><span>Store history</span></div>
             <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
-                Installation and store moves — one table.
+                Freezer <code><?= htmlspecialchars((string)$freezer['unique_freezer_id']) ?></code>
+                · Tag <code><?= htmlspecialchars((string)$tagCodeHist) ?></code>
+                · <?= count($activityLog) ?> events
             </p>
         </div>
         <div class="sp-history-actions">
             <?php if ($isAdmin): ?>
-                <a href="<?= $exportBase ?>&sheet=activity&format=csv" class="btn btn-outline btn-sm">Export CSV</a>
-                <a href="<?= $exportBase ?>&sheet=activity&format=xlsx" class="btn btn-outline btn-sm">Export Excel</a>
+                <a href="<?= $exportBase ?>&sheet=activity&format=csv" class="btn btn-outline btn-sm">CSV</a>
+                <a href="<?= $exportBase ?>&sheet=activity&format=xlsx" class="btn btn-outline btn-sm">Excel</a>
             <?php endif; ?>
+            <a href="profile_view.php?id=<?= urlencode((string)$freezer['unique_freezer_id']) ?>&tab=amc" class="btn btn-outline btn-sm">AMC history</a>
         </div>
     </div>
     <div class="card-body">
         <div class="excel-legend">
             <span><i class="excel-swatch" style="background:#dbeafe;"></i> Installation</span>
             <span><i class="excel-swatch" style="background:#fef3c7;"></i> Store move</span>
-            <span>Freezer: <code><?= htmlspecialchars($freezer['unique_freezer_id']) ?></code></span>
-            <span>Tag: <code><?= htmlspecialchars($tagCodeHist) ?></code></span>
+            <span><i class="excel-swatch" style="background:#dcfce7;"></i> AMC same</span>
+            <span><i class="excel-swatch" style="background:#dbeafe;"></i> AMC new store</span>
+            <span><i class="excel-swatch" style="background:#fee2e2;"></i> Rejected</span>
         </div>
 
         <div class="excel-wrap">
@@ -1023,21 +1338,11 @@ $activityRowClass = static function (string $key): string {
     </div>
 </div>
 
-<?php
-$editAuditLogs = [];
-try {
-    $editAuditLogs = Freezer::listAuditForFreezer((int)$freezer['id'], 25);
-} catch (Throwable $e) {
-    $editAuditLogs = [];
-}
-?>
 <div class="card sp-history-card" id="edit-audit" style="margin-top:1rem;">
     <div class="card-header sp-history-header">
         <div>
             <div class="card-title"><span>Edit audit</span></div>
-            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
-                Who changed this profile, when, and what fields changed. Also Approve / Reject decisions.
-            </p>
+            <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">Who changed this profile, when, and what fields changed.</p>
         </div>
     </div>
     <div class="card-body" style="padding:0;">
@@ -1060,7 +1365,7 @@ try {
                             $actClass = $act === 'UPDATE' ? 'badge-primary'
                                 : ($act === 'APPROVE' ? 'badge-success'
                                 : ($act === 'REJECT' ? 'badge-danger' : 'badge-secondary'));
-                            ?>
+                        ?>
                             <tr>
                                 <td><?= htmlspecialchars((string)($a['created_at'] ?? '—')) ?></td>
                                 <td><?= htmlspecialchars((string)(($a['user_name'] ?? '') !== '' ? $a['user_name'] : '—')) ?></td>

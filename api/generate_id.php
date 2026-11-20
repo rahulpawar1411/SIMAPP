@@ -18,10 +18,21 @@ $seqRaw = trim((string)($_GET['seq'] ?? ''));
 $autoSeq = ($seqRaw === '' || strtoupper($seqRaw) === 'AUTO');
 $seq = $autoSeq ? '' : strtoupper($seqRaw);
 $excludeId = !empty($_GET['exclude_id']) ? (int)$_GET['exclude_id'] : null;
+$zone = trim((string)($_GET['zone'] ?? ''));
 
 try {
     $prefix = FreezerIdGenerator::buildPrefix($type, $brand, $model, $loc, $pin, $mmyy);
-    $autoGen = FreezerIdGenerator::generateUniqueId($type, $brand, $model, $loc, $pin, $mmyy, null, $excludeId);
+    $autoGen = FreezerIdGenerator::generateUniqueId(
+        $type,
+        $brand,
+        $model,
+        $loc,
+        $pin,
+        $mmyy,
+        null,
+        $excludeId,
+        $zone !== '' ? $zone : null
+    );
 
     if ($autoSeq) {
         $currentCandidate = $autoGen['freezer_id'];
@@ -50,6 +61,8 @@ try {
             'pin_code' => FreezerIdGenerator::extractPinCode($pin),
             'mmyy' => FreezerIdGenerator::formatInstallMonthYear($mmyy),
             'seq' => $seqOut,
+            'zone' => $zone !== '' ? strtoupper($zone) : null,
+            'zone_prefix' => $autoGen['zone_prefix'] ?? FreezerIdGenerator::zoneUnitPrefix($zone !== '' ? $zone : null),
         ]
     ]);
 } catch (\Throwable $e) {

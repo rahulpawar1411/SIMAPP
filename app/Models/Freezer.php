@@ -60,8 +60,18 @@ class Freezer {
         $pdo = Database::getConnection();
         self::ensureSimColumns();
 
-        // 1. Verify or generate unique ID
+        // 1. Verify or generate unique ID (zone → AAA001 / NAA001 / …)
         if (empty($data['unique_freezer_id'])) {
+            $zoneForSeq = trim((string)($data['zone'] ?? $data['store_zone'] ?? ''));
+            if ($zoneForSeq === '' && !empty($data['store_id'])) {
+                try {
+                    $st = $pdo->prepare("SELECT `zone` FROM `stores` WHERE `id` = :id LIMIT 1");
+                    $st->execute(['id' => (int)$data['store_id']]);
+                    $zoneForSeq = trim((string)($st->fetchColumn() ?: ''));
+                } catch (\Throwable $e) {
+                    $zoneForSeq = '';
+                }
+            }
             $gen = FreezerIdGenerator::generateUniqueId(
                 $data['freezer_type'],
                 $data['company_code'],
@@ -69,7 +79,9 @@ class Freezer {
                 $data['location_code'],
                 $data['pincode'],
                 $data['install_month_year'] ?? date('my'),
-                $data['unit_sequence'] ?? null
+                $data['unit_sequence'] ?? null,
+                null,
+                $zoneForSeq !== '' ? $zoneForSeq : null
             );
             $uniqueId = $gen['freezer_id'];
             $unitSeq = $gen['unit_sequence'];

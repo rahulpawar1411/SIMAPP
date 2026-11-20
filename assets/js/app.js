@@ -682,7 +682,7 @@ function initIdGenerator() {
 
     function checkIdWithServer(type, brand, model, loc, pinCode, mmyy, seqRaw, autoSeq) {
         if (!statusBadge) return;
-        statusBadge.textContent = autoSeq ? 'Random sequence…' : 'Checking...';
+        statusBadge.textContent = autoSeq ? 'Next sequence…' : 'Checking...';
         statusBadge.className = 'id-preview-badge';
 
         const params = new URLSearchParams({
@@ -699,6 +699,10 @@ function initIdGenerator() {
         const excludeId = document.getElementById('exclude_freezer_id');
         if (excludeId && excludeId.value) {
             params.append('exclude_id', excludeId.value);
+        }
+        const zoneSelect = document.getElementById('zone');
+        if (zoneSelect && zoneSelect.value) {
+            params.append('zone', zoneSelect.value);
         }
 
         fetch('api/generate_id.php?' + params.toString())
@@ -723,7 +727,7 @@ function initIdGenerator() {
                     previewDisplay.textContent = data.suggested_id;
                     if (chipSeq) chipSeq.textContent = data.suggested_seq || 'AUTO';
                     if (hiddenId) hiddenId.value = ''; // server assigns final unique seq on save
-                    statusBadge.textContent = 'Random: ' + (data.suggested_seq || '…');
+                    statusBadge.textContent = 'Next: ' + (data.suggested_seq || '…');
                     statusBadge.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
                     statusBadge.style.color = '#34d399';
                     return;
@@ -1154,6 +1158,9 @@ function initCascadingLocationSelector() {
                 }
             } else if (document.activeElement === cityInput) {
                 renderCityAutocomplete('');
+            }
+            if (typeof window.updateFreezerIdPreview === 'function') {
+                window.updateFreezerIdPreview();
             }
         });
     }

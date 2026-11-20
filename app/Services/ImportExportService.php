@@ -971,7 +971,7 @@ class ImportExportService {
             'location_code' => $locationCode,
             'pincode' => $pincode,
             'install_month_year' => date('my', strtotime($installDate)),
-            'unit_sequence' => null, // always auto-random on import
+            'unit_sequence' => null, // always auto AAA001-style on import (zone sequential)
             'installation_date' => $installDate,
             'image_left_side' => $imgLeft,
             'image_right_side' => $imgRight,

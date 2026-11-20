@@ -49,27 +49,58 @@ class FreezerIdGenerator {
     }
 
     /**
-     * Random 6-char unit sequence: letters + digits mixed (e.g. A7K2M9).
-     * Always includes at least one letter and one digit.
+     * Zone → 3-letter unit prefix (…001 style).
+     * WEST=WAA, NORTH=NAA, SOUTH=SAA, EAST=EAA, CENTRAL=CAA
+     */
+    public static function zoneUnitPrefix(?string $zone = null): string {
+        $z = strtoupper(trim((string)$zone));
+        // Accept common typos / short codes
+        if ($z === 'WAST' || $z === 'WE' || $z === 'W') {
+            $z = 'WEST';
+        }
+        return match ($z) {
+            'WEST' => 'WAA',
+            'NORTH' => 'NAA',
+            'SOUTH' => 'SAA',
+            'EAST' => 'EAA',
+            'CENTRAL' => 'CAA',
+            default => 'WAA', // default West
+        };
+    }
+
+    /**
+     * Next sequential unit code for a zone: WAA001, NAA001, …
+     */
+    public static function nextSequentialUnitSequence(?string $zone = null, ?int $excludeId = null): string {
+        $prefix = self::zoneUnitPrefix($zone);
+        $pdo = Database::getConnection();
+        $sql = "SELECT `unit_sequence`
+                FROM `freezers`
+                WHERE `unit_sequence` REGEXP :re";
+        $params = ['re' => '^' . $prefix . '[0-9]{3,}$'];
+        if ($excludeId !== null) {
+            $sql .= " AND `id` != :exclude_id";
+            $params['exclude_id'] = $excludeId;
+        }
+        $sql .= " ORDER BY CAST(SUBSTRING(`unit_sequence`, " . (strlen($prefix) + 1) . ") AS UNSIGNED) DESC LIMIT 1";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $last = strtoupper(trim((string)($stmt->fetchColumn() ?: '')));
+        $nextNum = 1;
+        if ($last !== '' && preg_match('/^' . preg_quote($prefix, '/') . '([0-9]+)$/', $last, $m)) {
+            $nextNum = ((int)$m[1]) + 1;
+        }
+        if ($nextNum > 999999) {
+            throw new \RuntimeException("Unit sequence overflow for prefix {$prefix}.");
+        }
+        return $prefix . str_pad((string)$nextNum, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * @deprecated Prefer nextSequentialUnitSequence() — kept for rare clash fallback
      */
     public static function randomUnitSequence(): string {
-        $pool = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        $chars = [];
-        for ($i = 0; $i < 6; $i++) {
-            $chars[] = $pool[random_int(0, strlen($pool) - 1)];
-        }
-        // Guarantee letter + digit mix (vs existing AAA001-style or pure digits)
-        $joined = implode('', $chars);
-        if (!preg_match('/[A-Z]/', $joined) || !preg_match('/[0-9]/', $joined)) {
-            $chars[random_int(0, 2)] = chr(random_int(65, 90));
-            $chars[random_int(3, 5)] = (string)random_int(0, 9);
-        }
-        // Shuffle so letter/digit positions vary
-        for ($i = 5; $i > 0; $i--) {
-            $j = random_int(0, $i);
-            [$chars[$i], $chars[$j]] = [$chars[$j], $chars[$i]];
-        }
-        return implode('', $chars);
+        return self::nextSequentialUnitSequence(null);
     }
 
     /**
@@ -96,8 +127,10 @@ class FreezerIdGenerator {
     }
 
     /**
-     * Generates a complete unique freezer ID with a random unit sequence (or preferred if given).
-     * If unit_sequence already exists in DB (legacy AAA001 etc.), re-rolls a new 6-char mix.
+     * Generates a complete unique freezer ID with zone sequential unit sequence (WAA001…)
+     * or a preferred sequence if given.
+     *
+     * @param string|null $zone Store zone (WEST/NORTH/SOUTH/EAST/CENTRAL) for WAA/NAA/…
      */
     public static function generateUniqueId(
         string $freezerType,
@@ -107,16 +140,22 @@ class FreezerIdGenerator {
         string $pincode,
         string $installMonthYear,
         ?string $preferredUnitSeq = null,
-        ?int $excludeId = null
+        ?int $excludeId = null,
+        ?string $zone = null
     ): array {
-        $prefix = self::buildPrefix($freezerType, $companyCode, $modelNumber, $locationCode, $pincode, $installMonthYear);
-        $useRandom = ($preferredUnitSeq === null || trim($preferredUnitSeq) === '');
-        $seq = $useRandom ? self::randomUnitSequence() : strtoupper(trim($preferredUnitSeq));
+        $idPrefix = self::buildPrefix($freezerType, $companyCode, $modelNumber, $locationCode, $pincode, $installMonthYear);
+        $zonePrefix = self::zoneUnitPrefix($zone);
+        $useAuto = ($preferredUnitSeq === null || trim($preferredUnitSeq) === '');
+        if ($useAuto) {
+            $seq = self::nextSequentialUnitSequence($zone, $excludeId);
+        } else {
+            $seq = strtoupper(trim($preferredUnitSeq));
+        }
 
         // Loop: unique full ID + unique unit_sequence vs existing rows
         $maxAttempts = 500;
         $attempt = 0;
-        $candidateId = $prefix . $seq;
+        $candidateId = $idPrefix . $seq;
 
         while ($attempt < $maxAttempts) {
             $idTaken = self::isDuplicate($candidateId, $excludeId);
@@ -124,7 +163,7 @@ class FreezerIdGenerator {
             if (!$idTaken && !$seqTaken) {
                 return [
                     'freezer_id' => $candidateId,
-                    'prefix' => $prefix,
+                    'prefix' => $idPrefix,
                     'unit_sequence' => $seq,
                     'freezer_type' => strtoupper(trim($freezerType)),
                     'company_code' => strtoupper(trim($companyCode)),
@@ -133,11 +172,16 @@ class FreezerIdGenerator {
                     'pin_last3' => self::extractPinCode($pincode),
                     'pin_code' => self::extractPinCode($pincode),
                     'install_month_year' => self::formatInstallMonthYear($installMonthYear),
+                    'zone_prefix' => $zonePrefix,
                 ];
             }
-            // Clash with existing data → always new 6-char letter+digit mix
-            $seq = self::randomUnitSequence();
-            $candidateId = $prefix . $seq;
+            // Clash → bump AAA### number (same zone prefix)
+            if (preg_match('/^([A-Z]{3})([0-9]+)$/', $seq, $m)) {
+                $seq = $m[1] . str_pad((string)(((int)$m[2]) + 1), max(3, strlen($m[2])), '0', STR_PAD_LEFT);
+            } else {
+                $seq = self::nextSequentialUnitSequence($zone, $excludeId);
+            }
+            $candidateId = $idPrefix . $seq;
             $attempt++;
         }
 
