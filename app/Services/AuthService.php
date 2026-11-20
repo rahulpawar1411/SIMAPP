@@ -371,6 +371,60 @@ class AuthService {
         return in_array($user['role'], $allowed, true);
     }
 
+    /**
+     * Live access flags for the current user (View / Create / Update / Delete).
+     * Super Admin always has all. Technician / Viewer use Manage Users checkboxes.
+     *
+     * @return array{view:bool,create:bool,update:bool,delete:bool}
+     */
+    public static function permissions(): array {
+        $user = self::currentUser();
+        if (!$user) {
+            return ['view' => false, 'create' => false, 'update' => false, 'delete' => false];
+        }
+        $role = (string)($user['role'] ?? '');
+        if ($role === AppConfig::ROLE_SUPER_ADMIN) {
+            return User::defaultPermissionsForRole(AppConfig::ROLE_SUPER_ADMIN);
+        }
+        static $cache = null;
+        static $cacheId = 0;
+        $uid = (int)($user['id'] ?? 0);
+        if ($cache !== null && $cacheId === $uid) {
+            return $cache;
+        }
+        $row = $uid > 0 ? User::findById($uid) : null;
+        $cache = User::normalizePermissions($row['permissions'] ?? null, $role !== '' ? $role : AppConfig::ROLE_TECHNICIAN);
+        $cacheId = $uid;
+        return $cache;
+    }
+
+    /** True when current user may perform view|create|update|delete. */
+    public static function can(string $action): bool {
+        $action = strtolower(trim($action));
+        if (!in_array($action, User::permissionKeys(), true)) {
+            return false;
+        }
+        $perms = self::permissions();
+        return !empty($perms[$action]);
+    }
+
+    /** Stop request when the checkbox for this action is off. */
+    public static function requirePermission(string $action): void {
+        self::requireLogin();
+        if (self::can($action)) {
+            return;
+        }
+        $u = self::currentUser();
+        AppLogger::failed('auth.forbidden', '403 — permission denied', [
+            'user_id' => $u['id'] ?? null,
+            'role' => $u['role'] ?? null,
+            'permission' => $action,
+        ]);
+        $home = self::homeUrl();
+        header('Location: ' . $home . (str_contains($home, '?') ? '&' : '?') . 'perm_denied=' . rawurlencode($action));
+        exit;
+    }
+
     public static function requireLogin(): void {
         if (!self::isLoggedIn()) {
             $currentUrl = $_SERVER['REQUEST_URI'] ?? 'index.php';

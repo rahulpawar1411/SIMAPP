@@ -10,6 +10,7 @@ use App\Services\AuthService;
 use App\Models\AssetTag;
 
 AuthService::requireRole(['super_admin', 'technician']);
+AuthService::requirePermission('create');
 $currentUser = AuthService::currentUser();
 $areaScope = AuthService::areaScope();
 

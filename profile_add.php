@@ -18,6 +18,11 @@ $areaScope = AuthService::areaScope();
 $lockZone = $areaScope['zone'] !== '';
 $lockCity = $areaScope['city'] !== '';
 
+// Early permission gate after we know AMC vs create (AMC uses update)
+$__amcPeek = (isset($_GET['amc']) && (string)$_GET['amc'] === '1')
+    || (isset($_POST['amc_mode']) && (string)$_POST['amc_mode'] === '1');
+AuthService::requirePermission($__amcPeek ? 'update' : 'create');
+
 $error = null;
 $success = null;
 $csrfToken = AuthService::generateCsrfToken();

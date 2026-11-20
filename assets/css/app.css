@@ -4379,6 +4379,69 @@ input.form-control[readonly].form-control-display {
     border-color: #d0d5dd;
 }
 
+.users-perm-master {
+    margin-top: 0.85rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid #d0d5dd;
+    border-radius: 12px;
+    background: #f8fafc;
+}
+.users-perm-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    margin-bottom: 0.75rem;
+}
+.users-perm-head strong {
+    font-size: 0.92rem;
+    color: #0f172a;
+}
+.users-perm-head span {
+    font-size: 0.78rem;
+    color: #64748b;
+}
+.users-perm-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.65rem;
+}
+.users-perm-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0.7rem 0.75rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
+}
+.users-perm-item input {
+    margin-top: 0.15rem;
+    width: 1rem;
+    height: 1rem;
+    accent-color: #166534;
+    flex-shrink: 0;
+}
+.users-perm-item strong {
+    display: block;
+    font-size: 0.84rem;
+    color: #0f172a;
+}
+.users-perm-item small {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.72rem;
+    color: #64748b;
+    line-height: 1.35;
+}
+@media (max-width: 900px) {
+    .users-perm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+    .users-perm-grid { grid-template-columns: 1fr; }
+}
+
 /* All Users — directory (logs / Excel table look) */
 .users-directory {
     margin-top: 1.5rem;
@@ -4405,11 +4468,13 @@ input.form-control[readonly].form-control-display {
 .users-excel td:nth-child(6),
 .users-excel th:nth-child(6) { width: 140px; max-width: 140px; } /* Area */
 .users-excel td:nth-child(7),
-.users-excel th:nth-child(7) { width: 72px; max-width: 72px; }   /* Status */
+.users-excel th:nth-child(7) { width: 160px; max-width: 160px; } /* Access */
 .users-excel td:nth-child(8),
-.users-excel th:nth-child(8) { width: 140px; max-width: 140px; } /* Last login */
+.users-excel th:nth-child(8) { width: 72px; max-width: 72px; }   /* Status */
 .users-excel td:nth-child(9),
-.users-excel th:nth-child(9) { width: 168px; max-width: 168px; } /* Action */
+.users-excel th:nth-child(9) { width: 140px; max-width: 140px; } /* Last login */
+.users-excel td:nth-child(10),
+.users-excel th:nth-child(10) { width: 168px; max-width: 168px; } /* Action */
 .users-excel-actions {
     white-space: nowrap !important;
     overflow: visible !important;

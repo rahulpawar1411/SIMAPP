@@ -32,16 +32,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
 
         if ($action === 'create') {
-            $result = User::create([
+            $createRole = (string)($_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN);
+            $createPayload = [
                 'name' => $_POST['name'] ?? '',
                 'email' => $_POST['email'] ?? '',
                 'password' => $_POST['password'] ?? '',
-                'role' => $_POST['role'] ?? AppConfig::ROLE_SUPER_ADMIN,
+                'role' => $createRole,
                 'phone' => $_POST['phone'] ?? '',
                 'zone' => $_POST['zone'] ?? '',
                 'city' => $_POST['city'] ?? '',
                 'status' => 'active',
-            ]);
+            ];
+            if ($createRole === AppConfig::ROLE_TECHNICIAN || $createRole === AppConfig::ROLE_VIEWER) {
+                $createPayload['permissions'] = [
+                    'view' => !empty($_POST['perm_view']),
+                    'create' => !empty($_POST['perm_create']),
+                    'update' => !empty($_POST['perm_update']),
+                    'delete' => !empty($_POST['perm_delete']),
+                ];
+            }
+            $result = User::create($createPayload);
 
             if ($result['success']) {
                 $success = 'User created successfully. They can now sign in with the email and password you set.';
@@ -73,16 +83,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             } else {
                 $before = User::findRawById($userId);
-                $result = User::update($userId, [
+                $updateRole = (string)($_POST['role'] ?? $editUser['role']);
+                $updatePayload = [
                     'name' => $_POST['name'] ?? '',
                     'email' => $_POST['email'] ?? '',
                     'password' => $_POST['password'] ?? '',
-                    'role' => $_POST['role'] ?? $editUser['role'],
+                    'role' => $updateRole,
                     'phone' => $_POST['phone'] ?? '',
                     'zone' => $_POST['zone'] ?? '',
                     'city' => $_POST['city'] ?? '',
                     'status' => $_POST['status'] ?? $editUser['status'],
-                ]);
+                ];
+                if ($updateRole === AppConfig::ROLE_TECHNICIAN || $updateRole === AppConfig::ROLE_VIEWER) {
+                    $updatePayload['permissions'] = [
+                        'view' => !empty($_POST['perm_view']),
+                        'create' => !empty($_POST['perm_create']),
+                        'update' => !empty($_POST['perm_update']),
+                        'delete' => !empty($_POST['perm_delete']),
+                    ];
+                } else {
+                    $updatePayload['permissions'] = null;
+                }
+                $result = User::update($userId, $updatePayload);
 
                 if ($result['success']) {
                     unset($_SESSION[$unlockKey]);
@@ -361,6 +383,26 @@ $formZone = $isEdit
 $formCity = $isEdit
     ? trim((string)($error && (($_POST['action'] ?? '') === 'update') ? ($_POST['city'] ?? ($editUser['city'] ?? '')) : ($editUser['city'] ?? '')))
     : trim((string)($keepCreate ? ($_POST['city'] ?? '') : ''));
+$formPerms = User::defaultPermissionsForRole($formRole);
+if ($isEdit) {
+    if ($error && (($_POST['action'] ?? '') === 'update')) {
+        $formPerms = User::normalizePermissions([
+            'view' => !empty($_POST['perm_view']),
+            'create' => !empty($_POST['perm_create']),
+            'update' => !empty($_POST['perm_update']),
+            'delete' => !empty($_POST['perm_delete']),
+        ], $formRole);
+    } else {
+        $formPerms = User::normalizePermissions($editUser['permissions'] ?? null, $formRole);
+    }
+} elseif ($keepCreate) {
+    $formPerms = User::normalizePermissions([
+        'view' => !empty($_POST['perm_view']),
+        'create' => !empty($_POST['perm_create']),
+        'update' => !empty($_POST['perm_update']),
+        'delete' => !empty($_POST['perm_delete']),
+    ], $formRole);
+}
 $zoneOptions = AppConfig::zones();
 /** @var array<string, list<string>> master cities by zone (+ store cities merged) */
 $citiesByZone = ['_all' => []];
@@ -753,6 +795,45 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
 
+            <!-- Master access checkboxes (Technician / Viewer) -->
+            <div class="form-subsection users-perm-master" id="user-perm-master"
+                 style="<?= in_array($formRole, [AppConfig::ROLE_TECHNICIAN, AppConfig::ROLE_VIEWER], true) ? '' : 'display:none;' ?>">
+                <div class="users-perm-head">
+                    <strong>Access master</strong>
+                    <span>Tick what this user can do (View · Create · Update · Delete)</span>
+                </div>
+                <div class="users-perm-grid" role="group" aria-label="Technician access">
+                    <label class="users-perm-item">
+                        <input type="checkbox" name="perm_view" value="1" id="perm_view" <?= !empty($formPerms['view']) ? 'checked' : '' ?>>
+                        <span>
+                            <strong>View</strong>
+                            <small>Assets, profiles, QR print, tracking</small>
+                        </span>
+                    </label>
+                    <label class="users-perm-item">
+                        <input type="checkbox" name="perm_create" value="1" id="perm_create" <?= !empty($formPerms['create']) ? 'checked' : '' ?>>
+                        <span>
+                            <strong>Create</strong>
+                            <small>Scan QR → register new freezer / blank QR</small>
+                        </span>
+                    </label>
+                    <label class="users-perm-item">
+                        <input type="checkbox" name="perm_update" value="1" id="perm_update" <?= !empty($formPerms['update']) ? 'checked' : '' ?>>
+                        <span>
+                            <strong>Update</strong>
+                            <small>Edit profile (after approval) + Do AMC</small>
+                        </span>
+                    </label>
+                    <label class="users-perm-item">
+                        <input type="checkbox" name="perm_delete" value="1" id="perm_delete" <?= !empty($formPerms['delete']) ? 'checked' : '' ?>>
+                        <span>
+                            <strong>Delete</strong>
+                            <small>Delete freezer profile (password still required)</small>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.25rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
                 <div style="font-size: 0.85rem; color: #64748b;">
                     <?= $isEdit ? 'Editing:' : 'New account:' ?>
@@ -806,6 +887,7 @@ require_once __DIR__ . '/includes/header.php';
                             <th>Phone</th>
                             <th>Type</th>
                             <th>Area</th>
+                            <th>Access</th>
                             <th>Status</th>
                             <th>Last login</th>
                             <th>Action</th>
@@ -820,6 +902,11 @@ require_once __DIR__ . '/includes/header.php';
                                 ? 'All areas'
                                 : trim(($uZone !== '' ? $uZone : 'Any zone') . ($uCity !== '' ? ' · ' . $uCity : ''));
                             $uRole = str_replace('_', ' ', (string)($u['role'] ?? ''));
+                            $uRoleRaw = (string)($u['role'] ?? '');
+                            $uPerms = User::normalizePermissions($u['permissions'] ?? null, $uRoleRaw !== '' ? $uRoleRaw : AppConfig::ROLE_TECHNICIAN);
+                            $uAccess = ($uRoleRaw === AppConfig::ROLE_SUPER_ADMIN)
+                                ? 'Full'
+                                : User::permissionsLabel($uPerms);
                             $lastLogin = trim((string)($u['last_login'] ?? ''));
                             $isYou = (int)$u['id'] === (int)$currentUser['id'];
                             ?>
@@ -835,6 +922,7 @@ require_once __DIR__ . '/includes/header.php';
                                     <span class="badge badge-sm badge-primary" style="text-transform:capitalize;"><?= htmlspecialchars($uRole) ?></span>
                                 </td>
                                 <td title="<?= htmlspecialchars($uArea) ?>"><?= htmlspecialchars($uArea) ?></td>
+                                <td title="<?= htmlspecialchars($uAccess) ?>"><?= htmlspecialchars($uAccess) ?></td>
                                 <td class="logs-col-level">
                                     <?php if ($u['status'] === 'active'): ?>
                                         <span class="badge badge-sm badge-success">Active</span>
@@ -946,11 +1034,10 @@ require_once __DIR__ . '/includes/header.php';
                     <span class="badge badge-success">Technician</span>
                 </div>
                 <ul class="role-access-list">
-                    <li>Field: Scan QR → fill store / freezer / photos / GPS → Save</li>
-                    <li>Edit existing profiles (update data &amp; photos)</li>
-                    <li>Register / update freezers on site</li>
-                    <li>Zone/City at create — only that area’s data &amp; fills</li>
-                    <li>View / print QR · no Users, Import, Delete, Blank tags</li>
+                    <li>Use <strong>Access master</strong> checkboxes: View / Create / Update / Delete</li>
+                    <li>Default: View + Create + Update (Delete off)</li>
+                    <li>Zone/City limits which freezers they can open</li>
+                    <li>No Users / Approvals / Reports / Logs</li>
                 </ul>
             </div>
             <div class="role-access-card">
@@ -981,6 +1068,11 @@ require_once __DIR__ . '/includes/header.php';
     var cityDatalist = document.getElementById('user-city-datalist');
     var zoneGroup = document.getElementById('user-zone-group');
     var cityGroup = document.getElementById('user-city-group');
+    var permMaster = document.getElementById('user-perm-master');
+    var permView = document.getElementById('perm_view');
+    var permCreate = document.getElementById('perm_create');
+    var permUpdate = document.getElementById('perm_update');
+    var permDelete = document.getElementById('perm_delete');
     var summary = document.getElementById('user-form-summary');
     var form = document.getElementById('user-create-form');
     var citiesByZone = {};
@@ -990,6 +1082,10 @@ require_once __DIR__ . '/includes/header.php';
     } catch (e) {
         citiesByZone = {};
     }
+    var defaultPerms = {
+        technician: { view: true, create: true, update: true, delete: false },
+        viewer: { view: true, create: false, update: false, delete: false }
+    };
 
     function setFieldError(el, on) {
         if (!el) return;
@@ -1002,6 +1098,21 @@ require_once __DIR__ . '/includes/header.php';
     function syncAreaVisibility() {
         if (zoneGroup) zoneGroup.style.display = '';
         if (cityGroup) cityGroup.style.display = '';
+    }
+
+    function applyDefaultPerms(role) {
+        var d = defaultPerms[role] || defaultPerms.technician;
+        if (permView) permView.checked = !!d.view;
+        if (permCreate) permCreate.checked = !!d.create;
+        if (permUpdate) permUpdate.checked = !!d.update;
+        if (permDelete) permDelete.checked = !!d.delete;
+    }
+
+    function syncPermMaster(applyDefaults) {
+        var role = roleSelect ? roleSelect.value : '';
+        var show = (role === 'technician' || role === 'viewer');
+        if (permMaster) permMaster.style.display = show ? '' : 'none';
+        if (show && applyDefaults) applyDefaultPerms(role);
     }
 
     /** Refresh datalist options for selected zone (type-to-search) */
@@ -1104,6 +1215,7 @@ require_once __DIR__ . '/includes/header.php';
     if (roleSelect) {
         roleSelect.addEventListener('change', function () {
             syncAreaVisibility();
+            syncPermMaster(true);
             syncSummary();
         });
     }
@@ -1142,6 +1254,7 @@ require_once __DIR__ . '/includes/header.php';
     }
 
     syncAreaVisibility();
+    syncPermMaster(false);
     refillCities(true);
     syncSummary();
 })();

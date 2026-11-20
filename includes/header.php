@@ -99,7 +99,7 @@ if ($currentUser && (($currentUser['role'] ?? '') === AppConfig::ROLE_SUPER_ADMI
                 <span>Scan QR</span>
             </a>
 
-            <?php if ($currentUser && AuthService::hasRole(['super_admin', 'technician'])): ?>
+            <?php if ($currentUser && AuthService::hasRole(['super_admin', 'technician']) && AuthService::can('create')): ?>
             <a href="blank_qr.php" class="nav-link <?= in_array($currentPage, ['blank_qr.php', 'blank_qr_print.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>

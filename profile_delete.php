@@ -5,7 +5,8 @@ use App\Services\AuthService;
 use App\Services\UndoService;
 use App\Models\Freezer;
 
-AuthService::requireRole('super_admin');
+AuthService::requireLogin();
+AuthService::requirePermission('delete');
 Freezer::ensureSimColumns();
 $currentUser = AuthService::currentUser();
 

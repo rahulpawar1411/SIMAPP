@@ -9,6 +9,7 @@ use App\Services\AuthService;
 use App\Services\KycScanGate;
 
 AuthService::requireRole(['super_admin', 'technician']);
+AuthService::requirePermission('update');
 
 $id = !empty($_GET['id']) ? (int)$_GET['id'] : 0;
 $from = (!empty($_GET['from']) && $_GET['from'] === 'profile') ? '&from=profile' : '';

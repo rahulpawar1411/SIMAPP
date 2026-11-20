@@ -12,6 +12,7 @@ use App\Services\QRCodeService;
 use App\Services\KycScanGate;
 
 AuthService::requireLogin();
+AuthService::requirePermission('view');
 $currentUser = AuthService::currentUser();
 $csrfToken = AuthService::generateCsrfToken();
 Freezer::ensureSimColumns();
@@ -255,12 +256,14 @@ $galleryPhotos = [
 
 <div class="sp-actions field-actions-row">
     <a href="qr_scanner.php" class="btn btn-primary btn-sm"><span class="btn-label-full">Scan QR</span><span class="btn-label-short">Scan</span></a>
-    <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
+    <?php if (AuthService::can('update')): ?>
         <a href="<?= htmlspecialchars($amcDoHref) ?>" class="btn btn-primary btn-sm"><span class="btn-label-full">Do AMC</span><span class="btn-label-short">AMC</span></a>
     <?php endif; ?>
     <a href="qr_print.php?id=<?= urlencode($freezer['unique_freezer_id']) ?>" class="btn btn-outline btn-sm" target="_blank"><span class="btn-label-full">Print QR</span><span class="btn-label-short">Print</span></a>
+    <?php if (AuthService::can('update')): ?>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary btn-sm"><?= htmlspecialchars($editBtnLabel) ?></a>
-    <?php if (AuthService::hasRole('super_admin')): ?>
+    <?php endif; ?>
+    <?php if (AuthService::can('delete')): ?>
         <a href="profile_delete.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-danger btn-sm sp-actions-delete" title="Password required">
             <span class="btn-label-full">Delete</span><span class="btn-label-short">Del</span>
         </a>
@@ -269,8 +272,10 @@ $galleryPhotos = [
 
 <?php if ($isTechnician): ?>
 <div class="tech-sticky-bar no-print" aria-label="Technician actions">
+    <?php if (AuthService::can('update')): ?>
     <a href="<?= htmlspecialchars($amcDoHref) ?>" class="btn btn-primary">Do AMC</a>
     <a href="profile_edit.php?id=<?= (int)$freezer['id'] ?>" class="btn btn-secondary"><?= htmlspecialchars($editBtnLabel) ?></a>
+    <?php endif; ?>
     <a href="field_home.php" class="btn btn-outline">Home</a>
 </div>
 <?php endif; ?>
@@ -970,7 +975,7 @@ if ($amcHistory) {
 } elseif (!empty($freezer['installation_date'])) {
     $amcLastDue = FreezerLifecycle::nextKycDueDate((string)$freezer['installation_date']);
 }
-$canDoAmc = AuthService::hasRole(['super_admin', 'technician']);
+$canDoAmc = AuthService::can('update');
 $amcFmtWhen = static function (?array $row): string {
     if (!$row) {
         return '—';

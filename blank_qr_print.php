@@ -11,6 +11,7 @@ use App\Models\AssetTag;
 
 AuthService::requireLogin();
 AuthService::requireRole(['super_admin', 'technician']);
+AuthService::requirePermission('create');
 
 $zoneOptions = AssetTag::zoneTagCodes();
 $filterZone = strtoupper(trim((string)($_GET['zone'] ?? '')));

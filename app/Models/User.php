@@ -42,6 +42,114 @@ class User {
         } catch (\Throwable $e) {
             // columns already present or DB unavailable
         }
+        self::ensurePermissionsColumn();
+    }
+
+    /** JSON access flags: view / create / update / delete (technician master checkboxes). */
+    public static function ensurePermissionsColumn(): void {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $pdo = Database::getConnection();
+            $cols = $pdo->query('SHOW COLUMNS FROM `users`')->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            if (!in_array('permissions', $cols, true)) {
+                $pdo->exec("ALTER TABLE `users` ADD COLUMN `permissions` TEXT NULL AFTER `city`");
+            }
+        } catch (\Throwable $e) {
+            // column already present or DB unavailable
+        }
+    }
+
+    /** @return list<string> */
+    public static function permissionKeys(): array {
+        return ['view', 'create', 'update', 'delete'];
+    }
+
+    /**
+     * Default access by role.
+     * Technician: view+create+update (delete off until admin checks it).
+     * Viewer: view only. Super admin: all.
+     *
+     * @return array{view:bool,create:bool,update:bool,delete:bool}
+     */
+    public static function defaultPermissionsForRole(string $role): array {
+        if ($role === AppConfig::ROLE_SUPER_ADMIN) {
+            return ['view' => true, 'create' => true, 'update' => true, 'delete' => true];
+        }
+        if ($role === AppConfig::ROLE_VIEWER) {
+            return ['view' => true, 'create' => false, 'update' => false, 'delete' => false];
+        }
+        // technician
+        return ['view' => true, 'create' => true, 'update' => true, 'delete' => false];
+    }
+
+    /**
+     * Normalize posted / stored permissions.
+     * @param array<string,mixed>|string|null $raw
+     * @return array{view:bool,create:bool,update:bool,delete:bool}
+     */
+    public static function normalizePermissions($raw, string $role = AppConfig::ROLE_TECHNICIAN): array {
+        $defaults = self::defaultPermissionsForRole($role);
+        if ($role === AppConfig::ROLE_SUPER_ADMIN) {
+            return $defaults;
+        }
+        $data = [];
+        if (is_string($raw) && trim($raw) !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $data = $decoded;
+            }
+        } elseif (is_array($raw)) {
+            $data = $raw;
+        } else {
+            return $defaults;
+        }
+        $out = [];
+        foreach (self::permissionKeys() as $key) {
+            if (array_key_exists($key, $data)) {
+                $v = $data[$key];
+                $out[$key] = ($v === true || $v === 1 || $v === '1' || $v === 'on' || $v === 'yes');
+            } else {
+                $out[$key] = (bool)$defaults[$key];
+            }
+        }
+        // At least view so the account can open Assets / Home
+        if (empty($out['view']) && empty($out['create']) && empty($out['update']) && empty($out['delete'])) {
+            $out['view'] = true;
+        }
+        return $out;
+    }
+
+    /** @param array{view?:bool,create?:bool,update?:bool,delete?:bool} $perms */
+    public static function encodePermissions(array $perms): string {
+        $norm = self::normalizePermissions($perms, AppConfig::ROLE_TECHNICIAN);
+        return json_encode([
+            'view' => !empty($norm['view']),
+            'create' => !empty($norm['create']),
+            'update' => !empty($norm['update']),
+            'delete' => !empty($norm['delete']),
+        ], JSON_UNESCAPED_SLASHES);
+    }
+
+    /** Short label for directory table: V C U D */
+    public static function permissionsLabel(array $perms): string {
+        $bits = [];
+        if (!empty($perms['view'])) {
+            $bits[] = 'View';
+        }
+        if (!empty($perms['create'])) {
+            $bits[] = 'Create';
+        }
+        if (!empty($perms['update'])) {
+            $bits[] = 'Update';
+        }
+        if (!empty($perms['delete'])) {
+            $bits[] = 'Delete';
+        }
+        return $bits !== [] ? implode(' · ', $bits) : 'None';
     }
 
     /** Normalize assigned zone/city. Empty = no restriction. */
@@ -58,7 +166,8 @@ class User {
     }
 
     private static function selectCols(): string {
-        return '`id`, `name`, `email`, `role`, `phone`, `zone`, `city`, `status`, `last_login`, `created_at`';
+        self::ensurePermissionsColumn();
+        return '`id`, `name`, `email`, `role`, `phone`, `zone`, `city`, `permissions`, `status`, `last_login`, `created_at`';
     }
 
     public static function all(): array {
@@ -133,6 +242,17 @@ class User {
         if ($role === AppConfig::ROLE_TECHNICIAN) {
             $area = self::normalizeArea($data['zone'] ?? null, $data['city'] ?? null);
         }
+        if ($role === AppConfig::ROLE_SUPER_ADMIN) {
+            $permsJson = null;
+        } elseif (array_key_exists('permissions', $data)) {
+            $permsJson = self::encodePermissions(
+                self::normalizePermissions($data['permissions'], $role)
+            );
+        } else {
+            $permsJson = self::encodePermissions(
+                self::normalizePermissions($existing['permissions'] ?? null, $role)
+            );
+        }
 
         if ($name === '' || $email === '') {
             return ['success' => false, 'error' => 'Name and email are required.'];
@@ -169,11 +289,13 @@ class User {
             return ['success' => false, 'error' => 'A user with this email already exists.'];
         }
 
+        self::ensurePermissionsColumn();
         $pdo = Database::getConnection();
         if ($password !== '') {
             $stmt = $pdo->prepare('UPDATE `users` SET
                 `name` = :name, `email` = :email, `password` = :password,
-                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city, `status` = :status
+                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city,
+                `permissions` = :permissions, `status` = :status
                 WHERE `id` = :id');
             $ok = $stmt->execute([
                 'id' => $id,
@@ -184,12 +306,14 @@ class User {
                 'phone' => $phone,
                 'zone' => $area['zone'] !== '' ? $area['zone'] : null,
                 'city' => $area['city'] !== '' ? $area['city'] : null,
+                'permissions' => $permsJson,
                 'status' => $status,
             ]);
         } else {
             $stmt = $pdo->prepare('UPDATE `users` SET
                 `name` = :name, `email` = :email,
-                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city, `status` = :status
+                `role` = :role, `phone` = :phone, `zone` = :zone, `city` = :city,
+                `permissions` = :permissions, `status` = :status
                 WHERE `id` = :id');
             $ok = $stmt->execute([
                 'id' => $id,
@@ -199,6 +323,7 @@ class User {
                 'phone' => $phone,
                 'zone' => $area['zone'] !== '' ? $area['zone'] : null,
                 'city' => $area['city'] !== '' ? $area['city'] : null,
+                'permissions' => $permsJson,
                 'status' => $status,
             ]);
         }
@@ -255,6 +380,10 @@ class User {
         if ($role === AppConfig::ROLE_TECHNICIAN) {
             $area = self::normalizeArea($data['zone'] ?? null, $data['city'] ?? null);
         }
+        $perms = self::normalizePermissions($data['permissions'] ?? null, $role);
+        $permsJson = ($role === AppConfig::ROLE_TECHNICIAN || $role === AppConfig::ROLE_VIEWER)
+            ? self::encodePermissions($perms)
+            : null;
 
         if ($name === '' || $email === '' || $password === '') {
             return ['success' => false, 'error' => 'Name, email and password are required.'];
@@ -291,10 +420,11 @@ class User {
             return ['success' => false, 'error' => 'A user with this email already exists.'];
         }
 
+        self::ensurePermissionsColumn();
         $pdo = Database::getConnection();
         $stmt = $pdo->prepare(
-            'INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `zone`, `city`, `status`)
-            VALUES (:name, :email, :password, :role, :phone, :zone, :city, :status)'
+            'INSERT INTO `users` (`name`, `email`, `password`, `role`, `phone`, `zone`, `city`, `permissions`, `status`)
+            VALUES (:name, :email, :password, :role, :phone, :zone, :city, :permissions, :status)'
         );
         $stmt->execute([
             'name' => $name,
@@ -304,6 +434,7 @@ class User {
             'phone' => $phone,
             'zone' => $area['zone'] !== '' ? $area['zone'] : null,
             'city' => $area['city'] !== '' ? $area['city'] : null,
+            'permissions' => $permsJson,
             'status' => $status,
         ]);
 

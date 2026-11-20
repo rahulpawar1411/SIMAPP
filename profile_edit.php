@@ -13,6 +13,7 @@ use App\Models\AssetTag;
 use App\Models\AppNotification;
 
 AuthService::requireRole(['super_admin', 'technician']);
+AuthService::requirePermission('update');
 Freezer::ensureSimColumns();
 $currentUser = AuthService::currentUser();
 $isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);

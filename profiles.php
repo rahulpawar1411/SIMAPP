@@ -13,6 +13,7 @@ use App\Models\MasterData;
 use App\Models\AssetTag;
 
 AuthService::requireLogin();
+AuthService::requirePermission('view');
 AssetTag::ensureTable();
 $currentUser = AuthService::currentUser();
 
@@ -503,7 +504,7 @@ require_once __DIR__ . '/includes/header.php';
             <?php foreach ($freezers as $row): ?>
                 <?php
                 $fid = (string)($row['unique_freezer_id'] ?? '');
-                $canEdit = AuthService::hasRole(['super_admin', 'technician']);
+                $canEdit = AuthService::can('update');
                 ?>
                 <article class="mapp-asset-card" data-unique-id="<?= htmlspecialchars($fid) ?>">
                     <a class="mapp-asset-main" href="profile_view.php?id=<?= urlencode($fid) ?>">
