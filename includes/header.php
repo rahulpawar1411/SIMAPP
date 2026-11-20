@@ -72,7 +72,7 @@ if ($currentUser && (($currentUser['role'] ?? '') === AppConfig::ROLE_SUPER_ADMI
             </a>
             <?php endif; ?>
 
-            <a href="profiles.php" class="nav-link <?= in_array($currentPage, ['profiles.php', 'profile_view.php', 'profile_edit.php', 'freezer_kyc.php'], true) ? 'active' : '' ?>">
+            <a href="profiles.php" class="nav-link <?= in_array($currentPage, ['profiles.php', 'profile_view.php', 'profile_edit.php', 'freezer_kyc.php', 'profile_add.php'], true) ? 'active' : '' ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
                     <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>

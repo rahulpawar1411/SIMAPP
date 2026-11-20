@@ -3,10 +3,12 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
 use App\Services\FileUploadService;
+use App\Services\KycScanGate;
 use App\Config\AppConfig;
 use App\Models\MasterData;
 use App\Models\Store;
 use App\Models\Freezer;
+use App\Models\FreezerLifecycle;
 use App\Models\AssetTag;
 
 AuthService::requireRole(['super_admin', 'technician']);
@@ -26,10 +28,79 @@ $customers = MasterData::getCustomerList();
 $conditions = MasterData::getConditions();
 $capacities = MasterData::getCapacities();
 
+// AMC mode: same store-registration form, existing freezer (no new Unique ID / blank QR)
+$amcMode = (isset($_GET['amc']) && (string)$_GET['amc'] === '1')
+    || (isset($_POST['amc_mode']) && (string)$_POST['amc_mode'] === '1');
+$amcFreezer = null;
+$amcFreezerId = 0;
+if ($amcMode) {
+    $amcFreezerId = (int)($_GET['id'] ?? $_POST['amc_freezer_id'] ?? 0);
+    $amcFreezer = $amcFreezerId > 0 ? Freezer::findById($amcFreezerId) : null;
+    if (!$amcFreezer) {
+        http_response_code(404);
+        echo '<h1>Freezer not found</h1><p><a href="profiles.php">Back to Assets</a></p>';
+        exit;
+    }
+    AuthService::requireAreaAccess(
+        $amcFreezer['store_zone'] ?? $amcFreezer['zone'] ?? null,
+        $amcFreezer['store_city'] ?? null,
+        'profiles.php'
+    );
+    if (!empty($_GET['from']) && $_GET['from'] === 'profile') {
+        KycScanGate::markFromProfile($amcFreezerId);
+    }
+    if (!KycScanGate::check($amcFreezerId)) {
+        header('Location: ' . KycScanGate::scannerUrl($amcFreezer));
+        exit;
+    }
+    // AMC: do not prefill store/operator details — fill all fields again (same or new outlet)
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        $_POST = array_merge([
+            'store_name' => '',
+            'customer_name' => $customers[0] ?? 'Baskin Robbins',
+            'distributor_name' => '',
+            'contact_person' => '',
+            'phone_number' => '',
+            'email' => '',
+            'aadhar_number' => '',
+            'fssai_number' => '',
+            'gst_number' => '',
+            'address' => '',
+            'city' => '',
+            'state' => '',
+            'pincode' => '',
+            'zone' => (string)($amcFreezer['store_zone'] ?? $amcFreezer['zone'] ?? 'WEST'),
+            'location_type' => 'Retail Store',
+            'latitude' => '',
+            'longitude' => '',
+            'location_link' => '',
+            'gps_accuracy' => '',
+            'freezer_type' => (string)($amcFreezer['freezer_type'] ?? 'DF'),
+            'company_code' => (string)($amcFreezer['company_code'] ?? 'RW'),
+            'model_number' => (string)($amcFreezer['model_number'] ?? 'SFR550DDU'),
+            'location_code' => '',
+            'installation_date' => (string)($amcFreezer['installation_date'] ?? date('Y-m-d')),
+            'capacity_litres' => (string)($amcFreezer['capacity_litres'] ?? '550'),
+            'freezer_condition' => 'WORKING CONDITION',
+            'freezer_placed_at' => '',
+            'freezer_status' => 'Active',
+            'sim_number' => '',
+            'sim_company' => '',
+            'notes' => '',
+            'amc_result' => 'PASS',
+            'move_reason' => 'AMC outlet change',
+        ], $_POST);
+    }
+}
+
 // Scan-first workflow: blank QR must be scanned (or opened) before filling data
 $boundTagCode = strtoupper(trim((string)($_GET['tag'] ?? $_POST['asset_tag_code'] ?? '')));
 $boundTag = null;
-if ($boundTagCode !== '') {
+if ($amcMode && $amcFreezer) {
+    $profileTag = AssetTag::findByFreezerId((int)$amcFreezer['id']);
+    $boundTag = $profileTag;
+    $boundTagCode = strtoupper(trim((string)($profileTag['tag_code'] ?? '')));
+} elseif ($boundTagCode !== '') {
     $boundTag = AssetTag::findByCode($boundTagCode);
     if (!$boundTag) {
         $error = "Blank QR tag '{$boundTagCode}' was not found. Generate & print tags under Blank QR Tags, then scan.";
@@ -53,12 +124,159 @@ if (!empty($_GET['err']) && $_GET['err'] === 'assigned' && empty($error)) {
     $error = 'This QR tag is already assigned — scan shows existing details.';
 }
 
-$requireScanFirst = ($boundTag === null || $boundTagCode === '');
+$requireScanFirst = $amcMode ? false : ($boundTag === null || $boundTagCode === '');
 
-// Handle form submission — only after QR scanned; data is linked to that QR
+// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!AuthService::validateCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Invalid security CSRF token. Please submit again.';
+    } elseif ($amcMode && $amcFreezer) {
+        // ——— AMC verify on same store-registration form ———
+        try {
+            $userId = (int)($currentUser['id'] ?? 0);
+            $outletAnswer = strtolower(trim((string)($_POST['outlet_change_answer'] ?? '')));
+            if ($outletAnswer === '') {
+                throw new Exception('Please choose whether outlet change happened (Yes / No).');
+            }
+            $outletChange = ($outletAnswer === 'yes') || !empty($_POST['outlet_change']);
+            $amcResult = strtoupper(trim((string)($_POST['amc_result'] ?? 'PASS')));
+            if (!in_array($amcResult, ['PASS', 'FAIL'], true)) {
+                $amcResult = 'PASS';
+            }
+            $notes = trim((string)($_POST['notes'] ?? ''));
+            $lat = trim((string)($_POST['latitude'] ?? ''));
+            $lng = trim((string)($_POST['longitude'] ?? ''));
+            if ($lat === '' || $lng === '' || !is_numeric($lat) || !is_numeric($lng)) {
+                throw new Exception('Please save your current location before continuing.');
+            }
+            if ((float)$lat < -90 || (float)$lat > 90 || (float)$lng < -180 || (float)$lng > 180) {
+                throw new Exception('Location coordinates look invalid. Please save location again.');
+            }
+
+            $requiredText = [
+                'store_name' => 'Store / Outlet name',
+                'address' => 'Street address',
+                'city' => 'City',
+                'pincode' => 'PIN code',
+                'zone' => 'Zone',
+            ];
+            foreach ($requiredText as $key => $label) {
+                if (trim((string)($_POST[$key] ?? '')) === '') {
+                    throw new Exception("{$label} is required. Save location to auto-fill city / PIN / address, then complete the rest.");
+                }
+            }
+            if (!preg_match('/^\d{6}$/', trim((string)($_POST['pincode'] ?? '')))) {
+                throw new Exception('Enter a valid 6-digit PIN code (or save location and correct PIN if needed).');
+            }
+            $zoneVal = strtoupper(trim((string)($_POST['zone'] ?? '')));
+            if (!in_array($zoneVal, AppConfig::ZONES, true)) {
+                throw new Exception('Please select a valid zone.');
+            }
+            if (empty($_FILES['image_store_front']['name'])) {
+                throw new Exception('Store Front photo is required for AMC.');
+            }
+            if (empty($_FILES['image_left_side']['name'])) {
+                throw new Exception('Freezer full photo is required for AMC.');
+            }
+
+            $tagForName = $boundTagCode !== '' ? $boundTagCode : (string)($amcFreezer['unique_freezer_id'] ?? 'AMC');
+            $imgNameMeta = [
+                'tag_code' => $tagForName,
+                'store_name' => trim((string)($_POST['store_name'] ?? 'Store')),
+                'datetime' => date('Ymd'),
+            ];
+            $imgStoreFront = FileUploadService::handleImageUpload($_FILES['image_store_front'], 'stores', 'kyc_store', $imgNameMeta + ['role' => 'kyc_store']);
+            if (empty($imgStoreFront['success'])) {
+                throw new Exception('Store Front Image Error: ' . ($imgStoreFront['error'] ?? 'upload failed'));
+            }
+            $imgLeftResult = FileUploadService::handleImageUpload($_FILES['image_left_side'], 'freezers', 'kyc_frz', $imgNameMeta + ['role' => 'kyc_frz']);
+            if (empty($imgLeftResult['success'])) {
+                throw new Exception('Freezer photo error: ' . ($imgLeftResult['error'] ?? 'upload failed'));
+            }
+
+            $storePayload = AuthService::applyAreaToStoreData([
+                'store_name' => $_POST['store_name'],
+                'customer_name' => $_POST['customer_name'] ?? 'Baskin Robbins',
+                'distributor_name' => $_POST['distributor_name'] ?? '',
+                'contact_person' => $_POST['contact_person'] ?? '',
+                'phone_number' => $_POST['phone_number'] ?? '',
+                'email' => $_POST['email'] ?? '',
+                'aadhar_number' => $_POST['aadhar_number'] ?? '',
+                'fssai_number' => $_POST['fssai_number'] ?? '',
+                'gst_number' => $_POST['gst_number'] ?? '',
+                'address' => $_POST['address'],
+                'city' => $_POST['city'],
+                'state' => trim((string)($_POST['state'] ?? '')) !== '' ? trim((string)$_POST['state']) : 'Unknown',
+                'pincode' => $_POST['pincode'],
+                'zone' => $_POST['zone'] ?? 'WEST',
+                'location_type' => $_POST['location_type'] ?? 'Retail Store',
+            ]);
+            if (!AuthService::canAccessArea($storePayload['zone'] ?? null, $storePayload['city'] ?? null)) {
+                throw new Exception(AuthService::areaAccessDeniedMessage());
+            }
+
+            $hasGps = $lat !== '' && $lng !== '';
+            $liveFreezer = $amcFreezer;
+
+            if ($outletChange) {
+                $created = FreezerLifecycle::createNewOutlet(array_merge($storePayload, [
+                    'latitude' => $hasGps ? $lat : null,
+                    'longitude' => $hasGps ? $lng : null,
+                    'image_store_front' => $imgStoreFront['path'],
+                ]), $userId);
+                FreezerLifecycle::transfer(
+                    (int)$amcFreezer['id'],
+                    (int)$created['store_id'],
+                    trim((string)($_POST['move_reason'] ?? '')) !== '' ? trim((string)$_POST['move_reason']) : 'AMC outlet change',
+                    $notes !== '' ? $notes : null,
+                    $userId,
+                    date('Y-m-d')
+                );
+                $liveFreezer = Freezer::findById((int)$amcFreezer['id']) ?: $amcFreezer;
+                if ($notes === '') {
+                    $notes = 'AMC after outlet change → ' . ($created['outlet_id'] ?? '');
+                } else {
+                    $notes .= ' · Outlet change → ' . ($created['outlet_id'] ?? '');
+                }
+            } else {
+                $storeId = (int)($amcFreezer['store_id'] ?? 0);
+                if ($storeId > 0) {
+                    Store::update($storeId, array_merge($storePayload, [
+                        'outlet_id' => (string)($amcFreezer['outlet_id'] ?? ''),
+                        'latitude' => $hasGps ? (float)$lat : ($amcFreezer['store_latitude'] ?? null),
+                        'longitude' => $hasGps ? (float)$lng : ($amcFreezer['store_longitude'] ?? null),
+                        'gps_accuracy' => !empty($_POST['gps_accuracy']) ? (float)$_POST['gps_accuracy'] : ($amcFreezer['store_gps_accuracy'] ?? null),
+                        'location_link' => $hasGps
+                            ? (trim((string)($_POST['location_link'] ?? '')) !== ''
+                                ? trim((string)$_POST['location_link'])
+                                : ('https://maps.google.com/?q=' . rawurlencode($lat . ',' . $lng)))
+                            : ($amcFreezer['store_location_link'] ?? null),
+                        'image_store_front' => $imgStoreFront['path'],
+                        'status' => 'Active',
+                    ]));
+                }
+            }
+
+            FreezerLifecycle::recordKyc([
+                'freezer_id' => (int)$liveFreezer['id'],
+                'verified_at' => date('Y-m-d H:i:s'),
+                'result' => $amcResult,
+                'notes' => $notes !== '' ? $notes : null,
+                'image_store_front' => $imgStoreFront['path'],
+                'image_freezer' => $imgLeftResult['path'],
+                'latitude' => $hasGps ? $lat : null,
+                'longitude' => $hasGps ? $lng : null,
+                'verified_by' => $userId,
+            ]);
+
+            KycScanGate::consume((int)$liveFreezer['id']);
+            $uid = (string)($liveFreezer['unique_freezer_id'] ?? '');
+            header('Location: profile_view.php?id=' . rawurlencode($uid) . '&tab=amc&amc_ok=1');
+            exit;
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+            $requireScanFirst = false;
+        }
     } else {
         try {
             $postTagCode = strtoupper(trim((string)($_POST['asset_tag_code'] ?? '')));
@@ -269,9 +487,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$pageTitle = $requireScanFirst ? 'Scan QR to Register' : 'Fill Store & Freezer Details';
+$pageTitle = $amcMode
+    ? 'AMC verify'
+    : ($requireScanFirst ? 'Scan QR to Register' : 'Fill Store & Freezer Details');
 $bodyClass = 'field-app-page field-shell-page profile-add-page';
 require_once __DIR__ . '/includes/header.php';
+
+$amcBackHref = $amcMode && $amcFreezer
+    ? ('profile_view.php?id=' . urlencode((string)$amcFreezer['unique_freezer_id']) . '&tab=amc')
+    : 'qr_scanner.php';
+$amcResultSel = strtoupper(trim((string)($_POST['amc_result'] ?? 'PASS')));
+$amcOutletChange = !empty($_POST['outlet_change']);
+$amcOutletAnswer = '';
+if ($amcMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['outlet_change_answer'])) {
+        $amcOutletAnswer = strtolower(trim((string)$_POST['outlet_change_answer'])) === 'yes' ? 'yes' : 'no';
+    } elseif ($amcOutletChange) {
+        $amcOutletAnswer = 'yes';
+    } else {
+        $amcOutletAnswer = 'no';
+    }
+}
 ?>
 
 <div class="checkout-page">
@@ -309,9 +545,17 @@ require_once __DIR__ . '/includes/header.php';
     <div class="cfg-toolbar">
         <div class="cfg-toolbar-left">
             <h1 class="cfg-toolbar-title">
-                New Freezer Configuration
-                <span class="cfg-tag-plain"><?= htmlspecialchars($boundTag['tag_code']) ?></span>
+                <?= $amcMode ? 'AMC verify' : 'New Freezer Configuration' ?>
+                <?php if ($boundTagCode !== ''): ?>
+                    <span class="cfg-tag-plain"><?= htmlspecialchars($boundTagCode) ?></span>
+                <?php endif; ?>
             </h1>
+            <?php if ($amcMode && $amcFreezer): ?>
+                <p class="excel-sheet-sub" style="margin:0.35rem 0 0;">
+                    <?= htmlspecialchars((string)$amcFreezer['unique_freezer_id']) ?>
+                    · Fill all store details again · photos required
+                </p>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -319,13 +563,17 @@ require_once __DIR__ . '/includes/header.php';
     <nav class="form-step-tabs" id="checkout-methods" aria-label="Form steps">
         <button type="button" class="form-step-tab checkout-method active" data-goto="1" aria-current="step">1. Store</button>
         <button type="button" class="form-step-tab checkout-method" data-goto="2">2. Freezer</button>
-        <button type="button" class="form-step-tab checkout-method" data-goto="3">3. Review</button>
+        <button type="button" class="form-step-tab checkout-method" data-goto="3">3. <?= $amcMode ? 'AMC save' : 'Review' ?></button>
     </nav>
 
 <form method="POST" action="" enctype="multipart/form-data" id="onboard-form" novalidate>
     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" name="asset_tag_code" value="<?= htmlspecialchars($boundTagCode) ?>">
-    <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="">
+    <input type="hidden" id="unique_freezer_id" name="unique_freezer_id" value="<?= $amcMode && $amcFreezer ? htmlspecialchars((string)$amcFreezer['unique_freezer_id']) : '' ?>">
+    <?php if ($amcMode && $amcFreezer): ?>
+        <input type="hidden" name="amc_mode" value="1">
+        <input type="hidden" name="amc_freezer_id" value="<?= (int)$amcFreezer['id'] ?>">
+    <?php endif; ?>
 
     <div class="checkout-body">
     <!-- ========================================== -->
@@ -342,8 +590,38 @@ require_once __DIR__ . '/includes/header.php';
 
             <div id="store-front-exif-status" class="store-front-exif-status" style="display:none;" role="status"></div>
 
-            <!-- Top: Save live location first -->
-            <div class="loc-save-panel gps-capture-widget" role="region" aria-label="Store location">
+            <?php if ($amcMode): ?>
+            <!-- AMC: 1) Outlet change? → 2) Location → fill all details again -->
+            <fieldset class="form-subsection" id="amc-outlet-first">
+                <legend>
+                    Outlet change?
+                    <span>Answer this first, then save location</span>
+                </legend>
+                <table class="form-table">
+                    <tr>
+                        <th><span class="form-label required">Did the outlet change?</span></th>
+                        <td>
+                            <div class="amc-result-pills" id="amc-outlet-choice">
+                                <label><input type="radio" name="outlet_change_answer" value="no" id="amc-outlet-no" <?= $amcOutletAnswer === 'no' ? 'checked' : '' ?>> No — same outlet</label>
+                                <label><input type="radio" name="outlet_change_answer" value="yes" id="amc-outlet-yes" <?= $amcOutletAnswer === 'yes' ? 'checked' : '' ?>> Yes — new outlet</label>
+                            </div>
+                            <input type="hidden" name="outlet_change" id="amc-outlet-change" value="<?= $amcOutletAnswer === 'yes' ? '1' : '' ?>">
+                            <input type="text" class="form-control" name="move_reason" id="move_reason"
+                                   style="margin-top:0.65rem;<?= $amcOutletAnswer === 'yes' ? '' : 'display:none;' ?>"
+                                   placeholder="Move reason (new outlet)"
+                                   value="<?= htmlspecialchars((string)($_POST['move_reason'] ?? 'AMC outlet change')) ?>">
+                            <p id="amc-outlet-hint" class="form-step-hint" style="margin:0.55rem 0 0;">
+                                Choose Yes or No first, then save location below. Fill all store details again.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </fieldset>
+            <?php endif; ?>
+
+            <!-- Save live location<?= $amcMode ? ' (after outlet change answer)' : ' first' ?> -->
+            <div class="loc-save-panel gps-capture-widget" id="amc-loc-panel" role="region" aria-label="Store location"
+                 <?= $amcMode && $amcOutletAnswer === '' ? 'style="opacity:0.45;pointer-events:none;"' : '' ?>>
                 <div class="loc-save-panel-main">
                     <div class="loc-save-panel-head">
                         <div class="loc-save-panel-icon" aria-hidden="true">
@@ -354,17 +632,19 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="loc-save-panel-copy">
                             <div class="loc-save-panel-title-row">
-                                <h3 class="loc-save-panel-title">Store location</h3>
-                                <span id="gps-status-pill" class="gps-status-pill">Not set</span>
+                                <h3 class="loc-save-panel-title"><?= $amcMode ? 'Verify location' : 'Store location' ?></h3>
+                                <span id="gps-status-pill" class="gps-status-pill"><?= $amcMode ? 'Answer outlet first' : 'Not set' ?></span>
                             </div>
                             <p class="loc-save-panel-desc">
-                                Save live GPS first — address, city &amp; PIN auto-fill.
+                                <?= $amcMode
+                                    ? 'After answering outlet change, save live GPS — address, city and PIN auto-fill.'
+                                    : 'Save live GPS first — address, city &amp; PIN auto-fill.' ?>
                             </p>
                         </div>
                     </div>
                     <div class="loc-save-panel-actions">
                         <button type="button" class="btn btn-success loc-save-btn" data-save-current-location
-                            data-wa-title="Store location (onboarding)">
+                            data-wa-title="<?= $amcMode ? 'AMC verify location' : 'Store location (onboarding)' ?>">
                             Save my current location
                         </button>
                         <button type="button" class="btn loc-share-trigger js-share-location-btn" data-share-location="saved"
@@ -421,7 +701,7 @@ require_once __DIR__ . '/includes/header.php';
             <fieldset class="form-subsection" id="store-details-anchor">
                 <legend>
                     Store Details
-                    <span>Outlet identity · address · zone</span>
+                    <span><?= $amcMode ? 'Enter all details again (same or new outlet)' : 'Outlet identity · address · zone' ?></span>
                 </legend>
 
                 <table class="form-table" id="store-fields-grid">
@@ -435,7 +715,7 @@ require_once __DIR__ . '/includes/header.php';
                     <tr>
                         <th><label class="form-label" for="outlet_id_preview">Outlet ID / Code</label></th>
                         <td>
-                            <input type="text" id="outlet_id_preview" class="form-control" value="Auto on save" readonly style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
+                            <input type="text" id="outlet_id_preview" class="form-control" value="<?= $amcMode ? 'Kept if same outlet · new ID if outlet changed' : 'Auto on save' ?>" readonly style="background:#f1f5f9; font-family:var(--font-mono); cursor:default;" tabindex="-1">
                         </td>
                     </tr>
                     <tr>
@@ -673,7 +953,7 @@ require_once __DIR__ . '/includes/header.php';
                     <tr>
                         <th><label class="form-label required" for="model_number">Model number</label></th>
                         <td>
-                            <input type="text" id="model_number" name="model_number" class="form-control" placeholder="e.g. SFR550DDU" value="<?= htmlspecialchars($_POST['model_number'] ?? '') ?>" required maxlength="32" autocomplete="off">
+                            <input type="text" id="model_number" name="model_number" class="form-control" placeholder="e.g. SFR550DDU" value="<?= htmlspecialchars($_POST['model_number'] ?? 'SFR550DDU') ?>" required maxlength="32" autocomplete="off">
                             <span class="form-error">Model number is required.</span>
                         </td>
                     </tr>
@@ -755,10 +1035,34 @@ require_once __DIR__ . '/includes/header.php';
             <p class="form-step-hint">
                 Optional IoT photo &amp; serial. Then save — store + freezer are stored and QR is generated.
             </p>
+            <?php elseif ($amcMode): ?>
+            <p class="form-step-hint" style="margin-top:0;">
+                Review, set AMC result, then save — verify history is recorded (Unique Freezer ID stays the same).
+            </p>
             <?php else: ?>
             <p class="form-step-hint" style="margin-top:0;">
                 Review details, then save — store + freezer are stored and the QR asset tag is generated.
             </p>
+            <?php endif; ?>
+
+            <?php if ($amcMode): ?>
+            <fieldset class="form-subsection">
+                <legend>
+                    AMC result
+                    <span>PASS / FAIL for this visit</span>
+                </legend>
+                <table class="form-table">
+                    <tr>
+                        <th><span class="form-label required">Result</span></th>
+                        <td>
+                            <div class="amc-result-pills">
+                                <label><input type="radio" name="amc_result" value="PASS" <?= $amcResultSel !== 'FAIL' ? 'checked' : '' ?>> PASS</label>
+                                <label><input type="radio" name="amc_result" value="FAIL" <?= $amcResultSel === 'FAIL' ? 'checked' : '' ?>> FAIL</label>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            </fieldset>
             <?php endif; ?>
 
             <?php if (AppConfig::IOT_ENABLED): ?>
@@ -899,10 +1203,12 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="checkout-footer onboard-footer">
         <button type="button" class="btn btn-checkout" id="checkout-next-btn">Continue to Freezer</button>
-        <button type="submit" class="btn btn-checkout" id="checkout-submit-btn" hidden>Save &amp; link to QR</button>
+        <button type="submit" class="btn btn-checkout" id="checkout-submit-btn" hidden>
+            <?= $amcMode ? 'Save AMC verify' : 'Save &amp; link to QR' ?>
+        </button>
         <div class="checkout-nav-row">
             <button type="button" class="btn btn-secondary" id="checkout-back-btn" hidden>Back</button>
-            <a href="qr_scanner.php" class="btn btn-outline">Cancel</a>
+            <a href="<?= htmlspecialchars($amcBackHref) ?>" class="btn btn-outline">Cancel</a>
         </div>
     </div>
 </form>
@@ -950,6 +1256,41 @@ document.addEventListener('DOMContentLoaded', function() {
     function validateStep(n) {
         let ok = true;
         if (n === 1) {
+            const amcYesEl = document.getElementById('amc-outlet-yes');
+            const amcNoEl = document.getElementById('amc-outlet-no');
+            const isAmcForm = !!(amcYesEl || amcNoEl);
+            if (isAmcForm) {
+                const answered = !!(amcYesEl && amcYesEl.checked) || !!(amcNoEl && amcNoEl.checked);
+                if (!answered) {
+                    ok = false;
+                    const hint = document.getElementById('amc-outlet-hint');
+                    if (hint) {
+                        hint.textContent = 'Please choose Yes or No for outlet change first.';
+                        hint.style.color = '#b91c1c';
+                    }
+                    const first = document.getElementById('amc-outlet-first');
+                    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+
+                const latVal = (document.getElementById('latitude')?.value || '').trim();
+                const lngVal = (document.getElementById('longitude')?.value || '').trim();
+                const gpsOk = latVal !== '' && lngVal !== '' && !isNaN(parseFloat(latVal)) && !isNaN(parseFloat(lngVal));
+                const locPanel = document.getElementById('amc-loc-panel');
+                if (locPanel) locPanel.classList.toggle('is-invalid', !gpsOk);
+                if (!gpsOk) {
+                    ok = false;
+                    const pill = document.getElementById('gps-status-pill');
+                    if (pill) {
+                        pill.textContent = 'Location required';
+                        pill.style.backgroundColor = '#fee2e2';
+                        pill.style.color = '#b91c1c';
+                    }
+                    if (answered && locPanel) {
+                        locPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }
+            }
+
             const box = document.getElementById('dropzone-store-front');
             const hasSf = hasFile('image_store_front');
             if (box) box.classList.toggle('is-invalid', !hasSf);
@@ -964,13 +1305,16 @@ document.addEventListener('DOMContentLoaded', function() {
             const pin = document.getElementById('pincode');
             const address = document.getElementById('address');
             const city = document.getElementById('city');
+            const zone = document.getElementById('zone');
             const phone = document.getElementById('phone_number');
 
             [[store, !store.value.trim()],
              [address, !address.value.trim()],
              [city, !city.value.trim()],
-             [pin, !/^\d{6}$/.test(pin.value.trim())]
+             [zone, zone && !zone.value.trim()],
+             [pin, !/^\d{6}$/.test((pin?.value || '').trim())]
             ].forEach(([el, bad]) => {
+                if (!el) return;
                 setFieldError(el, bad);
                 if (bad) ok = false;
             });
@@ -1160,6 +1504,67 @@ document.addEventListener('DOMContentLoaded', function() {
         if (step === 3) updateSummary();
     };
     setInterval(syncId, 600);
+
+    const amcHidden = document.getElementById('amc-outlet-change');
+    const amcYes = document.getElementById('amc-outlet-yes');
+    const amcNo = document.getElementById('amc-outlet-no');
+    const moveReason = document.getElementById('move_reason');
+    const locPanel = document.getElementById('amc-loc-panel');
+    const gpsPill = document.getElementById('gps-status-pill');
+    const amcHint = document.getElementById('amc-outlet-hint');
+
+    function syncAmcOutletChoice() {
+        if (!amcYes && !amcNo) return;
+        const answered = !!(amcYes && amcYes.checked) || !!(amcNo && amcNo.checked);
+        const isYes = !!(amcYes && amcYes.checked);
+        if (amcHidden) amcHidden.value = isYes ? '1' : '';
+        if (moveReason) moveReason.style.display = isYes ? '' : 'none';
+        if (locPanel) {
+            if (answered) {
+                locPanel.style.opacity = '1';
+                locPanel.style.pointerEvents = '';
+                locPanel.removeAttribute('aria-disabled');
+            } else {
+                locPanel.style.opacity = '0.45';
+                locPanel.style.pointerEvents = 'none';
+                locPanel.setAttribute('aria-disabled', 'true');
+            }
+        }
+        if (gpsPill && answered) {
+            const latReady = (document.getElementById('latitude')?.value || '').trim();
+            if (!latReady && (gpsPill.textContent === 'Answer outlet first' || gpsPill.textContent === 'After outlet answer' || gpsPill.textContent === 'Location required')) {
+                gpsPill.textContent = 'Not set';
+                gpsPill.style.backgroundColor = '';
+                gpsPill.style.color = '';
+            }
+        }
+        if (amcHint) {
+            amcHint.style.color = '';
+            amcHint.textContent = answered
+                ? (isYes
+                    ? 'New outlet — save location next, then fill all store details.'
+                    : 'Same outlet — save location next, then fill all store details.')
+                : 'Choose Yes or No first, then save location below. Fill all store details again.';
+        }
+        if (answered && locPanel && document.activeElement && (document.activeElement === amcYes || document.activeElement === amcNo)) {
+            locPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+    if (amcYes) amcYes.addEventListener('change', syncAmcOutletChoice);
+    if (amcNo) amcNo.addEventListener('change', syncAmcOutletChoice);
+    syncAmcOutletChoice();
+
+    // Keep location_code in sync when GPS / city fills (AMC + register)
+    ['city', 'pincode', 'zone'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', function () {
+            if (typeof window.updateFreezerIdPreview === 'function') {
+                window.updateFreezerIdPreview();
+            }
+        });
+    });
+
     goStep(1);
 });
 </script>

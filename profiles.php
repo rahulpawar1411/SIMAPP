@@ -41,7 +41,9 @@ $brandList = $asList($_GET['brand'] ?? []);
 $statusList = $asList($_GET['status'] ?? []);
 $cityList = $asList($_GET['city'] ?? []);
 $missingList = $asList($_GET['missing'] ?? []);
-$kycList = []; // AMC/KYC filters removed
+// AMC due filter: profiles.php?kyc=pending|done|failed
+$kycList = $asList($_GET['kyc'] ?? []);
+$kycList = array_values(array_intersect($kycList, ['pending', 'done', 'failed']));
 
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 20; // Fixed page size — keeps Assets list light under load
@@ -54,8 +56,9 @@ $filters = [
     'status' => $statusList,
     'city' => $cityList,
     'missing' => $missingList,
-    'kyc' => $kycList,
+    'kyc' => $kycList, // pending = AMC due
 ];
+
 // Technicians with assigned zone/city only see freezers in that area
 $areaScope = AuthService::areaScope();
 $filters = AuthService::applyAreaToFilters($filters);
@@ -69,7 +72,7 @@ if ($mineOnly) {
 }
 
 $activeFilterCount = count($typeList) + count($brandList) + count($statusList)
-    + count($cityList) + count($missingList);
+    + count($cityList) + count($missingList) + count($kycList);
 $hasActiveFilters = $search !== '' || $activeFilterCount > 0;
 
 $city = count($cityList) === 1 ? $cityList[0] : '';

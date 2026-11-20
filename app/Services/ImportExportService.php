@@ -593,9 +593,10 @@ class ImportExportService {
         $pdo = \App\Config\Database::getConnection();
         $gap = (int)\App\Models\FreezerLifecycle::KYC_GAP_MONTHS;
         if ($gap < 1) {
-            $gap = 6;
+            $gap = 12;
         }
         $dueExpr = \App\Models\FreezerLifecycle::kycDueSqlExpr('f', $gap);
+        $alertExpr = \App\Models\FreezerLifecycle::kycAlertSqlExpr('f', $gap);
 
         [$where, $params] = \App\Models\Freezer::exportFilterParts($filters);
         $whereClause = implode(' AND ', $where);
@@ -622,7 +623,8 @@ class ImportExportService {
                            SELECT MAX(k.verified_at) FROM `kyc_verifications` k
                            WHERE k.freezer_id = f.id AND k.store_id = f.store_id
                        ) AS last_kyc_at,
-                       {$dueExpr} AS next_kyc_due
+                       {$dueExpr} AS next_kyc_due,
+                       {$alertExpr} AS alert_from
                 FROM `freezers` f
                 INNER JOIN `stores` s ON f.store_id = s.id
                 LEFT JOIN `iot_devices` i ON i.freezer_id = f.id
@@ -649,7 +651,9 @@ class ImportExportService {
             $typeCode = strtoupper(trim((string)($r['freezer_type'] ?? '')));
             $brandCode = strtoupper(trim((string)($r['company_code'] ?? '')));
             $nextDue = (string)($r['next_kyc_due'] ?? '');
-            $kycStatus = ($nextDue !== '' && $nextDue <= $today) ? 'Pending' : 'OK';
+            $alertFrom = (string)($r['alert_from'] ?? '');
+            // Pending from 1 month before due date
+            $kycStatus = ($alertFrom !== '' && $alertFrom <= $today) ? 'Pending' : 'OK';
 
             $mapsLink = trim((string)($r['store_location_link'] ?? ''));
             if ($mapsLink === '' && !empty($r['store_latitude']) && !empty($r['store_longitude'])) {

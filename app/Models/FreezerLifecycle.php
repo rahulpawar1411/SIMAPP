@@ -14,6 +14,9 @@ class FreezerLifecycle {
     /** Months between AMC service visits for the same store. */
     public const KYC_GAP_MONTHS = 12; // AMC annual cycle
 
+    /** Start Home / Dashboard / Assets alerts this many months before the due date. */
+    public const KYC_ALERT_LEAD_MONTHS = 1;
+
     /** Upgrade verified_at from DATE to DATETIME so submit time is stored. */
     public static function ensureKycVerifiedAtDateTime(): void {
         static $done = false;
@@ -48,7 +51,7 @@ class FreezerLifecycle {
     }
 
     /**
-     * Anchor for the 6-month clock:
+     * Anchor for the AMC clock:
      * last AMC at store if any, otherwise installation date.
      */
     public static function kycAnchorDate(?string $lastVerifiedAt, ?string $installationDate = null): ?string {
@@ -61,7 +64,7 @@ class FreezerLifecycle {
         return null;
     }
 
-    /** Next due date = anchor + 6 months (Y-m-d). */
+    /** Next due date = anchor + KYC_GAP_MONTHS (Y-m-d). */
     public static function nextKycDueDate(?string $anchorDate): ?string {
         if ($anchorDate === null || trim($anchorDate) === '') {
             return null;
@@ -70,9 +73,22 @@ class FreezerLifecycle {
         return $ts ? date('Y-m-d', $ts) : null;
     }
 
+    /** Alert start date = next due − KYC_ALERT_LEAD_MONTHS (Y-m-d). */
+    public static function amcAlertStartDate(?string $anchorDate): ?string {
+        $nextDue = self::nextKycDueDate($anchorDate);
+        if ($nextDue === null) {
+            return null;
+        }
+        $lead = max(0, (int)self::KYC_ALERT_LEAD_MONTHS);
+        if ($lead < 1) {
+            return $nextDue;
+        }
+        $ts = strtotime($nextDue . ' -' . $lead . ' months');
+        return $ts ? date('Y-m-d', $ts) : $nextDue;
+    }
+
     /**
-     * Due when last AMC (or installation if never AMC'd) + 6 months has passed.
-     * First AMC window starts from installation date.
+     * Hard overdue: last AMC (or installation) + KYC_GAP_MONTHS has passed.
      */
     public static function isKycDue(?string $lastVerifiedAt, ?string $asOf = null, ?string $installationDate = null): bool {
         $anchor = self::kycAnchorDate($lastVerifiedAt, $installationDate);
@@ -85,6 +101,23 @@ class FreezerLifecycle {
         }
         $asOfDay = $asOf ? date('Y-m-d', strtotime($asOf)) : date('Y-m-d');
         return $asOfDay >= $nextDue;
+    }
+
+    /**
+     * Alert window: from 1 month before due date (includes overdue).
+     * Used for Home / Dashboard / Assets pending lists and early AMC save.
+     */
+    public static function isKycAlert(?string $lastVerifiedAt, ?string $asOf = null, ?string $installationDate = null): bool {
+        $anchor = self::kycAnchorDate($lastVerifiedAt, $installationDate);
+        if ($anchor === null) {
+            return true;
+        }
+        $alertFrom = self::amcAlertStartDate($anchor);
+        if ($alertFrom === null) {
+            return true;
+        }
+        $asOfDay = $asOf ? date('Y-m-d', strtotime($asOf)) : date('Y-m-d');
+        return $asOfDay >= $alertFrom;
     }
 
     public static function openPlacement(int $freezerId, int $storeId, string $startedAt, ?int $createdBy, string $reason = 'Initial placement', ?string $notes = null): int {
@@ -283,18 +316,21 @@ class FreezerLifecycle {
         $pdo = Database::getConnection();
         $storeId = (int)$freezer['store_id'];
 
-        // One AMC per store every 6 months (same freezer at this outlet)
+        // One AMC per store every cycle; allow save from 1 month before due (alert window)
         $lastAtStore = $pdo->prepare("SELECT `id`, `verified_at` FROM `kyc_verifications`
             WHERE `freezer_id` = :fid AND `store_id` = :sid
             ORDER BY `verified_at` DESC, `id` DESC LIMIT 1");
         $lastAtStore->execute(['fid' => $freezerId, 'sid' => $storeId]);
         $prev = $lastAtStore->fetch() ?: null;
-        if ($prev && !self::isKycDue((string)$prev['verified_at'], $verifiedAt)) {
+        if ($prev && !self::isKycAlert((string)$prev['verified_at'], $verifiedAt)) {
             $nextDue = self::nextKycDueDate((string)$prev['verified_at']);
+            $alertFrom = self::amcAlertStartDate((string)$prev['verified_at']);
             throw new Exception(
                 'AMC already done for this store on ' . $prev['verified_at']
                 . '. Next due after ' . self::KYC_GAP_MONTHS . ' months'
-                . ($nextDue ? " (from {$nextDue})" : '') . '.'
+                . ($nextDue ? " (due {$nextDue}" : '')
+                . ($alertFrom ? ", alert from {$alertFrom}" : '')
+                . ($nextDue || $alertFrom ? ')' : '') . '.'
             );
         }
 
@@ -1041,19 +1077,28 @@ class FreezerLifecycle {
             null,
             $installDate !== null ? (string)$installDate : null
         );
+        $alert = self::isKycAlert(
+            $lastAtStoreDate !== null ? (string)$lastAtStoreDate : null,
+            null,
+            $installDate !== null ? (string)$installDate : null
+        );
         $nextDue = self::nextKycDueDate($anchor) ?? date('Y-m-d');
-        $withinGap = !$due;
+        $alertFrom = self::amcAlertStartDate($anchor) ?? $nextDue;
+        $withinGap = !$alert;
 
         return [
             'cycle' => $cycle,
             'current' => ($withinGap && $atStore) ? $atStore : null,
             'due' => $due,
+            'alert' => $alert,
             'last' => $lastRow,
             'last_at_store' => $atStore,
             'anchor_date' => $anchor,
             'anchor_source' => $lastAtStoreDate ? 'kyc' : ($installDate ? 'installation' : null),
             'next_due_at' => $nextDue,
+            'alert_from' => $alertFrom,
             'gap_months' => self::KYC_GAP_MONTHS,
+            'alert_lead_months' => self::KYC_ALERT_LEAD_MONTHS,
         ];
     }
 
@@ -1073,6 +1118,20 @@ class FreezerLifecycle {
     }
 
     /**
+     * SQL: alert start = due date − lead months (default 1).
+     * Pending / Home alerts use this so AMC shows 1 month early.
+     */
+    public static function kycAlertSqlExpr(string $freezerAlias = 'f', int $gapMonths = 0, int $leadMonths = -1): string {
+        $dueExpr = self::kycDueSqlExpr($freezerAlias, $gapMonths);
+        $lead = $leadMonths >= 0 ? $leadMonths : self::KYC_ALERT_LEAD_MONTHS;
+        $lead = max(0, (int)$lead);
+        if ($lead < 1) {
+            return $dueExpr;
+        }
+        return "DATE_SUB({$dueExpr}, INTERVAL {$lead} MONTH)";
+    }
+
+    /**
      * Technician work queue: AMC due on freezers this user last verified (re-visits),
      * plus their AMC completed today.
      *
@@ -1088,6 +1147,7 @@ class FreezerLifecycle {
         $dueLimit = max(1, min(30, $dueLimit));
         $gap = self::KYC_GAP_MONTHS;
         $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $alertExpr = self::kycAlertSqlExpr('f', $gap);
         $today = date('Y-m-d');
 
         $due = [];
@@ -1115,7 +1175,7 @@ class FreezerLifecycle {
             $areaParams['city'] = $city;
         }
 
-        // Due re-visits: latest AMC at current store was by this technician, and due date passed
+        // Alert window (1 month before due): latest AMC at current store was by this technician
         $lastByExpr = "(SELECT k2.verified_by FROM `kyc_verifications` k2
              WHERE k2.freezer_id = f.id AND k2.store_id = f.store_id
              ORDER BY k2.verified_at DESC, k2.id DESC LIMIT 1)";
@@ -1130,12 +1190,12 @@ class FreezerLifecycle {
         $dueStmt = $pdo->prepare(
             "SELECT f.id, f.unique_freezer_id, f.installation_date, s.store_name, s.outlet_id, s.city,
                     {$lastAtExpr} AS last_kyc_at, {$lastResExpr} AS last_kyc_result,
-                    {$dueExpr} AS next_kyc_due
+                    {$dueExpr} AS next_kyc_due, {$alertExpr} AS alert_from
              FROM `freezers` f
              INNER JOIN `stores` s ON s.id = f.store_id
              WHERE f.deleted_at IS NULL
                AND {$lastByExpr} = :uid
-               AND {$dueExpr} <= :today
+               AND {$alertExpr} <= :today
                {$areaSql}
              ORDER BY next_kyc_due ASC, f.id DESC
              LIMIT {$dueLimit}"
@@ -1148,7 +1208,7 @@ class FreezerLifecycle {
              INNER JOIN `stores` s ON s.id = f.store_id
              WHERE f.deleted_at IS NULL
                AND {$lastByExpr} = :uid
-               AND {$dueExpr} <= :today
+               AND {$alertExpr} <= :today
                {$areaSql}"
         );
         $cntStmt->execute($dueParams);
@@ -1205,6 +1265,7 @@ class FreezerLifecycle {
         $limit = max(1, min(500, $limit));
         $gap = self::KYC_GAP_MONTHS;
         $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $alertExpr = self::kycAlertSqlExpr('f', $gap);
         $today = date('Y-m-d');
 
         $zone = strtoupper(trim((string)($filters['zone'] ?? '')));
@@ -1234,11 +1295,11 @@ class FreezerLifecycle {
         $stmt = $pdo->prepare(
             "SELECT f.id, f.unique_freezer_id, s.store_name, s.outlet_id, s.city, s.zone,
                     s.latitude, s.longitude, {$dueExpr} AS next_kyc_due,
-                    {$lastAtExpr} AS last_kyc_at
+                    {$alertExpr} AS alert_from, {$lastAtExpr} AS last_kyc_at
              FROM `freezers` f
              INNER JOIN `stores` s ON s.id = f.store_id
              WHERE f.deleted_at IS NULL
-               AND {$dueExpr} <= :today
+               AND {$alertExpr} <= :today
                {$extraSql}
              ORDER BY next_kyc_due ASC, f.id DESC
              LIMIT {$limit}"
@@ -1294,14 +1355,16 @@ class FreezerLifecycle {
     }
 
     /**
-     * Dashboard AMC counts — pending when install/last AMC + 6 months has passed.
+     * Dashboard AMC counts — pending from 1 month before due (alert window).
      * @param array{zone?:string,city?:string} $filters  empty zone/city = All
-     * @return array{done:int,pending:int,pending_list:array,cutoff:string,gap_months:int}
+     * @return array{done:int,pending:int,pending_list:array,cutoff:string,gap_months:int,alert_lead_months:int}
      */
     public static function dashboardKycStats(int $pendingLimit = 5, array $filters = []): array {
         $pdo = Database::getConnection();
         $gap = self::KYC_GAP_MONTHS;
+        $lead = self::KYC_ALERT_LEAD_MONTHS;
         $dueExpr = self::kycDueSqlExpr('f', $gap);
+        $alertExpr = self::kycAlertSqlExpr('f', $gap, $lead);
         $today = $pdo->quote(date('Y-m-d'));
 
         Freezer::ensureSimColumns();
@@ -1332,7 +1395,7 @@ class FreezerLifecycle {
         $doneStmt = $pdo->prepare(
             "SELECT COUNT(*) FROM `freezers` f
              {$join} JOIN `stores` s ON s.id = f.store_id
-             WHERE {$alive} AND {$dueExpr} > {$today}{$extraSql}"
+             WHERE {$alive} AND {$alertExpr} > {$today}{$extraSql}"
         );
         $doneStmt->execute($params);
         $done = (int)$doneStmt->fetchColumn();
@@ -1340,7 +1403,7 @@ class FreezerLifecycle {
         $pendingStmt = $pdo->prepare(
             "SELECT COUNT(*) FROM `freezers` f
              {$join} JOIN `stores` s ON s.id = f.store_id
-             WHERE {$alive} AND {$dueExpr} <= {$today}{$extraSql}"
+             WHERE {$alive} AND {$alertExpr} <= {$today}{$extraSql}"
         );
         $pendingStmt->execute($params);
         $pending = (int)$pendingStmt->fetchColumn();
@@ -1354,10 +1417,11 @@ class FreezerLifecycle {
                             SELECT MAX(k.verified_at) FROM `kyc_verifications` k
                             WHERE k.freezer_id = f.id AND k.store_id = f.store_id
                         ) AS last_kyc_at,
-                        {$dueExpr} AS next_kyc_due
+                        {$dueExpr} AS next_kyc_due,
+                        {$alertExpr} AS alert_from
                  FROM `freezers` f
                  {$join} JOIN `stores` s ON s.id = f.store_id
-                 WHERE {$alive} AND {$dueExpr} <= {$today}{$extraSql}
+                 WHERE {$alive} AND {$alertExpr} <= {$today}{$extraSql}
                  ORDER BY next_kyc_due ASC, f.id DESC
                  LIMIT {$lim}"
             );
@@ -1371,6 +1435,7 @@ class FreezerLifecycle {
             'pending_list' => $list,
             'cutoff' => date('Y-m-d', strtotime("-{$gap} months")),
             'gap_months' => $gap,
+            'alert_lead_months' => $lead,
         ];
     }
 

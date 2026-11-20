@@ -50,10 +50,16 @@ class KycScanGate {
         return 'qr_scanner.php?purpose=amc&expect=' . rawurlencode($uid);
     }
 
-    /** From profile page: open AMC form directly (no scan). */
+    /** From profile page: open AMC on the same store-registration form (no scan). */
     public static function profileKycUrl(array $freezer): string {
         $id = (int)($freezer['id'] ?? 0);
-        return 'freezer_kyc.php?id=' . $id . '&from=profile';
+        return 'profile_add.php?amc=1&id=' . $id . '&from=profile';
+    }
+
+    /** After QR scan unlock — same store form in AMC mode. */
+    public static function amcFormUrl(array $freezer): string {
+        $id = (int)($freezer['id'] ?? 0);
+        return 'profile_add.php?amc=1&id=' . $id;
     }
 
     /**

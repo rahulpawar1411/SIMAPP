@@ -179,6 +179,20 @@ try {
     $amcHistory = [];
 }
 $amcDoHref = KycScanGate::profileKycUrl($freezer);
+$amcStatus = null;
+try {
+    $amcStatus = FreezerLifecycle::kycStatusForFreezer((int)$freezer['id']);
+} catch (Throwable $e) {
+    $amcStatus = null;
+}
+$amcIsOverdue = !empty($amcStatus['due']);
+$amcIsAlert = !empty($amcStatus['alert']) || $amcIsOverdue;
+$amcNextDueLabel = '';
+if (!empty($amcStatus['next_due_at']) && strtotime((string)$amcStatus['next_due_at'])) {
+    $amcNextDueLabel = date('d M Y', strtotime((string)$amcStatus['next_due_at']));
+}
+$amcGapMonths = (int)($amcStatus['gap_months'] ?? FreezerLifecycle::KYC_GAP_MONTHS);
+$amcAlertLead = (int)($amcStatus['alert_lead_months'] ?? FreezerLifecycle::KYC_ALERT_LEAD_MONTHS);
 
 $isTechnician = (($currentUser['role'] ?? '') === AppConfig::ROLE_TECHNICIAN);
 $pendingEdit = null;
@@ -264,6 +278,20 @@ $galleryPhotos = [
 <?php if (!empty($_GET['amc_ok'])): ?>
     <div class="alert alert-success app-flash-toast-only" style="margin-bottom:1rem;" data-app-flash="AMC saved." data-app-flash-variant="success">
         AMC saved. See <a href="profile_view.php?id=<?= urlencode((string)$freezer['unique_freezer_id']) ?>&tab=amc">AMC verify history</a>.
+    </div>
+<?php endif; ?>
+<?php if ($amcIsAlert && empty($_GET['amc_ok'])): ?>
+    <div class="alert alert-warning" style="margin-bottom:1rem;">
+        <?php if ($amcIsOverdue): ?>
+            <strong>AMC overdue<?= $amcNextDueLabel !== '' ? ' (due ' . htmlspecialchars($amcNextDueLabel) . ')' : '' ?>.</strong>
+        <?php else: ?>
+            <strong>AMC alert<?= $amcNextDueLabel !== '' ? ' — due on ' . htmlspecialchars($amcNextDueLabel) : '' ?>.</strong>
+            Alert starts <?= (int)$amcAlertLead ?> month before due.
+        <?php endif; ?>
+        Cycle every <?= (int)$amcGapMonths ?> months
+        <?php if (AuthService::hasRole(['super_admin', 'technician'])): ?>
+            — <a href="<?= htmlspecialchars($amcDoHref) ?>">Do AMC now</a>
+        <?php endif; ?>
     </div>
 <?php endif; ?>
 

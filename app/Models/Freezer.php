@@ -715,19 +715,20 @@ class Freezer {
         if ($kycList) {
             $gapMonths = (int)FreezerLifecycle::KYC_GAP_MONTHS;
             if ($gapMonths < 1) {
-                $gapMonths = 6;
+                $gapMonths = 12;
             }
             $dueExpr = FreezerLifecycle::kycDueSqlExpr('f', $gapMonths);
+            // Pending alerts start 1 month before hard due date
+            $alertExpr = FreezerLifecycle::kycAlertSqlExpr('f', $gapMonths);
             $kycParts = [];
             $todaySql = Database::getConnection()->quote(date('Y-m-d'));
             $notFail = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) <> 'FAIL'";
             $isFail = "UPPER(TRIM(COALESCE({$lastKycResultExpr}, ''))) = 'FAIL'";
             if (in_array('pending', $kycList, true)) {
-                // Due, and not counted only as Issue when exclusive tab (still include due+fail in pending)
-                $kycParts[] = "{$dueExpr} <= {$todaySql}";
+                $kycParts[] = "{$alertExpr} <= {$todaySql}";
             }
             if (in_array('done', $kycList, true)) {
-                $kycParts[] = "({$dueExpr} > {$todaySql} AND {$notFail})";
+                $kycParts[] = "({$alertExpr} > {$todaySql} AND {$notFail})";
             }
             if (in_array('failed', $kycList, true)) {
                 $kycParts[] = $isFail;

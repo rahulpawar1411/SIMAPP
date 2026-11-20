@@ -4,7 +4,9 @@ require_once __DIR__ . '/vendor/autoload.php';
 use App\Services\AuthService;
 use App\Config\AppConfig;
 use App\Models\Freezer;
+use App\Models\FreezerLifecycle;
 use App\Models\AppNotification;
+use App\Services\KycScanGate;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
@@ -63,6 +65,21 @@ if ($uid > 0) {
 
 $hasEditUnlockAlert = count($myEditUnlocks) > 0;
 
+$amcDueCount = 0;
+$amcDueList = [];
+$amcGapMonths = (int)FreezerLifecycle::KYC_GAP_MONTHS;
+try {
+    $amcStats = FreezerLifecycle::dashboardKycStats(8, [
+        'zone' => $areaScope['zone'] ?? '',
+        'city' => $areaScope['city'] ?? '',
+    ]);
+    $amcDueCount = (int)($amcStats['pending'] ?? 0);
+    $amcDueList = is_array($amcStats['pending_list'] ?? null) ? $amcStats['pending_list'] : [];
+    $amcGapMonths = (int)($amcStats['gap_months'] ?? $amcGapMonths);
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'field_home.amc_due');
+}
+
 $hour = (int)date('G');
 $greeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
 $firstName = trim(explode(' ', (string)($currentUser['name'] ?? 'there'))[0]);
@@ -89,15 +106,59 @@ require_once __DIR__ . '/includes/header.php';
             <span class="mapp-kpi-label">Total installations</span>
             <strong><?= number_format($myInstallCount) ?></strong>
         </a>
-        <a class="mapp-kpi-card" href="profiles.php">
-            <span class="mapp-kpi-label">Assets</span>
-            <strong>Open</strong>
+        <a class="mapp-kpi-card" href="profiles.php?kyc=pending">
+            <span class="mapp-kpi-label">AMC due</span>
+            <strong><?= number_format($amcDueCount) ?></strong>
         </a>
         <a class="mapp-kpi-card" href="qr_scanner.php">
             <span class="mapp-kpi-label">Add new</span>
             <strong>Scan</strong>
         </a>
     </div>
+
+    <?php if ($amcDueCount > 0): ?>
+    <a href="profiles.php?kyc=pending" class="mapp-kyc-alert">
+        <span class="mapp-alert-dot" aria-hidden="true"></span>
+        <div>
+            <strong>AMC alert</strong>
+            <span><?= (int)$amcDueCount ?> freezer<?= $amcDueCount === 1 ? '' : 's' ?> — alert <?= (int)FreezerLifecycle::KYC_ALERT_LEAD_MONTHS ?> month before due (cycle <?= (int)$amcGapMonths ?> mo) · <?= htmlspecialchars($areaLabel) ?></span>
+        </div>
+        <span class="mapp-banner-cta">Open list</span>
+    </a>
+    <?php if (!empty($amcDueList)): ?>
+    <section class="mapp-edit-req-card" aria-label="AMC due list">
+        <div class="mapp-edit-req-head">
+            <h2>Due for AMC</h2>
+            <span class="badge badge-warning"><?= (int)$amcDueCount ?></span>
+        </div>
+        <ul class="mapp-due-list">
+            <?php foreach ($amcDueList as $dueRow):
+                $dueFid = (int)($dueRow['id'] ?? 0);
+                $dueUid = (string)($dueRow['unique_freezer_id'] ?? '');
+                $dueStore = trim((string)($dueRow['store_name'] ?? ''));
+                $dueCity = trim((string)($dueRow['city'] ?? ''));
+                $dueWhen = (string)($dueRow['next_kyc_due'] ?? '');
+                $dueWhenLabel = ($dueWhen !== '' && strtotime($dueWhen)) ? date('d M Y', strtotime($dueWhen)) : '—';
+                $isOverdueNow = ($dueWhen !== '' && strtotime($dueWhen) !== false && strtotime($dueWhen) <= strtotime(date('Y-m-d')));
+                $dueTag = $isOverdueNow ? 'Overdue' : 'Due soon';
+                $doAmcHref = KycScanGate::scannerUrl([
+                    'id' => $dueFid,
+                    'unique_freezer_id' => $dueUid,
+                ]);
+                ?>
+                <li>
+                    <a href="profile_view.php?id=<?= urlencode($dueUid !== '' ? $dueUid : (string)$dueFid) ?>&tab=amc">
+                        <strong><?= htmlspecialchars($dueStore !== '' ? $dueStore : 'Store') ?></strong>
+                        <span class="mapp-due-id"><?= htmlspecialchars($dueUid !== '' ? $dueUid : ('#' . $dueFid)) ?></span>
+                        <span class="mapp-due-meta"><?= htmlspecialchars(trim($dueCity . ' · ' . $dueTag . ' ' . $dueWhenLabel, ' ·')) ?></span>
+                    </a>
+                    <a class="mapp-due-go" href="<?= htmlspecialchars($doAmcHref) ?>">Do AMC</a>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </section>
+    <?php endif; ?>
+    <?php endif; ?>
 
     <?php if ($hasEditUnlockAlert):
         $firstUnlock = $myEditUnlocks[0];

@@ -2,8 +2,10 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use App\Services\AuthService;
+use App\Services\KycScanGate;
 use App\Config\AppConfig;
 use App\Models\Freezer;
+use App\Models\FreezerLifecycle;
 
 AuthService::requireLogin();
 $currentUser = AuthService::currentUser();
@@ -50,6 +52,12 @@ $stats = [
     'top_stores' => [],
     'activities' => [],
 ];
+$amcStats = [
+    'done' => 0,
+    'pending' => 0,
+    'pending_list' => [],
+    'gap_months' => (int)FreezerLifecycle::KYC_GAP_MONTHS,
+];
 try {
     $stats = Freezer::getDashboardStats($dashFilters);
 } catch (Throwable $e) {
@@ -59,6 +67,15 @@ try {
         'Could not load dashboard numbers. Please refresh the page.'
     );
 }
+try {
+    $amcStats = FreezerLifecycle::dashboardKycStats(25, $dashFilters);
+} catch (Throwable $e) {
+    \App\Services\AppLogger::exception($e, 'dashboard.amc_due');
+}
+$amcPendingList = is_array($amcStats['pending_list'] ?? null) ? $amcStats['pending_list'] : [];
+$amcPendingCount = (int)($amcStats['pending'] ?? 0);
+$amcLeadMonths = (int)($amcStats['alert_lead_months'] ?? FreezerLifecycle::KYC_ALERT_LEAD_MONTHS);
+$amcGapMonths = (int)($amcStats['gap_months'] ?? FreezerLifecycle::KYC_GAP_MONTHS);
 
 $hasDashFilter = ($filterZone !== '' || $filterCity !== '');
 
@@ -149,14 +166,16 @@ require_once __DIR__ . '/includes/header.php';
                 <span class="adash-kpi-meta up">Linked stores</span>
             </div>
         </a>
-        <a class="adash-kpi adash-kpi-orange" href="qr_scanner.php">
+        <a class="adash-kpi adash-kpi-orange" href="profiles.php?kyc=pending">
             <div class="adash-kpi-icon" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             </div>
             <div class="adash-kpi-body">
-                <span class="adash-kpi-label">Scan QR</span>
-                <strong class="adash-kpi-value">Register</strong>
-                <span class="adash-kpi-meta">Add or open asset</span>
+                <span class="adash-kpi-label">AMC due</span>
+                <strong class="adash-kpi-value"><?= number_format($amcPendingCount) ?></strong>
+                <span class="adash-kpi-meta <?= $amcPendingCount > 0 ? 'down' : 'up' ?>">
+                    Alert <?= (int)$amcLeadMonths ?> mo early · every <?= (int)$amcGapMonths ?> mo · <?= number_format((int)($amcStats['done'] ?? 0)) ?> OK
+                </span>
             </div>
         </a>
         <a class="adash-kpi adash-kpi-red" href="notifications.php">
@@ -170,6 +189,81 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
     </div>
+
+    <?php if ($amcPendingCount > 0 && !empty($amcPendingList)): ?>
+    <div class="adash-card adash-amc-card" id="amc-due-list">
+        <div class="adash-card-head">
+            <h2>AMC list — nearby due</h2>
+            <div class="adash-amc-head-meta">
+                <span class="adash-chip"><?= number_format($amcPendingCount) ?> alert<?= $amcPendingCount === 1 ? '' : 's' ?></span>
+                <a href="profiles.php?kyc=pending" class="adash-link">Open in Assets</a>
+            </div>
+        </div>
+        <p class="adash-amc-hint">
+            Shows only when due is within <?= (int)$amcLeadMonths ?> month · cycle every <?= (int)$amcGapMonths ?> months
+            <?php if ($hasDashFilter): ?>
+                · filtered by zone/city
+            <?php endif; ?>
+        </p>
+        <div class="adash-amc-table-wrap">
+            <table class="adash-amc-table">
+                <thead>
+                    <tr>
+                        <th>Freezer ID</th>
+                        <th>Store</th>
+                        <th>City</th>
+                        <th>Zone</th>
+                        <th>Due date</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($amcPendingList as $dueRow):
+                        $dueFid = (int)($dueRow['id'] ?? 0);
+                        $dueUid = (string)($dueRow['unique_freezer_id'] ?? '');
+                        $dueStore = trim((string)($dueRow['store_name'] ?? ''));
+                        $dueCity = trim((string)($dueRow['city'] ?? ''));
+                        $dueZone = strtoupper(trim((string)($dueRow['zone'] ?? '')));
+                        $dueWhen = (string)($dueRow['next_kyc_due'] ?? '');
+                        $dueWhenLabel = ($dueWhen !== '' && strtotime($dueWhen)) ? date('d M Y', strtotime($dueWhen)) : ($dueWhen !== '' ? $dueWhen : '—');
+                        $isOverdueNow = ($dueWhen !== '' && strtotime($dueWhen) !== false && strtotime($dueWhen) <= strtotime(date('Y-m-d')));
+                        $statusLabel = $isOverdueNow ? 'Overdue' : 'Due soon';
+                        $statusClass = $isOverdueNow ? 'adash-pill-issue' : 'adash-pill-pending';
+                        $profileHref = 'profile_view.php?id=' . urlencode($dueUid !== '' ? $dueUid : (string)$dueFid) . '&tab=amc';
+                        $amcHref = KycScanGate::profileKycUrl([
+                            'id' => $dueFid,
+                            'unique_freezer_id' => $dueUid,
+                        ]);
+                        ?>
+                        <tr>
+                            <td>
+                                <a class="adash-amc-id" href="<?= htmlspecialchars($profileHref) ?>">
+                                    <?= htmlspecialchars($dueUid !== '' ? $dueUid : ('#' . $dueFid)) ?>
+                                </a>
+                            </td>
+                            <td><?= htmlspecialchars($dueStore !== '' ? $dueStore : '—') ?></td>
+                            <td><?= htmlspecialchars($dueCity !== '' ? $dueCity : '—') ?></td>
+                            <td><?= htmlspecialchars($dueZone !== '' ? $dueZone : '—') ?></td>
+                            <td><?= htmlspecialchars($dueWhenLabel) ?></td>
+                            <td><span class="adash-pill <?= $statusClass ?>"><?= htmlspecialchars($statusLabel) ?></span></td>
+                            <td class="adash-amc-actions">
+                                <a class="btn btn-sm btn-primary" href="<?= htmlspecialchars($amcHref) ?>">Do AMC</a>
+                                <a class="btn btn-sm btn-outline" href="<?= htmlspecialchars($profileHref) ?>">Open</a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php if ($amcPendingCount > count($amcPendingList)): ?>
+            <p class="adash-amc-more">
+                Showing <?= count($amcPendingList) ?> of <?= number_format($amcPendingCount) ?>.
+                <a href="profiles.php?kyc=pending">See full AMC list in Assets</a>
+            </p>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
 
     <div class="adash-lower-grid adash-lower-grid-2">
         <div class="adash-card adash-activity-card">

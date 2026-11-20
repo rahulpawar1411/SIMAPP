@@ -1148,10 +1148,16 @@ function initCascadingLocationSelector() {
             if (cityInput.value) {
                 const match = findCityMatch(cityInput.value, chosenZone);
                 if (!match || match.zone !== chosenZone) {
-                    cityInput.value = '';
-                    if (stateInput) stateInput.value = '';
-                    if (document.activeElement === cityInput) {
-                        renderCityAutocomplete('');
+                    // Keep GPS/geocode city — do not wipe after reverse geocode
+                    const fromGps = window.__locationSource === 'geocode' || window.__locationSource === 'gps';
+                    if (!fromGps) {
+                        cityInput.value = '';
+                        if (stateInput) stateInput.value = '';
+                        if (document.activeElement === cityInput) {
+                            renderCityAutocomplete('');
+                        }
+                    } else if (typeof onCityChanged === 'function') {
+                        onCityChanged();
                     }
                 } else {
                     onCityChanged();
@@ -2655,15 +2661,23 @@ function fillLocationFromAddress(address, displayName) {
     }
 
     const matched = findZoneForStateName(state);
-    if (zoneEl && matched) {
+    if (zoneEl && matched && !zoneEl.disabled) {
+        // Avoid wiping city: set zone suggestions without clearing geocoded city
+        const prevCity = cityEl ? cityEl.value : '';
         zoneEl.value = matched.zone;
-        zoneEl.dispatchEvent(new Event('change', { bubbles: true }));
         if (typeof window.refreshZoneCitySuggestions === 'function') {
             window.refreshZoneCitySuggestions(matched.zone);
+        } else {
+            zoneEl.dispatchEvent(new Event('change', { bubbles: true }));
         }
         if (stateEl && matched.state) {
             stateEl.value = matched.state;
-            stateEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        // Restore city after zone handlers (zone change used to clear city)
+        if (cityEl && (city || prevCity)) {
+            cityEl.value = city || prevCity;
+            cityEl.dispatchEvent(new Event('input', { bubbles: true }));
+            cityEl.dispatchEvent(new Event('change', { bubbles: true }));
         }
     }
 
@@ -2675,6 +2689,17 @@ function fillLocationFromAddress(address, displayName) {
     }
     if (addressEl && (roadBits || displayName)) {
         addressEl.value = roadBits || displayName;
+    }
+    if (cityEl && city) {
+        cityEl.value = city;
+    }
+    if (stateEl && state) {
+        stateEl.value = state;
+    }
+
+    // Ensure location_code / ID preview refresh after GPS fill
+    if (typeof window.updateFreezerIdPreview === 'function') {
+        window.updateFreezerIdPreview();
     }
 }
 

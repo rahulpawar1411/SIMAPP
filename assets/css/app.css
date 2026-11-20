@@ -7684,6 +7684,10 @@ body.filter-drawer-open {
     background: #fef2f2;
     color: #b91c1c;
 }
+.loc-save-panel.is-invalid {
+    border-color: #fca5a5;
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.12);
+}
 .amc-form-actions {
     display: flex;
     flex-wrap: wrap;
@@ -9373,6 +9377,74 @@ body.admin-dash-page .page-title {
 .adash-pill-success { background: #dcfce7; color: #15803d; }
 .adash-pill-pending { background: #ffedd5; color: #c2410c; }
 .adash-pill-issue { background: #fee2e2; color: #b91c1c; }
+.adash-pill-warning { background: #ffedd5; color: #c2410c; }
+
+.adash-amc-card {
+    margin: 0 0 1rem;
+}
+.adash-amc-head-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+.adash-amc-hint {
+    margin: 0 1.1rem 0.85rem;
+    font-size: 0.8rem;
+    color: var(--adash-muted, #64748b);
+}
+.adash-amc-empty {
+    margin: 0 1.1rem 1.1rem !important;
+}
+.adash-amc-table-wrap {
+    overflow-x: auto;
+    padding: 0 0.35rem 0.85rem;
+}
+.adash-amc-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 720px;
+}
+.adash-amc-table th,
+.adash-amc-table td {
+    padding: 0.7rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--adash-border, #e2e8f0);
+    font-size: 0.84rem;
+    vertical-align: middle;
+}
+.adash-amc-table th {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--adash-muted, #64748b);
+    font-weight: 700;
+    white-space: nowrap;
+}
+.adash-amc-id {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-weight: 700;
+    color: #2563eb;
+    text-decoration: none;
+    word-break: break-all;
+}
+.adash-amc-id:hover { text-decoration: underline; }
+.adash-amc-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    white-space: nowrap;
+}
+.adash-amc-more {
+    margin: 0 1.1rem 1rem;
+    font-size: 0.8rem;
+    color: var(--adash-muted, #64748b);
+}
+.adash-amc-more a {
+    color: #2563eb;
+    font-weight: 600;
+}
+
 .adash-pending-note {
     margin-top: 1rem;
     padding-top: 0.85rem;
